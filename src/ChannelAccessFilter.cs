@@ -8,6 +8,7 @@ using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using MediaBrowser.Model.Search;
+using MediaBrowser.Model.Entities;
 
 namespace AniFin;
 
@@ -73,6 +74,23 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
                     {
                         await channels.GetChannelItemsInternal(new InternalItemsQuery(auth.User) { Parent = item, ChannelIds = [ChannelId] },
                             new Progress<double>(), context.HttpContext.RequestAborted);
+                        // Search series received distinct grouping keys in 0.2, but Jellyfin
+                        // does not refresh existing channel descendants on every listing.
+                        // Native Shows/Episodes queries use this stored key, unlike ParentId
+                        // listings. Repair metadata only; keep IDs and user data unchanged.
+                        var series = item as Series ?? (item as Season)?.Series;
+                        if (series is not null && !string.IsNullOrEmpty(series.PresentationUniqueKey))
+                        {
+                            foreach (var child in library.GetItemList(new InternalItemsQuery { ParentId = item.Id, Recursive = false }))
+                            {
+                                if (child is Season season && season.SeriesPresentationUniqueKey != series.PresentationUniqueKey)
+                                    season.SeriesPresentationUniqueKey = series.PresentationUniqueKey;
+                                else if (child is Episode episode && episode.SeriesPresentationUniqueKey != series.PresentationUniqueKey)
+                                    episode.SeriesPresentationUniqueKey = series.PresentationUniqueKey;
+                                else continue;
+                                await child.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, context.HttpContext.RequestAborted);
+                            }
+                        }
                     }
                     finally { ChannelNavigation.Gate.Release(); }
                 }

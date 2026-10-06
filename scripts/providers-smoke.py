@@ -49,6 +49,9 @@ try:
     enabled = dict(config, AnimeGgEnabled=True, AnimeHeavenEnabled=True, CacheRevision=int(time.time()))
     ok(config_path, state['admin'], enabled)
     series = next(x for x in search('Cowboy Bebop') if x['Name'] == 'Cowboy Bebop')
+    saved_path = pathlib.Path('.test-state/clear.secret')
+    legacy_ids = json.loads(saved_path.read_text())['episodes'] if saved_path.exists() else {}
+    legacy_progress = {item: ok('/UserItems/' + item + '/UserData') for item in legacy_ids}
     seasons = children(series['Id'])
     print('Provider choices:', ', '.join(s['Name'] for s in seasons), flush=True)
     gg = next(x for x in seasons if x['Name'] == 'Episodes · AnimeGG')
@@ -56,10 +59,16 @@ try:
     gg_episodes = children(gg['Id'])
     heaven_episodes = children(heaven['Id'])
     assert len(heaven_episodes) == 26
-    saved_path = pathlib.Path('.test-state/clear.secret')
-    if saved_path.exists():
-        saved = json.loads(saved_path.read_text())
-        assert set(saved['episodes']).issubset({x['Id'] for x in gg_episodes}), 'Legacy AnimeGG episode IDs changed'
+    for season, listed in [(gg, gg_episodes), (heaven, heaven_episodes)]:
+        native = ok('/Shows/' + series['Id'] + '/Episodes?SeasonId=' + season['Id'])['Items']
+        assert {x['Id'] for x in native} == {x['Id'] for x in listed}, 'Native episode view omitted cached items'
+    print('PASS: native episode views show both legacy AnimeGG and new-provider episodes', flush=True)
+    assert set(legacy_ids).issubset({x['Id'] for x in gg_episodes}), 'Legacy AnimeGG episode IDs changed'
+    for item, previous in legacy_progress.items():
+        after = ok('/UserItems/' + item + '/UserData')
+        for key in ('Played', 'PlaybackPositionTicks', 'PlayCount', 'IsFavorite'):
+            assert after[key] == previous[key], 'Metadata repair changed user data'
+    print('PASS: legacy metadata repair preserves saved watch progress', flush=True)
     played = gg_episodes[0]['Id']
     before = ok('/UserItems/' + played + '/UserData')
     episode = heaven_episodes[0]['Id']
