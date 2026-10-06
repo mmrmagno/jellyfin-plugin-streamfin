@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Apply/remove a scoped Jellyfin Web sidebar icon, preserving existing branding CSS."""
 import argparse
-import base64
 import json
 import pathlib
 import re
 import sqlite3
 import urllib.request
+import xml.etree.ElementTree as ET
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--url', required=True)
@@ -38,12 +38,16 @@ if not args.remove:
     channel_id = args.channel_id or next(c['Id'] for c in api('/Channels')['Items'] if c['Name'] == 'Anime')
     import uuid
     channel_id = uuid.UUID(channel_id).hex
-    uri = 'data:image/svg+xml;base64,' + base64.b64encode(args.icon.read_bytes()).decode()
+    # A CSS clip path needs no image fetch and works with a strict img-src CSP.
+    # The distributed icon uses a 24x24 viewBox and a single vector path.
+    icon = ET.fromstring(args.icon.read_bytes())
+    paths = [node.attrib['d'] for node in icon.iter() if node.tag.endswith('}path')]
+    if icon.attrib.get('viewBox') != '0 0 24 24' or len(paths) != 1 or not re.fullmatch(r'[A-Za-z0-9., +\-]+', paths[0]):
+        raise SystemExit('Expected the distributed 24x24 shuriken vector.')
     modern = 'a[href*="parentId=' + channel_id + '"] .MuiButton-startIcon'
     css += '\n/* AniFin icon start */\n' + '[data-itemid="' + channel_id + '"] .navMenuOptionIcon,\n' + modern + ' {\n' \
-        + '  font-size: 0 !important; width: 1.6rem; height: 1.6rem; background: currentColor;\n' \
-        + '  -webkit-mask: url("' + uri + '") center / contain no-repeat;\n' \
-        + '  mask: url("' + uri + '") center / contain no-repeat;\n' \
+        + '  font-size: 0 !important; width: 24px; height: 24px; flex-shrink: 0; background: currentColor;\n' \
+        + '  clip-path: path(' + json.dumps(paths[0]) + ');\n' \
         + '}\n' + modern + ' svg { visibility: hidden; }\n/* AniFin icon end */\n'
 options['CustomCss'] = css
 api('/System/Configuration/branding', options)

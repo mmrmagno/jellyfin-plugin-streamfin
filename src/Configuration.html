@@ -15,14 +15,20 @@
       <div id="anifinUsers"></div>
       <div class="inputContainer"><label class="inputLabel" for="anifinCache">Metadata cache (minutes)</label><input is="emby-input" type="number" id="anifinCache" min="1" max="1440" required></div>
       <p>AniList provides catalog metadata. Availability depends on AnimeGG. Source changes can temporarily interrupt playback. English subtitles on this source are part of the video.</p>
-      <button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
-      <button is="emby-button" type="button" id="anifinRefresh" class="raised block"><span>Refresh catalog cache</span></button>
+      <p id="anifinStatus" role="status">Loading settings…</p>
+      <button is="emby-button" type="submit" id="anifinSave" class="raised button-submit block" disabled><span>Save</span></button>
+      <button is="emby-button" type="button" id="anifinRefresh" class="raised block" disabled><span>Refresh catalog cache</span></button>
     </form>
     <script>
       (function () {
         const pluginId = 'a74fdb2e-938f-483b-b2ef-f527e14ff724';
         const page = document.querySelector('#anifinConfig');
-        page.addEventListener('pageshow', async function () {
+        let loaded = false;
+        page.addEventListener('viewshow', async function () {
+          loaded = false;
+          page.querySelector('#anifinSave').disabled = true;
+          page.querySelector('#anifinRefresh').disabled = true;
+          page.querySelector('#anifinStatus').textContent = 'Loading settings…';
           Dashboard.showLoadingMsg();
           try {
             const [config, users] = await Promise.all([ApiClient.getPluginConfiguration(pluginId), ApiClient.getUsers()]);
@@ -35,15 +41,24 @@
             container.replaceChildren();
             users.forEach(user => {
               const label = document.createElement('label'); label.className = 'checkboxContainer';
-              const input = document.createElement('input', {is: 'emby-checkbox'}); input.type = 'checkbox'; input.setAttribute('is', 'emby-checkbox'); input.value = user.Id;
+              const input = document.createElement('input', 'emby-checkbox'); input.type = 'checkbox'; input.setAttribute('is', 'emby-checkbox'); input.value = user.Id;
               input.checked = config.AllowedUserIds.some(id => id.replaceAll('-', '').toLowerCase() === user.Id.replaceAll('-', '').toLowerCase());
               const text = document.createElement('span'); text.textContent = user.Name;
               label.append(input, text); container.append(label);
             });
+            loaded = true;
+            page.querySelector('#anifinSave').disabled = false;
+            page.querySelector('#anifinRefresh').disabled = false;
+            page.querySelector('#anifinStatus').textContent = '';
+          } catch (error) {
+            console.warn('AniFin settings could not load:', error.message);
+            page.querySelector('#anifinStatus').textContent = 'Could not load settings. Reload this page before making changes.';
           } finally { Dashboard.hideLoadingMsg(); }
         });
         page.querySelector('#anifinForm').addEventListener('submit', async function (event) {
-          event.preventDefault(); Dashboard.showLoadingMsg();
+          event.preventDefault();
+          if (!loaded) return;
+          Dashboard.showLoadingMsg();
           try {
             const config = await ApiClient.getPluginConfiguration(pluginId);
             config.Enabled = page.querySelector('#anifinEnabled').checked;
@@ -57,6 +72,7 @@
           } finally { Dashboard.hideLoadingMsg(); }
         });
         page.querySelector('#anifinRefresh').addEventListener('click', async function () {
+          if (!loaded) return;
           const config = await ApiClient.getPluginConfiguration(pluginId); config.CacheRevision++;
           Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
         });
