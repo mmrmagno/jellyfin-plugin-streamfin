@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+.jellyfin/
+artifacts/
+.test-state/
+*.user
+*.secret
+tests/Fixtures/*.html
+__pycache__/

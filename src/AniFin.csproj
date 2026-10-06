@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Jellyfin.Plugin.AniFin</AssemblyName>
+    <RootNamespace>AniFin</RootNamespace>
+    <Version>0.1.0.0</Version>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <JellyfinReferencePath Condition="'$(JellyfinReferencePath)' == ''">../.jellyfin</JellyfinReferencePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Reference Include="$(JellyfinReferencePath)/*.dll" Private="false" />
+    <EmbeddedResource Include="Configuration.html" />
+  </ItemGroup>
+</Project>

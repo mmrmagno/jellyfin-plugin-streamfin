@@ -1,0 +1,15 @@
+name: Build AniFin
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/fetch-references.sh
+      - run: bash scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AniFin
+          path: artifacts/AniFin-0.1.0.0.zip

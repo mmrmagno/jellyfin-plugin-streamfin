@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html><head><title>AniFin</title></head><body>
+<div id="anifinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+  <div data-role="content"><div class="content-primary">
+    <h2>AniFin</h2>
+    <p>Browse anime in the Anime channel and play Japanese audio with English subtitles.</p>
+    <form id="anifinForm">
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="anifinEnabled"><span>Enable Anime channel</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeGgEnabled"><span>Enable AnimeGG</span></label>
+      <h3>Who can watch</h3><p>Only selected users can browse or play. With no users selected, access is disabled.</p>
+      <div id="anifinUsers"></div>
+      <div class="inputContainer"><label class="inputLabel" for="anifinCache">Metadata cache (minutes)</label><input is="emby-input" type="number" id="anifinCache" min="1" max="1440" required></div>
+      <p>AniList provides catalog metadata. Availability depends on AnimeGG. Source changes can temporarily interrupt playback. English subtitles on this source are part of the video.</p>
+      <button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
+      <button is="emby-button" type="button" id="anifinRefresh" class="raised block"><span>Refresh catalog cache</span></button>
+    </form>
+    <script>
+      (function () {
+        const pluginId = 'a74fdb2e-938f-483b-b2ef-f527e14ff724';
+        const page = document.querySelector('#anifinConfig');
+        page.addEventListener('pageshow', async function () {
+          Dashboard.showLoadingMsg();
+          try {
+            const [config, users] = await Promise.all([ApiClient.getPluginConfiguration(pluginId), ApiClient.getUsers()]);
+            page.querySelector('#anifinEnabled').checked = config.Enabled;
+            page.querySelector('#animeGgEnabled').checked = config.AnimeGgEnabled;
+            page.querySelector('#anifinCache').value = config.MetadataCacheMinutes;
+            const container = page.querySelector('#anifinUsers');
+            container.replaceChildren();
+            users.forEach(user => {
+              const label = document.createElement('label'); label.className = 'checkboxContainer';
+              const input = document.createElement('input', {is: 'emby-checkbox'}); input.type = 'checkbox'; input.setAttribute('is', 'emby-checkbox'); input.value = user.Id;
+              input.checked = config.AllowedUserIds.some(id => id.replaceAll('-', '').toLowerCase() === user.Id.replaceAll('-', '').toLowerCase());
+              const text = document.createElement('span'); text.textContent = user.Name;
+              label.append(input, text); container.append(label);
+            });
+          } finally { Dashboard.hideLoadingMsg(); }
+        });
+        page.querySelector('#anifinForm').addEventListener('submit', async function (event) {
+          event.preventDefault(); Dashboard.showLoadingMsg();
+          try {
+            const config = await ApiClient.getPluginConfiguration(pluginId);
+            config.Enabled = page.querySelector('#anifinEnabled').checked;
+            config.AnimeGgEnabled = page.querySelector('#animeGgEnabled').checked;
+            config.MetadataCacheMinutes = Number(page.querySelector('#anifinCache').value);
+            config.AllowedUserIds = Array.from(page.querySelectorAll('#anifinUsers input:checked'), input => input.value);
+            config.CacheRevision++;
+            Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
+          } finally { Dashboard.hideLoadingMsg(); }
+        });
+        page.querySelector('#anifinRefresh').addEventListener('click', async function () {
+          const config = await ApiClient.getPluginConfiguration(pluginId); config.CacheRevision++;
+          Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
+        });
+      })();
+    </script>
+  </div></div>
+</div></body></html>
