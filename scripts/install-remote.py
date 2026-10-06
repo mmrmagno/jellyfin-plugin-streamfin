@@ -84,11 +84,10 @@ try:
         elif preserve:
             return
         node.text = value
-    setting('Enabled', 'true')
+    setting('Enabled', 'true', preserve=True)
     allowed = configuration.find('AllowedUserIds')
-    if allowed is not None:
-        configuration.remove(allowed)
-    ET.SubElement(ET.SubElement(configuration, 'AllowedUserIds'), 'string').text = user_id
+    if allowed is None:
+        ET.SubElement(ET.SubElement(configuration, 'AllowedUserIds'), 'string').text = user_id
     setting('AnimeGgEnabled', 'true', preserve=True)
     setting('AnimeHeavenEnabled', 'true', preserve=True)
     setting('HideAdultContent', 'true', preserve=True)
@@ -103,7 +102,7 @@ try:
     for _ in range(30):
         check = subprocess.run(['docker', 'exec', 'jellyfin', 'curl', '-fsS', '--max-time', '3', 'http://localhost:8096/health'], capture_output=True)
         if check.returncode == 0:
-            print('Jellyfin is healthy. AniFin enabled only for ' + args.user + '.', flush=True)
+            print('Jellyfin is healthy. Existing AniFin enablement and access settings preserved; new installations default to ' + args.user + '.', flush=True)
             print('Backup: ' + str(backup / 'jellyfin-config.tar.gz'), flush=True)
             break
         time.sleep(2)

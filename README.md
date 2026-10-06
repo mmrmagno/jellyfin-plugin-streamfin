@@ -90,7 +90,7 @@ Verified on 2026-10-06 against an isolated copy of the exact server image: 68 pa
 
 `scripts/search-smoke.py` checks remote title discovery, Japanese title aliases, both native search endpoints, and hiding previously cached Ecchi titles. `scripts/browser-search.cjs` checks the sidebar icon and search-to-playback flow using the saved disposable browser session. `scripts/browser-settings.cjs` verifies loading/saving permissions and filters, the clear-search button, and failed-load protection. `scripts/clear-search-smoke.py` checks administrator-only clearing and saved user data; rerun it with `--verify-after-restart` after restarting the disposable server to verify persistence and rediscovery.
 
-For the existing mediastack host, `scripts/install-remote.py` runs as root with `--config`, `--artifact`, and `--backups` paths plus `--user marc`. It requires the tested server version, stops only Jellyfin, takes a consistent configuration backup, installs the package with service-user ownership, and restores the previous plugin/settings if startup fails. Do not use the disposable account bootstrap script on production.
+For the existing mediastack host, `scripts/install-remote.py` runs as root with `--config`, `--artifact`, and `--backups` paths plus `--user marc`. It requires the tested server version, stops only Jellyfin, takes a consistent configuration backup, installs the package with service-user ownership, and restores the previous plugin/settings if startup fails. Upgrades preserve the existing enabled state and allowed users, including an empty access list; `--user` supplies the default access list only when that setting is absent. Do not use the disposable account bootstrap script on production.
 
 ## Credits
 
