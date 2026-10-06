@@ -25,7 +25,7 @@ const fs = require('node:fs');
     await page.locator(':text-is("Episodes · ' + provider + '"):visible').last().waitFor({timeout: 45000});
     await page.locator(':text-is("Episodes · ' + provider + '"):visible').last().click();
     const firstEpisode = provider === 'AnimeHeaven' ? '1 · Episode 1' : '1 · Asteroid Blues';
-    await page.locator(':text-is("' + firstEpisode + '"):visible').last().waitFor({timeout: 45000});
+    await page.getByText(firstEpisode, {exact: false}).last().waitFor({timeout: 45000});
     await page.locator('button.btnPlay:visible').first().waitFor({timeout: 45000});
     await page.locator('button.btnPlay:visible').first().click();
     await page.waitForFunction(() => {const v = document.querySelector('video'); return v && v.currentTime > 3 && !v.paused;}, null, {timeout: 90000});
