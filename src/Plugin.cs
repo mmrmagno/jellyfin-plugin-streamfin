@@ -10,6 +10,7 @@ public sealed class Configuration : BasePluginConfiguration
     public bool Enabled { get; set; }
     public string[] AllowedUserIds { get; set; } = [];
     public bool AnimeGgEnabled { get; set; } = true;
+    public bool AnimeHeavenEnabled { get; set; } = true;
     public bool HideAdultContent { get; set; } = true;
     public bool HideEcchiContent { get; set; } = true;
     public int MetadataCacheMinutes { get; set; } = 60;

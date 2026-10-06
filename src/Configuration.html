@@ -7,6 +7,8 @@
     <form id="anifinForm">
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="anifinEnabled"><span>Enable Anime channel</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeGgEnabled"><span>Enable AnimeGG</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeHeavenEnabled"><span>Enable AnimeHeaven</span></label>
+      <p>Open a title and choose Episodes · AnimeGG or Episodes · AnimeHeaven. If one source fails, return to the title and choose the other.</p>
       <h3>Content filters</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult / explicit titles</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide Ecchi / sexual fan service</span></label>
@@ -14,7 +16,7 @@
       <h3>Who can watch</h3><p>Only selected users can browse or play. With no users selected, access is disabled.</p>
       <div id="anifinUsers"></div>
       <div class="inputContainer"><label class="inputLabel" for="anifinCache">Metadata cache (minutes)</label><input is="emby-input" type="number" id="anifinCache" min="1" max="1440" required></div>
-      <p>AniList provides catalog metadata. Availability depends on AnimeGG. Source changes can temporarily interrupt playback. English subtitles on this source are part of the video.</p>
+      <p>AniList provides catalog metadata. Availability depends on the enabled providers. Source changes can temporarily interrupt playback. English subtitles are part of the video.</p>
       <p id="anifinStatus" role="status">Loading settings…</p>
       <button is="emby-button" type="submit" id="anifinSave" class="raised button-submit block" disabled><span>Save</span></button>
       <button is="emby-button" type="button" id="anifinRefresh" class="raised block" disabled><span>Refresh catalog cache</span></button>
@@ -39,6 +41,7 @@
             const [config, users] = await Promise.all([ApiClient.getPluginConfiguration(pluginId), ApiClient.getUsers()]);
             page.querySelector('#anifinEnabled').checked = config.Enabled;
             page.querySelector('#animeGgEnabled').checked = config.AnimeGgEnabled;
+            page.querySelector('#animeHeavenEnabled').checked = config.AnimeHeavenEnabled !== false;
             page.querySelector('#hideAdult').checked = config.HideAdultContent !== false;
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
             page.querySelector('#anifinCache').value = config.MetadataCacheMinutes;
@@ -69,6 +72,7 @@
             const config = await ApiClient.getPluginConfiguration(pluginId);
             config.Enabled = page.querySelector('#anifinEnabled').checked;
             config.AnimeGgEnabled = page.querySelector('#animeGgEnabled').checked;
+            config.AnimeHeavenEnabled = page.querySelector('#animeHeavenEnabled').checked;
             config.HideAdultContent = page.querySelector('#hideAdult').checked;
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
             config.MetadataCacheMinutes = Number(page.querySelector('#anifinCache').value);

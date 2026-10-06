@@ -48,21 +48,29 @@ public sealed class SafeHttp : IDisposable
         var host = uri.IdnHost.ToLowerInvariant();
         var site = host is "www.animegg.org" or "animegg.org";
         var catalog = host == "graphql.anilist.co";
+        var heaven = host == "animeheaven.me" || (media && AnimeHeavenSource.IsMediaHost(host));
         var cdn = media && (host == "vidcache.net" || host.EndsWith(".vidcache.net", StringComparison.Ordinal));
-        if (uri.Scheme != "https" || uri.UserInfo.Length > 0 || (!site && !catalog && !cdn)
+        if (uri.Scheme != "https" || uri.UserInfo.Length > 0 || (!site && !catalog && !cdn && !heaven)
             || (!cdn && uri.Port != 443) || (cdn && uri.Port is not (443 or 8161 or 8162 or 8163 or 8164 or 8165 or 8166)))
             throw new ProviderException("Source returned an unsupported destination.");
     }
 
     public async Task<HttpResponseMessage> OpenAsync(Uri uri, bool media, CancellationToken ct,
-        string? range = null, string? json = null, bool head = false)
+        string? range = null, string? json = null, bool head = false, IReadOnlyDictionary<string, string>? headers = null)
     {
+        var originalHost = uri.IdnHost;
         for (var redirect = 0; redirect < 6; redirect++)
         {
             Validate(uri, media);
             using var request = new HttpRequestMessage(head ? HttpMethod.Head : json is null ? HttpMethod.Get : HttpMethod.Post, uri);
             if (json is not null) request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-            if (media) request.Headers.Referrer = new Uri("https://www.animegg.org/");
+            if (headers is not null)
+                foreach (var pair in headers)
+                {
+                    if (pair.Key is not ("Referer" or "Origin" or "Cookie")) throw new ProviderException("Unsupported source header.");
+                    // A gate cookie is specific to one website, never forward it to a CDN redirect.
+                    if (pair.Key != "Cookie" || uri.IdnHost == originalHost) request.Headers.Add(pair.Key, pair.Value);
+                }
             if (range is not null) request.Headers.Range = System.Net.Http.Headers.RangeHeaderValue.Parse(range);
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location)
@@ -76,11 +84,11 @@ public sealed class SafeHttp : IDisposable
         throw new ProviderException("Too many source redirects.");
     }
 
-    public async Task<string> TextAsync(Uri uri, CancellationToken ct, string? json = null)
+    public async Task<string> TextAsync(Uri uri, CancellationToken ct, string? json = null, IReadOnlyDictionary<string, string>? headers = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        using var response = await OpenAsync(uri, false, timeout.Token, json: json);
+        using var response = await OpenAsync(uri, false, timeout.Token, json: json, headers: headers);
         if (!response.IsSuccessStatusCode)
             throw new ProviderException($"Source returned HTTP {(int)response.StatusCode}. Please try again later.");
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
@@ -92,7 +100,8 @@ public sealed class SafeHttp : IDisposable
             if (output.Length + count > 4 * 1024 * 1024) throw new ProviderException("Source response is too large.");
             output.Write(buffer, 0, count);
         }
-        return Encoding.UTF8.GetString(output.ToArray());
+        var text = Encoding.UTF8.GetString(output.ToArray());
+        return text;
     }
     public void Dispose() => client.Dispose();
 }

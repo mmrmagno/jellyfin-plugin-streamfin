@@ -31,7 +31,7 @@ const fs = require('node:fs');
       page.locator('#anifinSave').click()
     ]);
     const after = await (await context.request.get(base + path, {headers})).json();
-    for (const key of ['Enabled', 'AnimeGgEnabled', 'HideAdultContent', 'HideEcchiContent', 'AllowedUserIds']) {
+    for (const key of ['Enabled', 'AnimeGgEnabled', 'AnimeHeavenEnabled', 'HideAdultContent', 'HideEcchiContent', 'AllowedUserIds']) {
       if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) throw new Error('Saving unchanged settings changed ' + key);
     }
     console.log('PASS: saving preserves permissions and content filters');

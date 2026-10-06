@@ -14,6 +14,8 @@ public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalo
         var item = library.GetItemById(id);
         if (item?.ChannelId != ChannelId) return true;
         var parts = item.ExternalId?.Split('/');
+        if (parts is { Length: >= 4 } && parts[0] is "source" or "episode"
+            && !SourceRegistry.IsEnabled(SourceRegistry.Split(parts[3]).Provider)) return false;
         if (parts is not { Length: >= 3 } || parts[0] is not ("title" or "source" or "episode") || !int.TryParse(parts[2], out var animeId)) return true;
         if (decisions.TryGetValue(animeId, out var allowed)) return allowed;
         try { return decisions[animeId] = AniListCatalog.IsAllowed(await catalog.GetAsync(animeId, ct)); }

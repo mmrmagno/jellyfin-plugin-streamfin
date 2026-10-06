@@ -2,13 +2,15 @@
 
 An online anime channel for Jellyfin. Open **Anime**, browse **Popular**, **This Season**, or **A–Z**, choose a title, then play an episode with Jellyfin's own player. Use Jellyfin's **magnifying glass** to search the online catalog, including titles you have not browsed yet. Discovered titles also appear in **Anime → Search results**.
 
-AniFin uses AniList for catalog metadata and contacts AnimeGG directly for subtitled streams. It does not run Seanime, download episodes into your media library, or use torrents/debrid. Jellyfin can temporarily buffer or transcode during playback.
+AniFin uses AniList for catalog metadata and contacts AnimeGG and AnimeHeaven directly for subtitled streams. It does not run Seanime, download episodes into your media library, or use torrents/debrid. Jellyfin can temporarily buffer or transcode during playback.
 
 ## Compatibility
 
-This first build targets Jellyfin **12.1.0**, specifically `jellyfin/jellyfin:12.1.20260915-010956`. It is compiled against that image's API assemblies with .NET 10. Other server versions need a matching build and testing. Browser support is the initial target; native clients are not yet certified.
+This build targets Jellyfin **12.1.0**, specifically `jellyfin/jellyfin:12.1.20260915-010956`. It is compiled against that image's API assemblies with .NET 10. Other server versions need a matching build and testing. Browser playback is verified, and phone playback with AnimeGG was confirmed by the user. TV clients still need testing.
 
-AnimeGG's English subtitles are burned into the video, so there is no separate subtitle switch. The highest available source quality is selected. Catalog listings do not guarantee source availability. If a title match is ambiguous, select the correct source title.
+Both providers’ English subtitles are burned into the video, so there is no separate subtitle switch. AnimeGG selects its highest available quality; AnimeHeaven uses the site’s source quality. Catalog listings do not guarantee source availability. If a title match is ambiguous, select the correct source title.
+
+Open a title and choose **Episodes · AnimeGG** or **Episodes · AnimeHeaven**. Each provider has an independent switch under **Dashboard → Plugins → AniFin**. If one fails or lacks an episode, return to the title and choose the other. Switching is manual: AniFin does not swap different video files partway through playback. Existing AnimeGG episode IDs stay unchanged. Disabling a source hides its cached items and denies playback while retaining saved progress for re-enabling it.
 
 Online search accepts 2–100 characters, returns up to 30 matches per query, supports AniList's English/Japanese title matching, and merges results with normal library search. Searches scoped to unrelated libraries remain local. AniList errors/timeouts leave local search available.
 
@@ -25,21 +27,23 @@ bash scripts/fetch-references.sh
 bash scripts/build.sh
 ```
 
-The scripts pin both the Jellyfin image and .NET SDK image by digest. Reference assemblies stay in `.jellyfin/` and are never packaged or committed. The build runs dependency-free executable tests and produces `artifacts/AniFin-0.3.0.0.zip`.
+AnimeHeaven uses the `curl` executable already included in the pinned Jellyfin image for bounded HTML requests; that site returned unrelated pages through .NET HTTP on the target host. Video still uses the C# relay. Page requests disable curl configuration, proxy use, and automatic redirects, and pin a validated public address. Other server installations need `curl` to enable AnimeHeaven.
+
+The scripts pin both the Jellyfin image and .NET SDK image by digest. Reference assemblies stay in `.jellyfin/` and are never packaged or committed. The build runs dependency-free executable tests and produces `artifacts/AniFin-0.4.0.0.zip`.
 
 ## Install
 
 1. Back up Jellyfin's configuration and stop Jellyfin.
-2. Move previous AniFin versions outside the plugins directory. Extract the ZIP into `<config>/plugins/AniFin_0.3.0.0/`. Make it readable by the Jellyfin service user.
+2. Move previous AniFin versions outside the plugins directory. Extract the ZIP into `<config>/plugins/AniFin_0.4.0.0/`. Make it readable by the Jellyfin service user.
 3. Start Jellyfin, then open **Dashboard → Plugins → AniFin**.
-4. Enable AnimeGG and the channel, select permitted users, and save. No user has access by default.
+4. Enable the desired providers and the channel, select permitted users, and save. No user has access by default.
 5. Run Jellyfin's **Refresh Channels** scheduled task if Anime has not appeared, then refresh the browser.
 
 On mediastack, `<config>` is `~/mediastack/jellyfin/config` and Jellyfin runs as `1500:1500`. Keep the existing read-only container root and read-only media mount. AniFin writes through Jellyfin's existing configuration/cache locations only.
 
 This is a private repository. Use manual installation; do not embed a GitHub token in a plugin repository URL.
 
-To roll back, stop Jellyfin, move `plugins/AniFin_0.3.0.0` outside the plugins directory, restore the previous version/settings from the installation backup, and start Jellyfin. No existing media files are changed.
+To roll back, stop Jellyfin, move `plugins/AniFin_0.4.0.0` outside the plugins directory, restore the previous version/settings from the installation backup, and start Jellyfin. No existing media files are changed.
 
 The channel tile includes a shuriken image. Jellyfin Web uses a separate, fixed sidebar icon; `scripts/web-icon.py` applies a small CSS rule scoped to the Anime channel, preserving existing branding CSS. It draws the icon with a CSS clip path, so no embedded image permission is required. Run it on the server with `--url`, `--config`, `--user marc`, and `--icon src/Assets/shuriken.svg`. The selected user needs an existing administrator session. Use `--remove` to remove just this rule. It does not change native TV/mobile client icons.
 
@@ -48,7 +52,7 @@ The channel tile includes a shuriken image. Jellyfin Web uses a separate, fixed 
 You can work on providers without learning all of Jellyfin's APIs:
 
 - `Models.cs` defines ordinary records and `IAnimeSource`: search titles, list episodes, and resolve video URLs.
-- `AnimeGgSource.cs` implements those three operations. It parses HTML/data strings without evaluating website scripts. To add another site, implement this interface and register the adapter.
+- `AnimeGgSource.cs` and `AnimeHeavenSource.cs` implement those three operations. They parse HTML/data without evaluating website scripts. `SourceRegistry.cs` routes requests and isolates provider failures. To add another site, implement this interface and register the adapter.
 - `AniListCatalog.cs` fetches title metadata and keeps a bounded in-memory cache. Catalog pages are fetched on demand rather than importing the entire catalog.
 - `OnlineSearch.cs` adds online matches to Jellyfin's normal search and persists discovered series for native navigation. Each series has a distinct grouping key, so Jellyfin does not collapse unrelated matches.
 - `ContentAccess.cs` rechecks the content policy for cached titles and their descendants.
@@ -80,7 +84,7 @@ python3 scripts/smoke.py --url http://TEST_SERVER:8096
 
 Live provider and browser tests are separate from deterministic build tests. The integration client uses Jellyfin 12's `Authorization: MediaBrowser … Token=…` syntax.
 
-Verified on 2026-10-06 against an isolated copy of the exact server image: 36 parser/security/content-policy checks; native Chromium catalog navigation and playback; seeking to two minutes; pause/resume; saved resume position and watched state; and denied cached-item/playback access after revocation. Native TV/mobile clients and watch-state sharing across catalog categories still need testing.
+Verified on 2026-10-06 against an isolated copy of the exact server image: 68 parser/security/content-policy/routing checks; native Chromium catalog navigation and playback; seeking to two minutes; pause/resume; saved resume position and watched state; and denied cached-item/playback access after revocation. Phone playback with AnimeGG was also confirmed by the user. TV clients and watch-state sharing across catalog categories/providers still need testing.
 
 `scripts/browser-smoke.cjs` exercises the browser flow after the API smoke test. Set `PLAYWRIGHT_MODULE` to an installed `playwright-core` module, `CHROMIUM_PATH` if needed, and `ANIFIN_TEST_URL` to the disposable server. It reads the protected test session file and saves screenshots under `artifacts/`.
 
@@ -90,4 +94,6 @@ For the existing mediastack host, `scripts/install-remote.py` runs as root with 
 
 ## Credits
 
-The AnimeGG adapter is adapted from Pal's MIT-licensed [Seanime provider](https://github.com/Seanime-contributions/Seanime-Providers/tree/main/src/anime/animegg). See `THIRD_PARTY_NOTICES.md`. AniFin is independent of Seanime and Jellyfin.
+The AnimeGG and AnimeHeaven adapters are adapted from Pal's MIT-licensed [Seanime providers](https://github.com/Seanime-contributions/Seanime-Providers/tree/main/src/anime). See `THIRD_PARTY_NOTICES.md`. AniFin is independent of Seanime and Jellyfin.
+
+`scripts/providers-smoke.py` verifies both source choices, AnimeHeaven playback probing, unauthorized access, independent enable switches, retained episode IDs/progress, and search with AnimeGG disabled. Run `scripts/browser-search.cjs` with `ANIFIN_TEST_PROVIDER=AnimeHeaven` to verify the new provider through native browser playback and seeking. The executable tests accept `--provider-live` for an optional real AnimeHeaven listing and bounded byte-range fetch.

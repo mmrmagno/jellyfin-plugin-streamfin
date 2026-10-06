@@ -30,7 +30,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
     {
         if (!CanSearch(query) || contexts.HttpContext is not { } context) return [];
         var auth = await authorization.GetAuthorizationInfo(context);
-        if (!auth.IsAuthenticated || !Plugin.Allows(auth.UserId) || Plugin.Instance?.Configuration.AnimeGgEnabled != true
+        if (!auth.IsAuthenticated || !Plugin.Allows(auth.UserId) || !SourceRegistry.AnyEnabled
             || (query.UserId is { } user && user != Guid.Empty && user != auth.UserId)) return [];
         try
         {

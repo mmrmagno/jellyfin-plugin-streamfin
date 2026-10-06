@@ -90,6 +90,7 @@ try:
         configuration.remove(allowed)
     ET.SubElement(ET.SubElement(configuration, 'AllowedUserIds'), 'string').text = user_id
     setting('AnimeGgEnabled', 'true', preserve=True)
+    setting('AnimeHeavenEnabled', 'true', preserve=True)
     setting('HideAdultContent', 'true', preserve=True)
     setting('HideEcchiContent', 'true', preserve=True)
     setting('MetadataCacheMinutes', '60', preserve=True)

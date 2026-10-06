@@ -30,4 +30,84 @@ Check(!AniListCatalog.IsAllowed(ordinary with { IsAdult = true }, true, false), 
 Check(!AniListCatalog.IsAllowed(ordinary with { Genres = ["Ecchi"] }, false, true), "ecchi filter applies independently of adult flag");
 Check(AniListCatalog.IsAllowed(ordinary with { Genres = ["Ecchi"] }, true, false), "ecchi option can be disabled separately");
 Check(AniListCatalog.IsAllowed(ordinary with { IsAdult = true }, false, false), "filters respect explicitly disabled configuration");
+var heavenTitles = AnimeHeavenSource.ParseSearch("""
+<div class='similarimg'><a href='anime.php?abc12'><img alt='Test &amp; Show' src='cover'></a></div>
+<a href="anime.php?abc12"><img alt="Duplicate"></a><a href='anime.php?dub12'><img alt='Test Show (Dub)'></a>
+<a href='advert.php?x'><img alt='Ad'></a>
+""");
+Check(heavenTitles.Count == 1 && heavenTitles[0] == new SourceTitle("abc12", "Test & Show"), "AnimeHeaven search decodes, deduplicates and excludes dub entries");
+var heavenEpisodes = AnimeHeavenSource.ParseEpisodes("""
+<a id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" onclick='ignored()'><div class='watch2'>10</div></a>
+<a id='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'><div class="watch2">2.5</div></a>
+<a id='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'><div class='watch2'>2.5</div></a>
+""");
+Check(heavenEpisodes.Select(e => e.Number).SequenceEqual(new[] { 2.5m, 10m }), "AnimeHeaven episodes use stable keys and numeric order");
+foreach (var bad in new[] { "../x", "a&other=1", "a;key=evil", "a/b", "", "https://localhost" })
+    Reject(() => AnimeHeavenSource.ValidateId(bad), "AnimeHeaven rejects identifier " + bad);
+Reject(() => AnimeHeavenSource.ValidateId("abc12", episode: true), "AnimeHeaven gate requires an episode key");
+var heavenVideo = AnimeHeavenSource.ParseVideos("""<video><source src='https://ax.animeheaven.me/video.mp4?token&amp;expiry' type='video/mp4'></video>""")[0];
+Check(heavenVideo.Url.Query == "?token&expiry" && heavenVideo.HardcodedEnglishSubtitles, "AnimeHeaven parses escaped MP4 URL");
+Check(heavenVideo.Headers["Referer"] == "https://animeheaven.me/" && heavenVideo.Headers["Origin"] == "https://animeheaven.me", "provider-specific media headers");
+Reject(() => AnimeHeavenSource.ParseVideos("<script>execute()</script>"), "AnimeHeaven missing video fails explicitly");
+foreach (var bad in new[] { "https://localhost/video.mp4", "http://ax.animeheaven.me/video.mp4", "https://ax.animeheaven.me:8161/video.mp4", "https://ax.animeheaven.me.evil.example/video.mp4", "https://ax.animeheaven.me/private" })
+    Reject(() => AnimeHeavenSource.ParseVideos($"<source src='{bad}'>"), "AnimeHeaven rejects stream " + bad);
+var rotated = AnimeHeavenSource.ParseVideos("""<source src='https://unknown.example/video.mp4'><source src='https://ct.animeheaven.me/video.mp4?valid'>""");
+Check(rotated.Count == 1 && rotated[0].Url.Host == "ct.animeheaven.me", "unrecognized rotated CDN cannot hide a validated backup");
+SafeHttp.Validate(heavenVideo.Url, true);
+Check(true, "AnimeHeaven CDN permitted for media");
+Reject(() => SafeHttp.Validate(heavenVideo.Url, false), "AnimeHeaven CDN excluded from metadata requests");
+Reject(() => SafeHttp.Validate(new Uri("https://other.animeheaven.me/video.mp4"), true), "unreviewed AnimeHeaven subdomain denied");
+var legacyKey = SourceRegistry.Key("animegg", "cowboy-bebop-episode-1");
+Check(legacyKey == "cowboy-bebop-episode-1" && SourceRegistry.Split(legacyKey) == ("animegg", legacyKey), "legacy AnimeGG IDs unchanged");
+Check(SourceRegistry.Split(SourceRegistry.Key("animeheaven", "abc12")) == ("animeheaven", "abc12"), "provider keys round trip without collisions");
+var config = new Configuration { Enabled = true, AnimeGgEnabled = false, AnimeHeavenEnabled = true };
+Check(!SourceRegistry.IsEnabled("animegg", config) && SourceRegistry.IsEnabled("animeheaven", config), "provider enable switches are independent");
+Check(!SourceRegistry.IsEnabled("unknown", config) && !SourceRegistry.IsEnabled("animeheaven", new Configuration()), "unknown or globally disabled providers denied");
+var matched = await SourceRegistry.MatchAsync(new FakeSource((_, _) => Task.FromResult<IReadOnlyList<SourceTitle>>([new("a", "Example"), new("b", "Example Season 2")])), ordinary, default);
+Check(matched.Titles.Count == 1 && matched.Titles[0].Id == "a", "source matching prefers exact title over another season");
+var unrelated = await SourceRegistry.MatchAsync(new FakeSource((_, _) => Task.FromResult<IReadOnlyList<SourceTitle>>([new("ad", "Unrelated promoted title")])), ordinary, default);
+Check(unrelated.Titles.Count == 0, "unrelated promoted titles cannot become source matches");
+var failure = await SourceRegistry.MatchAsync(new FakeSource((_, _) => throw new HttpRequestException("upstream failure")), ordinary, default);
+Check(failure.Error is not null && failure.Titles.Count == 0, "one provider failure becomes a source-specific status");
+using (var cancelled = new CancellationTokenSource())
+{
+    cancelled.Cancel();
+    try { await SourceRegistry.MatchAsync(new FakeSource((_, ct) => Task.FromCanceled<IReadOnlyList<SourceTitle>>(ct)), ordinary, cancelled.Token); throw new Exception("Cancellation swallowed"); }
+    catch (OperationCanceledException) { Check(true, "navigation cancellation propagates"); }
+}
+var redirectResponse = AnimeHeavenPages.ParseResponse("HTTP/1.1 302 Found\r\nLocation: /gate.php\r\n\r\n");
+Check(redirectResponse.Status == 302 && redirectResponse.Location == "/gate.php", "curl page redirects are parsed for validation before following");
+Check(AnimeHeavenPages.ParseResponse("HTTP/2 200\r\nContent-Type: text/html\r\n\r\n<body>ok</body>").Body == "<body>ok</body>", "curl page headers are separate from body");
+Reject(() => AnimeHeavenPages.ParseResponse("<html>not an HTTP response</html>"), "malformed curl response rejected");
+if (args.Contains("--provider-live"))
+{
+    using var http = new SafeHttp();
+    var heaven = new AnimeHeavenSource();
+    var results = await heaven.SearchAsync("Cowboy Bebop", default);
+    var series = results.Single(t => t.Title == "Cowboy Bebop");
+    Console.WriteLine("Live matched title: " + series.Title + " / " + series.Id);
+    var listed = await heaven.EpisodesAsync(series.Id, default);
+    Check(listed.Count == 26 && listed[0].Number == 1, "live AnimeHeaven title and episode listing");
+    var gate = await AnimeHeavenPages.TextAsync(new Uri("https://animeheaven.me/gate.php"), default, headers: new Dictionary<string, string> { ["Cookie"] = "key=" + listed[0].Id, ["Referer"] = "https://animeheaven.me/anime.php" });
+    foreach (System.Text.RegularExpressions.Match tag in System.Text.RegularExpressions.Regex.Matches(gate, "<source[^>]+>", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+    {
+        var link = System.Text.RegularExpressions.Regex.Match(tag.Value, @"src=['""]([^'""]+)['""]").Groups[1].Value;
+        if (Uri.TryCreate(link, UriKind.Absolute, out var parsed)) Console.WriteLine("Observed media destination: " + parsed.GetLeftPart(UriPartial.Path));
+    }
+    var video = AnimeHeavenSource.ParseVideos(gate)[0];
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    using var response = await http.OpenAsync(video.Url, true, timeout.Token, range: "bytes=0-1023", headers: video.Headers);
+    Check(response.StatusCode == HttpStatusCode.PartialContent && response.Content.Headers.ContentType?.MediaType == "video/mp4", "live AnimeHeaven range request through SafeHttp");
+    var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token);
+    Check(bytes.Length == 1024, "live AnimeHeaven bounded video read");
+}
 Console.WriteLine($"{count} checks passed.");
+
+sealed class FakeSource(Func<string, CancellationToken, Task<IReadOnlyList<SourceTitle>>> search) : IAnimeSource
+{
+    public string Id => "fake";
+    public string Name => "Fake";
+    public Task<IReadOnlyList<SourceTitle>> SearchAsync(string title, CancellationToken ct) => search(title, ct);
+    public Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string id, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<ResolvedVideo>> ResolveAsync(string id, CancellationToken ct) => throw new NotSupportedException();
+}

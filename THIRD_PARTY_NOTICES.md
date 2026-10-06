@@ -14,6 +14,15 @@ https://github.com/Seanime-contributions/Seanime-Providers/tree/main/src/anime/a
 (provider version 1.0.1, inspected 2026-10-06). The C# implementation adds request
 validation, cancellation, numeric sorting, strict subtitle selection, and explicit errors.
 
+## AnimeHeaven provider
+
+`src/AnimeHeavenSource.cs` adapts the search, episode-key cookie, and MP4 resolution
+approach from https://github.com/Seanime-contributions/Seanime-Providers/tree/main/src/anime/animeheaven
+(provider version 1.1.4, inspected 2026-10-06). The C# adapter adds strict IDs,
+destination validation, bounded requests, cancellation, and subtitle-only matching.
+
+Both provider adapters above use the following license:
+
 MIT License
 
 Copyright (c) 2025 Pal

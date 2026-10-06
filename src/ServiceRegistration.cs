@@ -14,6 +14,8 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<SafeHttp>();
         services.AddSingleton<AniListCatalog>();
         services.AddSingleton<IAnimeSource, AnimeGgSource>();
+        services.AddSingleton<IAnimeSource, AnimeHeavenSource>();
+        services.AddSingleton<SourceRegistry>();
         services.AddSingleton<StreamRelay>();
         services.AddSingleton<IChannel, AnimeChannel>();
         services.AddSingleton<SearchHistory>();

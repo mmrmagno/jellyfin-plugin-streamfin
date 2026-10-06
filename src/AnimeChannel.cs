@@ -17,13 +17,13 @@ using MediaBrowser.Model.Drawing;
 
 namespace AniFin;
 
-public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, StreamRelay relay,
+public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources, StreamRelay relay,
     IHttpContextAccessor contexts, IAuthorizationContext authorization, IMediaEncoder encoder, ILibraryManager library, ILogger<AnimeChannel> logger)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
     public string Name => "Anime";
     public string Description => "AniFin · Browse anime and stream Japanese audio with English subtitles.";
-    public string DataVersion => "anifin-3-" + AniListCatalog.PolicyKey + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
+    public string DataVersion => "anifin-4-" + SourceRegistry.CacheKey + "-" + AniListCatalog.PolicyKey + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
     public string HomePageUrl => "https://github.com/mmrmagno/jellyfin-plugin-anifin";
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
     public bool IsEnabledFor(string userId) => Guid.TryParse(userId, out var id) && Plugin.Allows(id);
@@ -54,7 +54,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
     public async Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, CancellationToken ct)
     {
         if (query.UserId != Guid.Empty && !Plugin.Allows(query.UserId)) throw new UnauthorizedAccessException("AniFin is not enabled for this account.");
-        if (Plugin.Instance?.Configuration is not { Enabled: true, AnimeGgEnabled: true }) return Result([]);
+        if (Plugin.Instance?.Configuration is not { Enabled: true }) return Result([]);
         var id = query.FolderId ?? "";
         try { return await BrowseAsync(id, ct); }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException or TaskCanceledException && !ct.IsCancellationRequested)
@@ -64,6 +64,19 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
             // Native channels have no error banner. A non-playable status folder gives a readable explanation.
             var status = Folder(id + "/status", message, message);
             if (id.StartsWith("title/", StringComparison.Ordinal)) { status.FolderType = ChannelFolderType.Season; status.IndexNumber = 1; }
+            if (id.StartsWith("source/", StringComparison.Ordinal))
+            {
+                var parent = library.GetNewItemId(id + "Anime16", typeof(Season));
+                var saved = library.GetItemList(new InternalItemsQuery { ParentId = parent, Recursive = false }).OfType<Episode>();
+                return Result(saved.Select(item => new ChannelItemInfo
+                {
+                    Id = item.ExternalId, Name = item.Name, Type = ChannelItemType.Media,
+                    MediaType = ChannelMediaType.Video, ContentType = ChannelMediaContentType.Episode,
+                    SeriesName = item.SeriesName, Overview = item.Overview, IndexNumber = item.IndexNumber,
+                    ParentIndexNumber = item.ParentIndexNumber, ProductionYear = item.ProductionYear,
+                    RunTimeTicks = item.RunTimeTicks, Tags = item.Tags.ToList(), ProviderIds = item.ProviderIds
+                }).Append(status));
+            }
             return Result([status]);
         }
     }
@@ -110,32 +123,46 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
         {
             var anime = await catalog.GetAsync(animeId, ct);
             if (!AniListCatalog.IsAllowed(anime)) throw new ProviderException("This title is hidden by the content filter.");
-            var candidates = new List<SourceTitle>();
-            foreach (var title in anime.Aliases.Prepend(anime.Title).Distinct().Take(3))
-            {
-                candidates.AddRange(await source.SearchAsync(title, ct));
-                if (candidates.Any(c => AnimeGgSource.Normalize(c.Title) == AnimeGgSource.Normalize(title))) break;
-            }
-            var unique = candidates.DistinctBy(c => c.Id).ToArray();
-            if (unique.Length == 0) throw new ProviderException("This title is not available on AnimeGG.");
-            // A single exact title is safe to select; otherwise the user explicitly picks the source title.
+            var matches = await sources.SearchAsync(anime, ct);
             var names = anime.Aliases.Prepend(anime.Title).Select(AnimeGgSource.Normalize).ToHashSet();
-            var exact = unique.Where(c => names.Contains(AnimeGgSource.Normalize(c.Title)) && (!c.Year.HasValue || c.Year == anime.Year)).ToArray();
-            if (exact.Length == 1)
+            var items = new List<ChannelItemInfo>();
+            foreach (var match in matches)
             {
-                var season = Folder($"source/{scope}/{anime.Id}/{exact[0].Id}", "Episodes · AnimeGG", "Japanese audio with English subtitles.");
-                season.FolderType = ChannelFolderType.Season;
-                season.IndexNumber = 1;
-                season.ImageUrl = anime.Image;
-                return Result([season]);
+                foreach (var candidate in match.Titles)
+                {
+                    var item = Folder($"source/{scope}/{anime.Id}/{SourceRegistry.Key(match.Id, candidate.Id)}",
+                        match.Titles.Count == 1 && names.Contains(AnimeGgSource.Normalize(candidate.Title)) ? $"Episodes · {match.Name}" : $"{match.Name} · {candidate.Title}",
+                        "Japanese audio with English subtitles. Choose another provider here if this source is unavailable.");
+                    item.FolderType = ChannelFolderType.Season;
+                    // Both sources describe the same season; their episode numbers remain comparable.
+                    item.IndexNumber = 1;
+                    item.ImageUrl = anime.Image;
+                    items.Add(item);
+                }
+                if (match.Titles.Count == 0)
+                {
+                    var message = match.Error ?? "No matching title found.";
+                    var item = Folder($"title/{scope}/{anime.Id}/{match.Id}/status", $"{match.Name} · {message}", message);
+                    item.FolderType = ChannelFolderType.Season;
+                    item.IndexNumber = 1;
+                    items.Add(item);
+                }
             }
-            return Result(unique.Select(c =>
+            // Jellyfin deletes omitted channel entities. Retain previously discovered source
+            // folders if a provider is down/disabled, so its saved episode progress survives.
+            // ContentAccess hides disabled providers from all cached and current listings.
+            var parent = library.GetNewItemId(id + "Anime16", typeof(Series));
+            foreach (var saved in library.GetItemList(new InternalItemsQuery { ParentId = parent, Recursive = false }).OfType<Season>())
             {
-                var item = Folder($"source/{scope}/{anime.Id}/{c.Id}", $"AnimeGG · {c.Title}", "Choose the matching title to see its episodes.");
+                if (!saved.ExternalId.StartsWith($"source/{scope}/{anime.Id}/", StringComparison.Ordinal)
+                    || items.Any(i => i.Id == saved.ExternalId)) continue;
+                var item = Folder(saved.ExternalId, saved.Name, saved.Overview);
                 item.FolderType = ChannelFolderType.Season;
-                item.IndexNumber = Array.IndexOf(unique, c) + 1;
-                return item;
-            }));
+                item.IndexNumber = saved.IndexNumber;
+                item.ProviderIds = saved.ProviderIds;
+                items.Add(item);
+            }
+            return Result(items);
         }
         if (parts is ["source", var sourceScope, var sourceAnime, var sourceId] && int.TryParse(sourceAnime, out var sourceAnimeId))
             return await EpisodesAsync(sourceScope, await catalog.GetAsync(sourceAnimeId, ct), sourceId, ct);
@@ -145,18 +172,20 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
     private async Task<ChannelItemResult> EpisodesAsync(string scope, Anime anime, string sourceId, CancellationToken ct)
     {
         if (!AniListCatalog.IsAllowed(anime)) throw new ProviderException("This title is hidden by the content filter.");
-        var episodes = await source.EpisodesAsync(sourceId, ct);
+        var episodes = await sources.EpisodesAsync(sourceId, ct);
+        var provider = SourceRegistry.Split(sourceId).Provider;
+        var name = sources.Name(sourceId);
         return Result(episodes.Select(episode => new ChannelItemInfo
         {
-            Id = $"episode/{scope}/{anime.Id}/{episode.Id}",
+            Id = $"episode/{scope}/{anime.Id}/{SourceRegistry.Key(provider, episode.Id)}",
             Name = $"{episode.Number.ToString(CultureInfo.InvariantCulture)} · {episode.Title}",
             SeriesName = anime.Title, Type = ChannelItemType.Media, MediaType = ChannelMediaType.Video,
             ContentType = ChannelMediaContentType.Episode, ImageUrl = anime.Image,
-            Overview = "Japanese audio · English subtitles (embedded in the video) · AnimeGG",
+            Overview = $"Japanese audio · English subtitles (embedded in the video) · {name}",
             IndexNumber = episode.Number == decimal.Truncate(episode.Number) ? (int)episode.Number : null,
             ParentIndexNumber = 1, ProductionYear = anime.Year,
             RunTimeTicks = anime.Duration is > 0 ? TimeSpan.FromMinutes(anime.Duration.Value).Ticks : null,
-            Tags = ["AniFin"], ProviderIds = new Dictionary<string, string> { ["AniFinEpisode"] = episode.Id }
+            Tags = ["AniFin"], ProviderIds = new Dictionary<string, string> { ["AniFinEpisode"] = SourceRegistry.Key(provider, episode.Id) }
         }));
     }
 
@@ -169,12 +198,12 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
         var parts = id.Split('/');
         if (parts is not ["episode", _, var animeText, var episode] || !int.TryParse(animeText, out var animeId)) throw new ProviderException("Invalid AniFin episode.");
         if (!AniListCatalog.IsAllowed(await catalog.GetAsync(animeId, ct))) throw new ProviderException("This title is hidden by the content filter.");
-        var videos = await source.ResolveAsync(episode, ct);
+        var videos = await sources.ResolveAsync(episode, ct);
         var ticket = relay.Create(auth.UserId, animeId, episode);
         var media = new MediaSourceInfo
         {
             Path = ticket.Url, Protocol = MediaProtocol.Http, Container = "mp4", IsRemote = true,
-            Name = $"AnimeGG · {videos[0].Quality} · English subtitles", SupportsDirectPlay = false,
+            Name = $"{sources.Name(episode)} · {videos[0].Quality} · English subtitles", SupportsDirectPlay = false,
             SupportsDirectStream = false, SupportsTranscoding = true, SupportsProbing = true,
             RequiredHttpHeaders = new Dictionary<string, string> { [StreamRelay.Header] = ticket.Secret }
         };

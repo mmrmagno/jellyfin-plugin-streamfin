@@ -9,6 +9,7 @@ namespace AniFin;
 public sealed class AnimeGgSource(SafeHttp http) : IAnimeSource
 {
     public string Id => "animegg";
+    public string Name => "AnimeGG";
     private static readonly Uri Origin = new("https://www.animegg.org/");
     private static MatchCollection Matches(string html, string pattern) => Regex.Matches(html, pattern,
         RegexOptions.Singleline | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));

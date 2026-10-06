@@ -10,6 +10,7 @@ public sealed record ResolvedVideo(Uri Url, string Quality, IReadOnlyDictionary<
 public interface IAnimeSource
 {
     string Id { get; }
+    string Name { get; }
     Task<IReadOnlyList<SourceTitle>> SearchAsync(string title, CancellationToken ct);
     Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string seriesId, CancellationToken ct);
     Task<IReadOnlyList<ResolvedVideo>> ResolveAsync(string episodeId, CancellationToken ct);

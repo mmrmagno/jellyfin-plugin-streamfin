@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace AniFin;
 
-public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source, SafeHttp http, AniListCatalog catalog)
+public sealed class StreamRelay(IServerApplicationHost host, SourceRegistry sources, SafeHttp http, AniListCatalog catalog)
 {
     // Jellyfin forwards User-Agent to both FFprobe and FFmpeg; arbitrary headers are not forwarded by FFprobe.
     public const string Header = "User-Agent";
@@ -30,7 +30,7 @@ public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source
         return address is not null && IPAddress.IsLoopback(address)
             && CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(context.Request.Headers[Header].ToString()), System.Text.Encoding.UTF8.GetBytes(secret))
             && tickets.TryGetValue(id, out var ticket) && ticket.Expires > DateTime.UtcNow && Plugin.Allows(ticket.UserId)
-            && Plugin.Instance?.Configuration.AnimeGgEnabled == true;
+            && SourceRegistry.IsEnabled(SourceRegistry.Split(ticket.EpisodeId).Provider);
     }
 
     public async Task ServeAsync(HttpContext context, string id)
@@ -45,9 +45,9 @@ public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source
         var anime = await catalog.GetAsync(ticket.AnimeId, timeout.Token);
         if (!AniListCatalog.IsAllowed(anime)) { context.Response.StatusCode = 403; return; }
         // Re-resolve on each new read/seek. Jellyfin caches the stable loopback URL, not the expiring CDN URL.
-        var videos = await source.ResolveAsync(ticket.EpisodeId, timeout.Token);
+        var videos = await sources.ResolveAsync(ticket.EpisodeId, timeout.Token);
         using var response = await http.OpenAsync(videos[0].Url, true, timeout.Token,
-            range.Length == 0 ? null : range, head: HttpMethods.IsHead(context.Request.Method));
+            range.Length == 0 ? null : range, head: HttpMethods.IsHead(context.Request.Method), headers: videos[0].Headers);
         context.Response.StatusCode = (int)response.StatusCode;
         context.Response.Headers.CacheControl = "no-store";
         foreach (var name in new[] { "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges" })
@@ -65,7 +65,7 @@ public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source
                 idle.CancelAfter(TimeSpan.FromSeconds(45));
                 var read = await input.ReadAsync(buffer, idle.Token);
                 if (read == 0) break;
-                if (!Plugin.Allows(ticket.UserId) || !AniListCatalog.IsAllowed(anime) || Plugin.Instance?.Configuration.AnimeGgEnabled != true) break;
+                if (!Plugin.Allows(ticket.UserId) || !AniListCatalog.IsAllowed(anime) || !SourceRegistry.IsEnabled(SourceRegistry.Split(ticket.EpisodeId).Provider)) break;
                 await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted);
             }
         }
