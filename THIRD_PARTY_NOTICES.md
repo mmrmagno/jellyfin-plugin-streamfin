@@ -1,5 +1,12 @@
 # Third-party notices
 
+## Shuriken icon
+
+`src/Assets/shuriken.svg` is the Material Design Icons **shuriken** icon by
+Michael Richins, from https://github.com/Templarian/MaterialDesign.
+Copyright the Pictogrammers contributors. Licensed under Apache-2.0;
+see `APACHE-2.0.txt`. `anime.svg` and `anime.png` add AniFin colors and a background.
+
 ## AnimeGG provider
 
 `src/AnimeGgSource.cs` adapts the search/episode/embed resolution approach from

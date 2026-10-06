@@ -1,6 +1,6 @@
 namespace AniFin;
 
-public sealed record Anime(int Id, string Title, string[] Aliases, int? Year, string Overview, string? Image, int? Duration);
+public sealed record Anime(int Id, string Title, string[] Aliases, int? Year, string Overview, string? Image, int? Duration, bool IsAdult, string[] Genres);
 public sealed record CatalogPage(IReadOnlyList<Anime> Items, bool HasNext);
 public sealed record SourceTitle(string Id, string Title, int? Year = null);
 public sealed record SourceEpisode(string Id, decimal Number, string Title);

@@ -7,6 +7,10 @@
     <form id="anifinForm">
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="anifinEnabled"><span>Enable Anime channel</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeGgEnabled"><span>Enable AnimeGG</span></label>
+      <h3>Content filters</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult / explicit titles</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide Ecchi / sexual fan service</span></label>
+      <p>Filters use AniList classifications and apply to browsing, search, and playback. They do not classify every scene and are not an age rating.</p>
       <h3>Who can watch</h3><p>Only selected users can browse or play. With no users selected, access is disabled.</p>
       <div id="anifinUsers"></div>
       <div class="inputContainer"><label class="inputLabel" for="anifinCache">Metadata cache (minutes)</label><input is="emby-input" type="number" id="anifinCache" min="1" max="1440" required></div>
@@ -24,6 +28,8 @@
             const [config, users] = await Promise.all([ApiClient.getPluginConfiguration(pluginId), ApiClient.getUsers()]);
             page.querySelector('#anifinEnabled').checked = config.Enabled;
             page.querySelector('#animeGgEnabled').checked = config.AnimeGgEnabled;
+            page.querySelector('#hideAdult').checked = config.HideAdultContent !== false;
+            page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
             page.querySelector('#anifinCache').value = config.MetadataCacheMinutes;
             const container = page.querySelector('#anifinUsers');
             container.replaceChildren();
@@ -42,6 +48,8 @@
             const config = await ApiClient.getPluginConfiguration(pluginId);
             config.Enabled = page.querySelector('#anifinEnabled').checked;
             config.AnimeGgEnabled = page.querySelector('#animeGgEnabled').checked;
+            config.HideAdultContent = page.querySelector('#hideAdult').checked;
+            config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
             config.MetadataCacheMinutes = Number(page.querySelector('#anifinCache').value);
             config.AllowedUserIds = Array.from(page.querySelectorAll('#anifinUsers input:checked'), input => input.value);
             config.CacheRevision++;

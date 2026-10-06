@@ -7,17 +7,17 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using MediaBrowser.Model.Search;
 
 namespace AniFin;
 
 // IChannel.IsEnabledFor hides the channel, but cached descendants can also be requested
 // via Jellyfin's generic item/playback endpoints. Protect those routes and their results.
-public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationContext authorization, IChannelManager channels, ArtworkAccess artwork)
+public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationContext authorization, IChannelManager channels, ArtworkAccess artwork, ContentAccess content)
     : IAsyncActionFilter, IAsyncResultFilter
 {
     // Jellyfin writes a channel's cache before persisting the returned children.
     // Serialize our native-view population so parallel web requests cannot observe that gap.
-    private static readonly SemaphoreSlim NavigationLock = new(1, 1);
     private Guid ChannelId => library.GetNewItemId("Channel Anime", typeof(Channel));
     private bool IsOurs(Guid id)
     {
@@ -54,6 +54,8 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
         }
         else
         {
+            foreach (var id in ids.Where(IsOurs))
+                if (!await content.AllowsAsync(id, context.HttpContext.RequestAborted)) { context.Result = new NotFoundResult(); return; }
             // Native series/season screens use the Shows API instead of Channel/Items.
             // Populate those children lazily before Jellyfin answers the normal request.
             var path = context.HttpContext.Request.Path.Value ?? "";
@@ -65,13 +67,13 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
                 {
                     var item = library.GetItemById(id);
                     if (item is not Folder || (item.ChannelId != ChannelId && item.Id != ChannelId)) continue;
-                    await NavigationLock.WaitAsync(context.HttpContext.RequestAborted);
+                    await ChannelNavigation.Gate.WaitAsync(context.HttpContext.RequestAborted);
                     try
                     {
                         await channels.GetChannelItemsInternal(new InternalItemsQuery(auth.User) { Parent = item, ChannelIds = [ChannelId] },
                             new Progress<double>(), context.HttpContext.RequestAborted);
                     }
-                    finally { NavigationLock.Release(); }
+                    finally { ChannelNavigation.Gate.Release(); }
                 }
             }
         }
@@ -79,17 +81,32 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     }
     public async Task OnResultExecutionAsync(ResultExecutingContext context, ResultExecutionDelegate next)
     {
-        if (!await Allowed(context) && context.Result is ObjectResult result)
+        var allowed = await Allowed(context);
+        async Task<bool> Visible(Guid id) => !IsOurs(id) || (allowed && await content.AllowsAsync(id, context.HttpContext.RequestAborted));
+        if (context.Result is ObjectResult result)
         {
             switch (result.Value)
             {
-                case BaseItemDto item when IsOurs(item.Id): context.Result = new NotFoundResult(); break;
+                case BaseItemDto item:
+                    if (!await Visible(item.Id)) context.Result = new NotFoundResult();
+                    break;
                 case QueryResult<BaseItemDto> query:
-                    var filtered = query.Items.Where(i => !IsOurs(i.Id)).ToArray();
+                    var kept = new List<BaseItemDto>();
+                    foreach (var dto in query.Items) if (await Visible(dto.Id)) kept.Add(dto);
+                    var filtered = kept.ToArray();
                     query.TotalRecordCount = Math.Max(filtered.Length, query.TotalRecordCount - (query.Items.Count - filtered.Length));
                     query.Items = filtered;
                     break;
-                case IEnumerable<BaseItemDto> items: result.Value = items.Where(i => !IsOurs(i.Id)).ToArray(); break;
+                case IEnumerable<BaseItemDto> items:
+                    var visible = new List<BaseItemDto>();
+                    foreach (var dto in items) if (await Visible(dto.Id)) visible.Add(dto);
+                    result.Value = visible.ToArray();
+                    break;
+                case SearchHintResult hints:
+                    var safeHints = new List<SearchHint>();
+                    foreach (var hint in hints.SearchHints) if (await Visible(hint.Id)) safeHints.Add(hint);
+                    result.Value = new SearchHintResult(safeHints, Math.Max(safeHints.Count, hints.TotalRecordCount - hints.SearchHints.Count + safeHints.Count));
+                    break;
             }
         }
         await next();

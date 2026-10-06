@@ -38,7 +38,7 @@ if len(rows) != 1:
     raise SystemExit('The requested Jellyfin account must exist and be unambiguous.')
 user_id = rows[0][0]
 with zipfile.ZipFile(args.artifact) as package:
-    expected = {'Jellyfin.Plugin.AniFin.dll', 'meta.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'}
+    expected = {'Jellyfin.Plugin.AniFin.dll', 'meta.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'APACHE-2.0.txt'}
     if set(package.namelist()) != expected:
         raise SystemExit('Unexpected release archive contents.')
     files = {name: package.read(name) for name in expected}
@@ -52,7 +52,7 @@ backup.mkdir(parents=True, mode=0o700)
 plugin = args.config / 'plugins' / ('AniFin_' + metadata['version'])
 settings = args.config / 'plugins/configurations/Jellyfin.Plugin.AniFin.xml'
 previous_settings = settings.read_bytes() if settings.exists() else None
-previous_plugin = backup / 'previous-plugin'
+previous_plugins = []
 installed = False
 stopped = False
 try:
@@ -61,8 +61,12 @@ try:
     stopped = True
     with tarfile.open(backup / 'jellyfin-config.tar.gz', 'w:gz', compresslevel=1) as archive:
         archive.add(args.config, arcname='config')
-    if plugin.exists():
-        shutil.move(plugin, previous_plugin)
+    for manifest in (args.config / 'plugins').glob('*/meta.json'):
+        if json.loads(manifest.read_text()).get('guid') == metadata['guid']:
+            old = manifest.parent
+            destination = backup / old.name
+            shutil.move(old, destination)
+            previous_plugins.append((old, destination))
     plugin.mkdir(parents=True)
     installed = True
     for name, content in files.items():
@@ -72,12 +76,24 @@ try:
         os.chown(path, 1500, 1500)
     os.chown(plugin, 1500, 1500)
     plugin.chmod(0o755)
-    configuration = ET.Element('Configuration')
-    ET.SubElement(configuration, 'Enabled').text = 'true'
+    configuration = ET.fromstring(previous_settings) if previous_settings else ET.Element('Configuration')
+    def setting(name, value, preserve=False):
+        node = configuration.find(name)
+        if node is None:
+            node = ET.SubElement(configuration, name)
+        elif preserve:
+            return
+        node.text = value
+    setting('Enabled', 'true')
+    allowed = configuration.find('AllowedUserIds')
+    if allowed is not None:
+        configuration.remove(allowed)
     ET.SubElement(ET.SubElement(configuration, 'AllowedUserIds'), 'string').text = user_id
-    ET.SubElement(configuration, 'AnimeGgEnabled').text = 'true'
-    ET.SubElement(configuration, 'MetadataCacheMinutes').text = '60'
-    ET.SubElement(configuration, 'CacheRevision').text = str(int(time.time()))
+    setting('AnimeGgEnabled', 'true', preserve=True)
+    setting('HideAdultContent', 'true', preserve=True)
+    setting('HideEcchiContent', 'true', preserve=True)
+    setting('MetadataCacheMinutes', '60', preserve=True)
+    setting('CacheRevision', str(int(time.time())))
     settings.parent.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(configuration).write(settings, encoding='utf-8', xml_declaration=True)
     os.chown(settings, 1500, 1500)
@@ -97,8 +113,8 @@ except Exception:
         docker('stop', 'jellyfin')
         stopped = True
         shutil.rmtree(plugin)
-    if previous_plugin.exists():
-        shutil.move(previous_plugin, plugin)
+    for old, destination in previous_plugins:
+        shutil.move(destination, old)
     if installed:
         if previous_settings is None:
             settings.unlink(missing_ok=True)

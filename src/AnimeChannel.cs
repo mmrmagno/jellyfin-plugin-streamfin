@@ -10,16 +10,20 @@ using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Model.Drawing;
 
 namespace AniFin;
 
 public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, StreamRelay relay,
-    IHttpContextAccessor contexts, IAuthorizationContext authorization, IMediaEncoder encoder, ILogger<AnimeChannel> logger)
+    IHttpContextAccessor contexts, IAuthorizationContext authorization, IMediaEncoder encoder, ILibraryManager library, ILogger<AnimeChannel> logger)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
     public string Name => "Anime";
     public string Description => "AniFin · Browse anime and stream Japanese audio with English subtitles.";
-    public string DataVersion => "anifin-2-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
+    public string DataVersion => "anifin-3-" + AniListCatalog.PolicyKey + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
     public string HomePageUrl => "https://github.com/mmrmagno/jellyfin-plugin-anifin";
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
     public bool IsEnabledFor(string userId) => Guid.TryParse(userId, out var id) && Plugin.Allows(id);
@@ -29,8 +33,12 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
         MediaTypes = [ChannelMediaType.Video], ContentTypes = [ChannelMediaContentType.Episode],
         AutoRefreshLevels = 0, SupportsContentDownloading = false
     };
-    public IEnumerable<ImageType> GetSupportedChannelImages() => [];
-    public Task<DynamicImageResponse> GetChannelImage(ImageType type, CancellationToken ct) => Task.FromResult(new DynamicImageResponse());
+    public IEnumerable<ImageType> GetSupportedChannelImages() => [ImageType.Primary];
+    public Task<DynamicImageResponse> GetChannelImage(ImageType type, CancellationToken ct) => Task.FromResult(new DynamicImageResponse
+    {
+        HasImage = type == ImageType.Primary, Format = ImageFormat.Png,
+        Stream = typeof(AnimeChannel).Assembly.GetManifestResourceStream("AniFin.Assets.anime.png")
+    });
 
     private static ChannelItemInfo Folder(string id, string name, string? overview = null) => new()
     {
@@ -64,9 +72,20 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
     {
         if (id.EndsWith("/status", StringComparison.Ordinal)) return Result([]);
         if (id.Length == 0) return Result([
+            Folder("search", "Search results", "Use Jellyfin's search (magnifying glass) to find anime online. Your discovered titles appear here."),
             Folder("catalog/popular/1", "Popular", "Popular anime on AniList. Source availability is checked when you open a title."),
             Folder("catalog/season/1", "This Season"), Folder("catalog/az/1", "A–Z")]);
         var parts = id.Split('/');
+        if (id == "search")
+        {
+            var parentId = library.GetNewItemId("searchAnime16", typeof(Folder));
+            var saved = library.GetItemList(new InternalItemsQuery { ParentId = parentId, Recursive = false });
+            return Result(saved.OfType<Series>().Select(item => new ChannelItemInfo
+            {
+                Id = item.ExternalId, Name = item.Name, Type = ChannelItemType.Folder, FolderType = ChannelFolderType.Series,
+                Overview = item.Overview, ProductionYear = item.ProductionYear, Tags = ["AniFin"], ProviderIds = item.ProviderIds
+            }));
+        }
         if (parts is ["catalog", var category, var pageText] && int.TryParse(pageText, out var page))
         {
             var data = await catalog.BrowseAsync(category, page, ct);
@@ -88,6 +107,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
         if (parts is ["title", var scope, var animeText] && int.TryParse(animeText, out var animeId))
         {
             var anime = await catalog.GetAsync(animeId, ct);
+            if (!AniListCatalog.IsAllowed(anime)) throw new ProviderException("This title is hidden by the content filter.");
             var candidates = new List<SourceTitle>();
             foreach (var title in anime.Aliases.Prepend(anime.Title).Distinct().Take(3))
             {
@@ -122,6 +142,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
 
     private async Task<ChannelItemResult> EpisodesAsync(string scope, Anime anime, string sourceId, CancellationToken ct)
     {
+        if (!AniListCatalog.IsAllowed(anime)) throw new ProviderException("This title is hidden by the content filter.");
         var episodes = await source.EpisodesAsync(sourceId, ct);
         return Result(episodes.Select(episode => new ChannelItemInfo
         {
@@ -144,9 +165,10 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
         var auth = await authorization.GetAuthorizationInfo(context);
         if (!auth.IsAuthenticated || !Plugin.Allows(auth.UserId)) throw new UnauthorizedAccessException("AniFin is not enabled for this account.");
         var parts = id.Split('/');
-        if (parts is not ["episode", _, _, var episode]) throw new ProviderException("Invalid AniFin episode.");
+        if (parts is not ["episode", _, var animeText, var episode] || !int.TryParse(animeText, out var animeId)) throw new ProviderException("Invalid AniFin episode.");
+        if (!AniListCatalog.IsAllowed(await catalog.GetAsync(animeId, ct))) throw new ProviderException("This title is hidden by the content filter.");
         var videos = await source.ResolveAsync(episode, ct);
-        var ticket = relay.Create(auth.UserId, episode, videos[0]);
+        var ticket = relay.Create(auth.UserId, animeId, episode);
         var media = new MediaSourceInfo
         {
             Path = ticket.Url, Protocol = MediaProtocol.Http, Container = "mp4", IsRemote = true,

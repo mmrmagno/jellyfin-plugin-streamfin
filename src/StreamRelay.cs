@@ -8,19 +8,19 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace AniFin;
 
-public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source, SafeHttp http)
+public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source, SafeHttp http, AniListCatalog catalog)
 {
     // Jellyfin forwards User-Agent to both FFprobe and FFmpeg; arbitrary headers are not forwarded by FFprobe.
     public const string Header = "User-Agent";
     private readonly string secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-    private sealed record Ticket(Guid UserId, string EpisodeId, DateTime Expires);
+    private sealed record Ticket(Guid UserId, int AnimeId, string EpisodeId, DateTime Expires);
     private readonly ConcurrentDictionary<string, Ticket> tickets = new();
-    public (string Url, string Secret) Create(Guid userId, string episode, ResolvedVideo video)
+    public (string Url, string Secret) Create(Guid userId, int animeId, string episode)
     {
         foreach (var pair in tickets.Where(p => p.Value.Expires < DateTime.UtcNow)) tickets.TryRemove(pair.Key, out _);
         if (tickets.Count >= 256) throw new ProviderException("Too many playback sessions. Please try again later.");
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-        tickets[id] = new(userId, episode, DateTime.UtcNow.AddHours(12));
+        tickets[id] = new(userId, animeId, episode, DateTime.UtcNow.AddHours(12));
         return (host.GetLocalApiUrl("127.0.0.1", "http", host.HttpPort).TrimEnd('/') + "/AniFin/Internal/Stream/" + id, secret);
     }
 
@@ -42,6 +42,8 @@ public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source
         { context.Response.StatusCode = 416; return; }
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        var anime = await catalog.GetAsync(ticket.AnimeId, timeout.Token);
+        if (!AniListCatalog.IsAllowed(anime)) { context.Response.StatusCode = 403; return; }
         // Re-resolve on each new read/seek. Jellyfin caches the stable loopback URL, not the expiring CDN URL.
         var videos = await source.ResolveAsync(ticket.EpisodeId, timeout.Token);
         using var response = await http.OpenAsync(videos[0].Url, true, timeout.Token,
@@ -63,7 +65,7 @@ public sealed class StreamRelay(IServerApplicationHost host, IAnimeSource source
                 idle.CancelAfter(TimeSpan.FromSeconds(45));
                 var read = await input.ReadAsync(buffer, idle.Token);
                 if (read == 0) break;
-                if (!Plugin.Allows(ticket.UserId)) break;
+                if (!Plugin.Allows(ticket.UserId) || !AniListCatalog.IsAllowed(anime) || Plugin.Instance?.Configuration.AnimeGgEnabled != true) break;
                 await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted);
             }
         }
