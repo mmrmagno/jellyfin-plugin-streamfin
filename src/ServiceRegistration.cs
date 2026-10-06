@@ -16,6 +16,7 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<IAnimeSource, AnimeGgSource>();
         services.AddSingleton<StreamRelay>();
         services.AddSingleton<IChannel, AnimeChannel>();
+        services.AddSingleton<SearchHistory>();
         services.AddSingleton<MediaBrowser.Controller.Library.ISearchProvider, OnlineSearch>();
         services.AddScoped<ContentAccess>();
         services.AddScoped<ChannelAccessFilter>();

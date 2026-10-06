@@ -18,6 +18,10 @@
       <p id="anifinStatus" role="status">Loading settings…</p>
       <button is="emby-button" type="submit" id="anifinSave" class="raised button-submit block" disabled><span>Save</span></button>
       <button is="emby-button" type="button" id="anifinRefresh" class="raised block" disabled><span>Refresh catalog cache</span></button>
+      <h3>Search results</h3>
+      <p>Clear the saved titles in Anime → Search results for all AniFin users. Watched status and resume positions stay saved. Titles reappear when searched again.</p>
+      <button is="emby-button" type="button" id="anifinClearSearch" class="raised block" disabled><span>Clear search results</span></button>
+      <p id="anifinClearStatus" role="status"></p>
     </form>
     <script>
       (function () {
@@ -28,6 +32,7 @@
           loaded = false;
           page.querySelector('#anifinSave').disabled = true;
           page.querySelector('#anifinRefresh').disabled = true;
+          page.querySelector('#anifinClearSearch').disabled = true;
           page.querySelector('#anifinStatus').textContent = 'Loading settings…';
           Dashboard.showLoadingMsg();
           try {
@@ -49,6 +54,7 @@
             loaded = true;
             page.querySelector('#anifinSave').disabled = false;
             page.querySelector('#anifinRefresh').disabled = false;
+            page.querySelector('#anifinClearSearch').disabled = false;
             page.querySelector('#anifinStatus').textContent = '';
           } catch (error) {
             console.warn('AniFin settings could not load:', error.message);
@@ -75,6 +81,19 @@
           if (!loaded) return;
           const config = await ApiClient.getPluginConfiguration(pluginId); config.CacheRevision++;
           Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
+        });
+        page.querySelector('#anifinClearSearch').addEventListener('click', async function () {
+          if (!loaded) return;
+          const button = page.querySelector('#anifinClearSearch');
+          const status = page.querySelector('#anifinClearStatus');
+          button.disabled = true;
+          status.textContent = 'Clearing search results…';
+          try {
+            const result = await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('AniFin/SearchResults/Clear'), dataType: 'json'});
+            status.textContent = result.ClearedCount ? 'Search results cleared. Watched status and resume positions were kept.' : 'Search results are already empty.';
+          } catch {
+            status.textContent = 'Could not clear search results. Please try again.';
+          } finally { button.disabled = !loaded; }
         });
       })();
     </script>

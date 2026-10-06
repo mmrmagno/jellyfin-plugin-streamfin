@@ -35,6 +35,14 @@ const fs = require('node:fs');
       if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) throw new Error('Saving unchanged settings changed ' + key);
     }
     console.log('PASS: saving preserves permissions and content filters');
+    const clearPath = '/AniFin/SearchResults/Clear';
+    const [cleared] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith(clearPath) && response.request().method() === 'POST'),
+      page.getByRole('button', {name: 'Clear search results', exact: true}).click()
+    ]);
+    if (!cleared.ok()) throw new Error('Clear search results failed');
+    await page.locator('#anifinClearStatus').filter({hasText: /Search results (cleared|are already empty)/}).waitFor();
+    console.log('PASS: clear-search button reports completion');
     await page.route('**' + path, route => route.abort());
     await page.reload({waitUntil: 'networkidle'});
     await page.getByText('Could not load settings.', {exact: false}).waitFor();

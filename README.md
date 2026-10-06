@@ -14,6 +14,8 @@ Online search accepts 2–100 characters, returns up to 30 matches per query, su
 
 **Dashboard → Plugins → AniFin → Content filters** has independent **Hide adult / explicit titles** and **Hide Ecchi / sexual fan service** switches, both enabled by default. Filters apply to catalog results, search, cached items, and playback. They use AniList's adult flag and Ecchi genre, not scene analysis or a comprehensive age rating. Classification can be incomplete.
 
+To empty the discovery list, use **Dashboard → Plugins → AniFin → Clear search results**. This clears **Anime → Search results** for all AniFin users. Watched status, favorites, resume positions, and episode IDs stay saved. Searching again adds matching titles back. The action requires an administrator and does not change your settings.
+
 ## Build
 
 Requires Docker, Python 3, and Bash; a system-wide .NET installation is unnecessary.
@@ -23,12 +25,12 @@ bash scripts/fetch-references.sh
 bash scripts/build.sh
 ```
 
-The scripts pin both the Jellyfin image and .NET SDK image by digest. Reference assemblies stay in `.jellyfin/` and are never packaged or committed. The build runs dependency-free executable tests and produces `artifacts/AniFin-0.2.1.0.zip`.
+The scripts pin both the Jellyfin image and .NET SDK image by digest. Reference assemblies stay in `.jellyfin/` and are never packaged or committed. The build runs dependency-free executable tests and produces `artifacts/AniFin-0.3.0.0.zip`.
 
 ## Install
 
 1. Back up Jellyfin's configuration and stop Jellyfin.
-2. Move previous AniFin versions outside the plugins directory. Extract the ZIP into `<config>/plugins/AniFin_0.2.1.0/`. Make it readable by the Jellyfin service user.
+2. Move previous AniFin versions outside the plugins directory. Extract the ZIP into `<config>/plugins/AniFin_0.3.0.0/`. Make it readable by the Jellyfin service user.
 3. Start Jellyfin, then open **Dashboard → Plugins → AniFin**.
 4. Enable AnimeGG and the channel, select permitted users, and save. No user has access by default.
 5. Run Jellyfin's **Refresh Channels** scheduled task if Anime has not appeared, then refresh the browser.
@@ -37,7 +39,7 @@ On mediastack, `<config>` is `~/mediastack/jellyfin/config` and Jellyfin runs as
 
 This is a private repository. Use manual installation; do not embed a GitHub token in a plugin repository URL.
 
-To roll back, stop Jellyfin, move `plugins/AniFin_0.2.1.0` outside the plugins directory, restore the previous version/settings from the installation backup, and start Jellyfin. No existing media files are changed.
+To roll back, stop Jellyfin, move `plugins/AniFin_0.3.0.0` outside the plugins directory, restore the previous version/settings from the installation backup, and start Jellyfin. No existing media files are changed.
 
 The channel tile includes a shuriken image. Jellyfin Web uses a separate, fixed sidebar icon; `scripts/web-icon.py` applies a small CSS rule scoped to the Anime channel, preserving existing branding CSS. It draws the icon with a CSS clip path, so no embedded image permission is required. Run it on the server with `--url`, `--config`, `--user marc`, and `--icon src/Assets/shuriken.svg`. The selected user needs an existing administrator session. Use `--remove` to remove just this rule. It does not change native TV/mobile client icons.
 
@@ -82,7 +84,7 @@ Verified on 2026-10-06 against an isolated copy of the exact server image: 36 pa
 
 `scripts/browser-smoke.cjs` exercises the browser flow after the API smoke test. Set `PLAYWRIGHT_MODULE` to an installed `playwright-core` module, `CHROMIUM_PATH` if needed, and `ANIFIN_TEST_URL` to the disposable server. It reads the protected test session file and saves screenshots under `artifacts/`.
 
-`scripts/search-smoke.py` checks remote title discovery, Japanese title aliases, both native search endpoints, and hiding previously cached Ecchi titles. `scripts/browser-search.cjs` checks the sidebar icon and search-to-playback flow using the saved disposable browser session. `scripts/browser-settings.cjs` verifies loading/saving permissions and filters, and prevents saving when configuration loading fails.
+`scripts/search-smoke.py` checks remote title discovery, Japanese title aliases, both native search endpoints, and hiding previously cached Ecchi titles. `scripts/browser-search.cjs` checks the sidebar icon and search-to-playback flow using the saved disposable browser session. `scripts/browser-settings.cjs` verifies loading/saving permissions and filters, the clear-search button, and failed-load protection. `scripts/clear-search-smoke.py` checks administrator-only clearing and saved user data; rerun it with `--verify-after-restart` after restarting the disposable server to verify persistence and rediscovery.
 
 For the existing mediastack host, `scripts/install-remote.py` runs as root with `--config`, `--artifact`, and `--backups` paths plus `--user marc`. It requires the tested server version, stops only Jellyfin, takes a consistent configuration backup, installs the package with service-user ownership, and restores the previous plugin/settings if startup fails. Do not use the disposable account bootstrap script on production.
 

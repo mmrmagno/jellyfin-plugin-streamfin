@@ -83,7 +83,9 @@ public sealed class AnimeChannel(AniListCatalog catalog, IAnimeSource source, St
             return Result(saved.OfType<Series>().Select(item => new ChannelItemInfo
             {
                 Id = item.ExternalId, Name = item.Name, Type = ChannelItemType.Folder, FolderType = ChannelFolderType.Series,
-                Overview = item.Overview, ProductionYear = item.ProductionYear, Tags = ["AniFin"], ProviderIds = item.ProviderIds
+                // Return cleared items too: Jellyfin reconciles this list by deleting omitted entities.
+                // The result filter hides cleared series while preserving episode IDs and user data.
+                Overview = item.Overview, ProductionYear = item.ProductionYear, Tags = item.Tags.ToList(), ProviderIds = item.ProviderIds
             }));
         }
         if (parts is ["catalog", var category, var pageText] && int.TryParse(pageText, out var page))

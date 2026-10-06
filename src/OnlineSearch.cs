@@ -13,7 +13,7 @@ namespace AniFin;
 
 // Register alongside the internal providers so results merge with the local library.
 // Jellyfin's external-provider path replaces local results whenever it finds a match.
-public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library, IHttpContextAccessor contexts,
+public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library, SearchHistory history, IHttpContextAccessor contexts,
     IAuthorizationContext authorization, ILogger<OnlineSearch> logger) : IInternalSearchProvider
 {
     public string Name => "AniFin";
@@ -34,12 +34,14 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
             || (query.UserId is { } user && user != Guid.Empty && user != auth.UserId)) return [];
         try
         {
+            var generation = history.Generation;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(12));
             var results = await catalog.BrowseAsync("search", 1, timeout.Token, query.SearchTerm);
             await ChannelNavigation.Gate.WaitAsync(timeout.Token);
             try
             {
+                if (generation != history.Generation) return [];
                 if (library.GetItemById(ChannelId) is not Channel channel) return [];
                 var parent = library.GetItemById(SearchFolderId) as Folder;
                 if (parent is null)
@@ -62,7 +64,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
                     item.Overview = anime.Overview;
                     item.ProductionYear = anime.Year;
                     item.Genres = anime.Genres;
-                    item.Tags = ["AniFin"];
+                    item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("AniFin").Distinct().ToArray();
                     item.ProviderIds = new Dictionary<string, string> { ["Custom"] = $"anifin-series-{anime.Id}" };
                     // Generic search groups series by this persisted key; NULL would collapse unrelated anime.
                     item.PresentationUniqueKey = $"anifin-search-{anime.Id}";

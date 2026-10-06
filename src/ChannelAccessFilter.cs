@@ -48,6 +48,7 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     {
         var ids = context.ActionArguments.Values.SelectMany(v => Identifiers(v))
             .Concat(context.HttpContext.Request.Query.SelectMany(v => Identifiers(v.Value.ToString()))).Distinct().ToArray();
+        context.HttpContext.Items[SearchHistory.HiddenTag] = ids.Contains(library.GetNewItemId("searchAnime16", typeof(Folder)));
         if (!await Allowed(context))
         {
             if (ids.Any(IsOurs)) { context.Result = new NotFoundResult(); return; }
@@ -82,13 +83,16 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     public async Task OnResultExecutionAsync(ResultExecutingContext context, ResultExecutionDelegate next)
     {
         var allowed = await Allowed(context);
-        async Task<bool> Visible(Guid id) => !IsOurs(id) || (allowed && await content.AllowsAsync(id, context.HttpContext.RequestAborted));
+        var discoveryList = context.HttpContext.Items[SearchHistory.HiddenTag] is true;
+        async Task<bool> Visible(Guid id, bool listing = true) => !IsOurs(id) || (allowed
+            && (!listing || !discoveryList || !SearchHistory.IsHidden(library.GetItemById(id)))
+            && await content.AllowsAsync(id, context.HttpContext.RequestAborted));
         if (context.Result is ObjectResult result)
         {
             switch (result.Value)
             {
                 case BaseItemDto item:
-                    if (!await Visible(item.Id)) context.Result = new NotFoundResult();
+                    if (!await Visible(item.Id, listing: false)) context.Result = new NotFoundResult();
                     break;
                 case QueryResult<BaseItemDto> query:
                     var kept = new List<BaseItemDto>();
