@@ -140,9 +140,10 @@ print('PASS: fresh stream resolved and probed (' + source['Name'] + ')', flush=T
 all_other = ok('/Items?Recursive=true&IncludeItemTypes=Series,Season,Episode&Fields=Tags', other['token'])['Items']
 assert all('StreamFin' not in item.get('Tags', []) for item in all_other)
 print('PASS: generic cached item listings do not leak StreamFin to other users', flush=True)
-status, _ = request('/Items/' + episode['Id'] + '/Images/Primary')
-assert status in (401, 403, 404)
-print('PASS: anonymous artwork requests remain restricted', flush=True)
+status, _ = request('/Items/' + title['Id'] + '/Images/Primary')
+assert status == 200, status
+assert request('/Items/' + title['Id'])[0] in (401, 403, 404)
+print('PASS: artwork loads without credentials for TV clients; item metadata stays restricted', flush=True)
 config_path = '/Plugins/' + PLUGIN + '/Configuration'
 config = ok(config_path, admin)
 try:
