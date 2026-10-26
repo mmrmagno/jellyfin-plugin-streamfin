@@ -103,7 +103,8 @@ That runs the tests and writes the plugin zip to `artifacts/`.
 
 CI does the same on every push, plus CodeQL, a secret scan over the whole history and a
 lint of the workflows. Every Monday it also loads the plugin on the newest Jellyfin, so I
-hear about a breaking release before the server updates into it.
+hear about a breaking release before the server updates into it. Everything that parses a
+third-party page is fuzzed on every pull request and for an hour every Sunday.
 
 ## Credits
 

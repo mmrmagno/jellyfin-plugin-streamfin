@@ -1,0 +1,5 @@
+#EXTM3U
+#EXT-X-KEY:METHOD=AES-128,KEYFORMATURI="x",URI=https://keys.example.top/k
+#EXT-X-FOO:URI="https://evil.example.top/a"
+#EXTINF:5,https://evil.example.top/t
+seg.ts

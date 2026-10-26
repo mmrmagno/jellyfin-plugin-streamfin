@@ -6,6 +6,7 @@ using StreamFin;
 var count = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); Console.WriteLine("PASS: " + name); count++; }
 void Reject(Action action, string name) { try { action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
+void Contained(Action action, string name) { try { action(); } catch (ProviderException) { } Check(true, name); }
 async Task RejectAsync(Func<Task> action, string name) { try { await action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
 
 var titles = AnimeGgSource.ParseSearch("<a href=\"/series/test-show\" class=\"mse\"><h2>Test &amp; Show</h2></a><a href=\"/series/test-show\" class=\"mse\"><h2>Duplicate</h2></a>");
@@ -126,6 +127,7 @@ Check(SourceRegistry.IsEnabled("zoko", new Configuration { Enabled = true }) && 
 Check(Languages.Code("en", "x") == "en" && Languages.Code("pt-BR", "x") == "pt" && Languages.Code("", "English [CC]") == "en" && Languages.Code("", "Klingon") == "und", "subtitle languages map to two-letter codes");
 Check(Languages.Arrange(Enumerable.Range(0, 12).Select(i => new Subtitle("L" + i, i == 7 ? "en" : "fr", new Uri($"https://s.example/{i}.vtt")))).Count == 8
     && Languages.Arrange([new Subtitle("F", "fr", new Uri("https://s.example/f.vtt")), new Subtitle("E", "en", new Uri("https://s.example/e.vtt"))])[0].Language == "en", "subtitle tracks are capped with English first");
+Check(Languages.Arrange([new Subtitle("Subtitles", "und", new Uri("https://s.example/a.vtt")), new Subtitle("English", "en", new Uri("https://s.example/a.vtt"))]).Single().Language == "en", "a track listed twice keeps its English entry");
 
 var links = new HlsLinks();
 var master = Hls.RewriteMaster("""
@@ -153,14 +155,17 @@ seg_00000.ts.jpg
 https://hls1.example.cfd/s/1080/seg_00001.m4s
 #EXT-X-ENDLIST
 """, new Uri("https://cdn2.example.top/1080/index.m3u8"), links);
-Check(!media.Contains("example") && media.Contains("METHOD=AES-128,URI=\"p/") && Regex.IsMatch(media, @"\n\d+\.ts\n") && Regex.IsMatch(media, @"\n\d+\.m4s\n"), "media playlists relay keys, init segments and segments with recognised extensions");
+Check(!media.Contains("example") && !media.Contains("p/") && Regex.IsMatch(media, @"METHOD=AES-128,URI=""\d+\.ts""") && Regex.IsMatch(media, @"#EXT-X-MAP:URI=""\d+\.mp4""") && Regex.IsMatch(media, @"\n\d+\.ts\n") && Regex.IsMatch(media, @"\n\d+\.m4s\n"), "media playlists relay keys, init segments and segments as siblings of the playlist, with recognised extensions");
 Check(Math.Abs(Hls.Duration(media) - 13.75) < 0.001, "playlist duration sums its segments");
 Check(Hls.WebVtt("\uFEFF1\r\n00:00:20,240 --> 00:00:29,210\r\nHello\r\n") == "WEBVTT\n\n1\n00:00:20.240 --> 00:00:29.210\nHello\n" && Hls.WebVtt("WEBVTT\n\n00:20.240 --> 00:29.210\nHi\n").StartsWith("WEBVTT\n\n00:20"), "SubRip subtitles become WebVTT, WebVTT passes through");
 Reject(() => Hls.WebVtt("<html>blocked</html>"), "a subtitle URL returning a web page is refused");
+Check(Hls.WebVtt(" \nWEBVTT\n\n00:20.240 --> 00:29.210\nHi\n").StartsWith("WEBVTT\n", StringComparison.Ordinal), "WebVTT with leading blank lines starts with its header");
+Contained(() => SafeHttp.ValidateOpen(new Uri("https://x\u0627.example.top/")), "a host that breaks IDN rules never escapes as a URI error");
+Contained(() => Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nhttps://x\u0627.example.top/seg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "a playlist segment on a host that breaks IDN rules never escapes as a URI error");
 Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nhttps://192.168.1.10/seg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "playlist segment on a private address is refused");
 Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nfile:///etc/passwd\n", new Uri("https://cdn.example.top/a.m3u8"), links), "playlist segment with a local scheme is refused");
 var hostile = Hls.RewriteMedia("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,KEYFORMATURI=\"x\",URI=https://keys.example.top/k\n#EXT-X-FOO:URI=\"https://evil.example.top/a\"\n#EXT-X-PROGRAM-DATE-TIME:2026-01-01\n#EXTINF:5,https://evil.example.top/t\nseg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links);
-Check(!hostile.Contains("example") && !hostile.Contains("FOO") && !hostile.Contains("KEYFORMATURI") && hostile.Contains("#EXT-X-KEY:METHOD=AES-128,URI=\"p/") && hostile.Contains("#EXTINF:5,\n"), "media playlists keep only rebuilt tags, bare and decoy URIs included");
+Check(!hostile.Contains("example") && !hostile.Contains("FOO") && !hostile.Contains("KEYFORMATURI") && Regex.IsMatch(hostile, @"#EXT-X-KEY:METHOD=AES-128,URI=""\d+\.ts""") && hostile.Contains("#EXTINF:5,\n"), "media playlists keep only rebuilt tags, bare and decoy URIs included");
 Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"http://192.168.1.1/admin\"\n#EXTINF:5,\nseg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "a media playlist that nests renditions is refused");
 Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps://cdn.example.top/b.m3u8\n", new Uri("https://cdn.example.top/a.m3u8"), links), "a media playlist that nests variants is refused");
 Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=http://169.254.169.254/latest\n#EXTINF:5,\nseg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "a bare key URI on a private address is refused");
@@ -182,6 +187,7 @@ var movie = TmdbCatalog.Parse(Json("""{"id":1290938,"title":"South Park: The End
 Check(movie is { Kind: FilmKind.Movie, Year: 2024, Runtime: 51, Image: "https://image.tmdb.org/t/p/w500/zx.jpg" }, "TMDB movie parses title, year, runtime and poster");
 Check(TmdbCatalog.Parse(Json("""{"id":2190,"name":"South Park","first_air_date":"1997-08-13","media_type":"tv","poster_path":"/../evil.jpg","episode_run_time":[22]}"""), null) is { Kind: FilmKind.Tv, Year: 1997, Runtime: 22, Image: null }, "TMDB TV parses from trending and refuses odd image paths");
 Check(TmdbCatalog.Parse(Json("""{"id":5,"name":"A Person","media_type":"person"}"""), null) is null, "TMDB people are skipped in mixed search results");
+Check(TmdbCatalog.Parse(Json("""{"id":7,"name":"Long","media_type":"tv","episode_run_time":[99999999999]}"""), null) is { Runtime: null }, "TMDB runtimes outside int range are dropped, not thrown");
 
 Check(FlixSource.Slug("South Park: The End of Obesity") == "south-park-the-end-of-obesity" && FlixSource.Slug("Bob's Burgers & Friends") == "bobs-burgers-and-friends", "FlixHQ slugs follow the site's naming");
 var watchHtml = """<a href="https://flixhqz.net/watch-movie/south-park-the-end-of-obesity-2024-watch-online/" class="x"></a><a href="https://flixhqz.net/watch-series/south-park-1997-watch-online/"></a><a href="https://flixhqz.net/watch-movie/south-park-bigger-longer-uncut-1999-watch-online/"></a>""";
@@ -198,6 +204,7 @@ Check(FlixSource.Unpack(packed).Single() == "var cfg={file:\"https://cdn.example
 Check(FlixSource.FindMedia(packed)?.AbsoluteUri == "https://cdn.example/hls/master.m3u8", "player stream found inside a packed script");
 Check(FlixSource.FindMedia("""file:"https://127.0.0.1/x.m3u8" """) is null, "player stream on a private address is ignored");
 Check(FlixSource.FindSubtitles("""tracks:[{file:"https:\/\/s.example\/en.vtt",label:"English"},{file:"https://s.example/t.vtt",label:"thumbnails"}]""").Single().Language == "en", "player subtitle tracks parsed, thumbnails skipped");
+Check(FlixSource.FindSubtitles("""tracks:[{file:"https://s.example/en.vtt",label:" "}]""").Count == 0, "player subtitle tracks without a label are skipped");
 Check(FlixSource.ParseSubtitleIndex("""[{"file":"https://s.example/es.srt","label":"Spanish"},{"src":"https://s.example/x.vtt","label":""}]""").Single().Language == "es", "subtitle index parsed");
 Check(FlixSource.Unbase("zz", 36) == 1295 && FlixSource.Unbase("Z", 62) == 61 && FlixSource.Unbase("!", 36) is null, "packer number bases");
 
