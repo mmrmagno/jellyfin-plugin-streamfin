@@ -15,7 +15,7 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<AniListCatalog>();
         services.AddSingleton<TmdbCatalog>();
         services.AddSingleton<FlixSource>();
-        services.AddSingleton<IAnimeSource, ZokoSource>();
+        services.AddSingleton<IAnimeSource, HiAnimeSource>();
         services.AddSingleton<IAnimeSource, AnimeGgSource>();
         services.AddSingleton<IAnimeSource, AnimeHeavenSource>();
         services.AddSingleton<SourceRegistry>();

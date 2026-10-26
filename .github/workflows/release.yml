@@ -29,11 +29,11 @@ jobs:
       - name: Publish the release
         run: |
           git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-          git tag -l --format='%(contents:body)' "$TAG" > notes.txt
-          gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" --title "StreamFin $VERSION" --notes-file notes.txt
+          git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$TAG" > notes.txt
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" --title "StreamFin $VERSION" --notes-file notes.txt
+          gh release download "$TAG" -p "StreamFin-$VERSION.zip" -D "$RUNNER_TEMP"
       - name: Add the release to manifest.json
         run: |
-          cp "artifacts/StreamFin-$VERSION.zip" "$RUNNER_TEMP/"
           git checkout main
           python3 scripts/manifest.py --zip "$RUNNER_TEMP/StreamFin-$VERSION.zip" \
             --url "https://github.com/${{ github.repository }}/releases/download/$TAG/StreamFin-$VERSION.zip" \
@@ -41,5 +41,4 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add manifest.json
-          git commit -m "release: StreamFin $VERSION"
-          git push origin main
+          git diff --cached --quiet || { git commit -m "release: StreamFin $VERSION" && git push origin main; }

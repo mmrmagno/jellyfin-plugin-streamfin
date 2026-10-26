@@ -36,10 +36,9 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
 | HiAnime | MyAnimeList ID, no title guessing | Separate English track |
 | AnimeGG | Title search | Burned in |
 | AnimeHeaven | Title search | Burned in |
-| FlixHQ (movies and TV) | Title and year | Whatever the player offers |
+| FlixHQ (movies and TV) | Title and year | Usually a separate English track |
 
-If a source fails or is missing an episode, I go back and pick another one. Each source has
-its own switch in the settings.
+If a source fails or is missing an episode, I go back and pick another one.
 
 ## Install
 
@@ -52,14 +51,12 @@ Needs Jellyfin **12.3** or newer.
 2. Install **StreamFin** from the catalog (it is under Channels) and restart Jellyfin.
 3. Open **Dashboard > Plugins > StreamFin**, turn it on, and tick the users who are
    allowed in. Nobody is by default.
-4. For Movies & TV, paste a TMDB key. The free one from themoviedb.org (Settings > API)
-   works, either the short API key or the long read access token. Without a key that
-   channel stays hidden.
+4. For Movies & TV, make a free account on themoviedb.org, go to **Settings > API**, and
+   paste the key. The short API key and the long read access token both work.
 
-Updates arrive through the same repository like any other plugin.
-
-The sidebar icons in Jellyfin Web, a shuriken for Anime and popcorn for Movies & TV, are
-optional. `scripts/web-icon.py` adds a small CSS rule for each channel.
+The channels then show up on the home screen and in the sidebar, next to the libraries.
+If one is missing, check that your user is ticked and the TMDB key is saved, then reload
+the app. Updates come through the same repository like any other plugin.
 
 ## How it works
 
@@ -72,9 +69,7 @@ re-resolved on every seek. HLS gets its playlist rewritten so every segment poin
 the relay, which means FFmpeg only ever talks to localhost.
 
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
-checks on every chunk that the user is still allowed to watch. Every outgoing request has to
-land on a public address, redirects included, and player pages are read as text. Packed
-JavaScript gets unpacked as a string, it is never run.
+every outgoing request has to land on a public address. Nothing from the sites is ever run.
 
 ## Building it
 

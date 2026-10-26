@@ -24,6 +24,7 @@ foreach (var uri in new[] { "http://www.animegg.org/", "https://animegg.org.evil
 foreach (var address in new[] { "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "::ffff:127.0.0.1", "fd00::1", "fe80::1" })
     Check(!SafeHttp.IsPublicAddress(IPAddress.Parse(address)), "private address rejected " + address);
 Check(SafeHttp.IsPublicAddress(IPAddress.Parse("1.1.1.1")), "public IPv4 accepted");
+Check(SafeHttp.IsPublicAddress(IPAddress.Parse("64:ff9b::101:101")) && !SafeHttp.IsPublicAddress(IPAddress.Parse("64:ff9b::a00:1")) && !SafeHttp.IsPublicAddress(IPAddress.Parse("64:ff9b::7f00:1")), "NAT64 judged by its embedded IPv4");
 Check(AniListCatalog.CurrentSeason(new DateTime(2026, 10, 1)) == ("FALL", 2026), "October season boundary");
 Check(AniListCatalog.CurrentSeason(new DateTime(2027, 1, 1)) == ("WINTER", 2027), "January season boundary");
 Check(!Plugin.Allows(Guid.NewGuid()) && !Plugin.Allows(Guid.Empty), "unconfigured plugin denies all accounts");
@@ -101,15 +102,15 @@ Check(AniListCatalog.Parse(Json("""{"id":3,"title":{"romaji":"Soon"},"synonyms":
 
 string Blob(string json) { var raw = System.Text.Encoding.UTF8.GetBytes(json); var key = "otaku-embed-v1"u8.ToArray(); for (var i = 0; i < raw.Length; i++) raw[i] ^= key[i % key.Length]; return Convert.ToBase64String(raw); }
 var embed = $"<script>window.__P=\"{Blob("""{"src":"https://hls.example.top/p/a/master.m3u8","subtitles":[{"lang":"pt","label":"Portuguese","src":"https://hls.example.top/v/pt.vtt"},{"lang":"en","label":"English","default":true,"src":"https://hls.example.top/v/en.vtt"},{"lang":"en","label":"Local","src":"https://127.0.0.1/x.vtt"}]}""")}\";</script>";
-var zoko = ZokoSource.ParseEmbed(embed)[0];
+var zoko = HiAnimeSource.ParseEmbed(embed)[0];
 Check(zoko.Hls && zoko.Url.AbsoluteUri == "https://hls.example.top/p/a/master.m3u8" && zoko.Headers["Referer"] == "https://zokoanime.video/", "HiAnime player configuration decodes to an HLS stream with its referrer");
 Check(zoko.Subtitles!.Select(x => x.Language).SequenceEqual(["en", "pt"]), "HiAnime subtitles put English first and drop private destinations");
-Reject(() => ZokoSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://hls.example.top/m.m3u8","subtitles":[{"lang":"pt","label":"Portuguese","src":"https://hls.example.top/pt.vtt"}]}""")}\";</script>"), "HiAnime without English subtitles is refused");
-Reject(() => ZokoSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://10.0.0.5/m.m3u8","subtitles":[]}""")}\";</script>"), "HiAnime stream on a private address is refused");
-Reject(() => ZokoSource.ParseEmbed("<html>episode missing</html>"), "HiAnime page without a player fails explicitly");
-foreach (var bad in new[] { "0", "12a", "1/2", "../1", "123456789012" }) Reject(() => ZokoSource.ValidateId(bad), "HiAnime rejects identifier " + bad);
-Reject(() => ZokoSource.ValidateId("52991", episode: true), "HiAnime episode IDs need an episode number");
-var zokoSource = new ZokoSource(new SafeHttp());
+Reject(() => HiAnimeSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://hls.example.top/m.m3u8","subtitles":[{"lang":"pt","label":"Portuguese","src":"https://hls.example.top/pt.vtt"}]}""")}\";</script>"), "HiAnime without English subtitles is refused");
+Reject(() => HiAnimeSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://10.0.0.5/m.m3u8","subtitles":[]}""")}\";</script>"), "HiAnime stream on a private address is refused");
+Reject(() => HiAnimeSource.ParseEmbed("<html>episode missing</html>"), "HiAnime page without a player fails explicitly");
+foreach (var bad in new[] { "0", "12a", "1/2", "../1", "123456789012" }) Reject(() => HiAnimeSource.ValidateId(bad), "HiAnime rejects identifier " + bad);
+Reject(() => HiAnimeSource.ValidateId("52991", episode: true), "HiAnime episode IDs need an episode number");
+var zokoSource = new HiAnimeSource(new SafeHttp());
 var direct = await SourceRegistry.MatchAsync(zokoSource, airing, default);
 Check(direct.Titles.Single().Id == "52991", "HiAnime matches by MyAnimeList ID without searching");
 Check((await SourceRegistry.MatchAsync(zokoSource, ordinary, default)).Error is not null, "HiAnime explains a title without a MyAnimeList entry");
@@ -233,7 +234,7 @@ if (args.Contains("--hls-live"))
         Console.WriteLine($"{label}: {Hls.Duration(mediaText):0}s, segment {(int)response.StatusCode} from {segment.Host}, {bytes.Length} bytes, subtitles {video.Subtitles?.Count ?? 0}");
         return bytes.Length > 0 ? bytes[0] : -1;
     }
-    var zokoLive = await new ZokoSource(http).ResolveAsync("52991-1", default);
+    var zokoLive = await new HiAnimeSource(http).ResolveAsync("52991-1", default);
     Check(await FirstSegmentAsync(zokoLive[0], "HiAnime Frieren 1") == 0x47 && zokoLive[0].Subtitles![0].Language == "en", "live HiAnime playlist, segment and English subtitles");
     using var flix = new FlixSource(http);
     var obesity = new Film(1290938, FilmKind.Movie, "South Park: The End of Obesity", 2024, "", null, null, false);

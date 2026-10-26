@@ -37,6 +37,9 @@ public sealed class SafeHttp : IDisposable
         if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
         if (IPAddress.IsLoopback(address)) return false;
         var b = address.GetAddressBytes();
+        // NAT64 (64:ff9b::/96) carries an IPv4 address in its last four bytes; judge that one.
+        if (b.Length == 16 && b[0] == 0 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b && b[4..12].All(x => x == 0))
+            return IsPublicAddress(new IPAddress(b[12..]));
         if (b.Length == 16) return (b[0] & 0xe0) == 0x20; // global unicast only
         return b[0] != 0 && b[0] != 10 && b[0] != 127 && b[0] < 224
             && !(b[0] == 169 && b[1] == 254) && !(b[0] == 172 && b[1] is >= 16 and <= 31)

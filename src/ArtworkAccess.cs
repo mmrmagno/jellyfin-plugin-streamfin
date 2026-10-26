@@ -4,10 +4,10 @@ using Microsoft.AspNetCore.Http;
 
 namespace StreamFin;
 
-// Artwork is served to anyone holding the item ID, as Jellyfin does for library items:
-// Android TV, Chromecast and other native clients load images without any credentials.
-// The posters are public AniList/TMDB images and item IDs are random. Listings, metadata
-// and playback still require a permitted user, and the content filter still applies.
+// Artwork is served without credentials, as Jellyfin does for library items: Android TV,
+// Chromecast and other native clients load images that way. Item IDs are derived from public
+// AniList/TMDB IDs, so anyone who can reach the server can tell whether a title has been
+// browsed or searched for here. Listings, metadata and playback still need a permitted user.
 public sealed class ArtworkAccess(IAuthorizationContext authorization)
 {
     public static bool IsImage(HttpContext context) => (HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method))

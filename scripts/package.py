@@ -21,6 +21,6 @@ with zipfile.ZipFile(root / f'artifacts/StreamFin-{version}.zip', 'w', zipfile.Z
     for name in ['Jellyfin.Plugin.StreamFin.dll', 'meta.json']:
         archive.write(output / name, name)
     archive.write(root / 'assets/banner.png', 'streamfin.png')
-    for name in ['LICENSE', 'THIRD_PARTY_NOTICES.txt', 'APACHE-2.0.txt']:
+    for name in ['LICENSE', 'THIRD_PARTY_NOTICES.txt']:
         archive.write(root / name, name)
 print(f'Packaged artifacts/StreamFin-{version}.zip')

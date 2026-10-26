@@ -16,7 +16,7 @@ using MediaBrowser.Model.MediaInfo;
 
 namespace StreamFin;
 
-public sealed record Playback(string Url, string Secret, IReadOnlyList<string> Subtitles);
+public sealed record Playback(string Id, string Url, string Secret, IReadOnlyList<string> Subtitles);
 
 public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMediaEncoder encoder)
 {
@@ -34,6 +34,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         public bool Hls { get; } = hls;
         public Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> Resolve { get; } = resolve;
         public Func<bool> Live { get; } = live;
+        public DateTime Created { get; } = DateTime.UtcNow;
         public DateTime Expires { get; } = DateTime.UtcNow.AddHours(12);
         public SemaphoreSlim Gate { get; } = new(1, 1);
         public ResolvedVideo? Video { get; set; }
@@ -43,18 +44,20 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         public string SubtitleKey { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
     }
 
-    // An HLS session starts from the resolution Jellyfin just probed; resolving again costs
-    // several page loads for film sources and can land on a different server.
+    // A session starts from the resolution Jellyfin just probed; resolving again costs several
+    // page loads for film sources and can land on a different server or file.
     public Playback Create(Guid userId, ResolvedVideo resolved, Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> resolve, Func<bool> live)
     {
         var hls = resolved.Hls;
         foreach (var pair in tickets.Where(p => p.Value.Expires < DateTime.UtcNow)) tickets.TryRemove(pair.Key, out _);
-        if (tickets.Count >= 256) throw new ProviderException("Too many playback sessions. Please try again later.");
+        // Failed and abandoned attempts pile up, so make room by dropping the oldest instead of refusing.
+        foreach (var (limit, scope) in new[] { (32, tickets.Where(p => p.Value.UserId == userId)), (256, tickets) })
+            foreach (var pair in scope.OrderBy(p => p.Value.Created).SkipLast(limit - 1).ToList()) tickets.TryRemove(pair.Key, out _);
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-        var ticket = tickets[id] = new(userId, hls, resolve, live) { Video = hls ? resolved : null, First = resolved };
+        var ticket = tickets[id] = new(userId, hls, resolve, live) { Video = resolved, First = resolved };
         var root = host.GetLocalApiUrl("127.0.0.1", "http", host.HttpPort).TrimEnd('/') + "/StreamFin/Internal/Stream/" + id;
         // The extension lets FFmpeg pick its HLS reader before reading a byte.
-        return new(root + (hls ? "/master.m3u8" : ""), secret,
+        return new(id, root + (hls ? "/master.m3u8" : ""), secret,
             (resolved.Subtitles ?? []).Select((_, i) => $"{root}/sub/{i}.vtt?key={ticket.SubtitleKey}").ToArray());
     }
 
@@ -65,6 +68,12 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> resolve, Func<bool> live, CancellationToken ct)
     {
         var playback = Create(userId, resolved, resolve, live);
+        try { return await ProbeAsync(playback, resolved, name, ct); }
+        catch { tickets.TryRemove(playback.Id, out _); throw; }
+    }
+
+    private async Task<MediaSourceInfo> ProbeAsync(Playback playback, ResolvedVideo resolved, string name, CancellationToken ct)
+    {
         var media = new MediaSourceInfo
         {
             Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Hls ? "hls" : "mp4", IsRemote = true,
@@ -115,9 +124,23 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         if (!ValidRange(context, out var range)) return;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
-        // Re-resolve on each new read/seek. Jellyfin caches the stable loopback URL, not the expiring CDN URL.
-        var video = (await ticket.Resolve(timeout.Token))[0];
+        // Keep the probed file. Jellyfin holds the stable loopback URL, so when the CDN link expires
+        // (403/404/410) the episode is resolved again, once, and only another MP4 is accepted.
+        var video = ticket.Video!;
         // Reviewed anime hosts keep their strict rules; film players live on rotating hosts.
+        if (await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true)) return;
+        await ticket.Gate.WaitAsync(timeout.Token);
+        try
+        {
+            if (ReferenceEquals(ticket.Video, video))
+            {
+                var fresh = (await ticket.Resolve(timeout.Token))[0];
+                if (fresh.Hls) { context.Response.StatusCode = 502; return; }
+                ticket.Video = fresh;
+            }
+            video = ticket.Video!;
+        }
+        finally { ticket.Gate.Release(); }
         await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token);
     }
 
@@ -176,10 +199,12 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         if (!HttpMethods.IsHead(context.Request.Method)) await context.Response.WriteAsync(body, context.RequestAborted);
     }
 
-    private async Task ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct)
+    // Returns false, without writing anything, when a retryable request finds the link expired.
+    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false)
     {
         using var response = await http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
             head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open);
+        if (retryable && (int)response.StatusCode is 403 or 404 or 410) return false;
         context.Response.StatusCode = (int)response.StatusCode;
         context.Response.Headers.CacheControl = "no-store";
         foreach (var name in new[] { "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges" })
@@ -187,7 +212,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             if (response.Content.Headers.TryGetValues(name, out var contentValues)) context.Response.Headers[name] = contentValues.ToArray();
             else if (response.Headers.TryGetValues(name, out var values)) context.Response.Headers[name] = values.ToArray();
         }
-        if (HttpMethods.IsHead(context.Request.Method)) return;
+        if (HttpMethods.IsHead(context.Request.Method)) return true;
         await using var input = await response.Content.ReadAsStreamAsync(context.RequestAborted);
         var buffer = new byte[65536];
         try
@@ -204,6 +229,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         }
         // FFprobe and seeking FFmpeg hang up mid-segment all the time; that is not an error.
         catch (Exception ex) when (context.RequestAborted.IsCancellationRequested && ex is OperationCanceledException or IOException) { }
+        return true;
     }
 }
 

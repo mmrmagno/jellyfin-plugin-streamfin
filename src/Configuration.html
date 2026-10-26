@@ -3,32 +3,32 @@
 <div id="streamfinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
   <div data-role="content"><div class="content-primary">
     <h2>StreamFin</h2>
-    <p>Browse anime in the Anime channel and movies and shows in Movies &amp; TV, then play them with Jellyfin's own player.</p>
     <form id="streamfinForm">
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="streamfinEnabled"><span>Enable StreamFin</span></label>
-      <h3>Anime</h3>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="zokoEnabled"><span>Enable HiAnime</span></label>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeGgEnabled"><span>Enable AnimeGG</span></label>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeHeavenEnabled"><span>Enable AnimeHeaven</span></label>
-      <p>Open a title and choose Episodes · HiAnime, AnimeGG or AnimeHeaven. If one source fails, return to the title and choose another.</p>
-      <h3>Movies &amp; TV</h3>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmEnabled"><span>Enable Movies &amp; TV channel</span></label>
-      <div class="inputContainer"><label class="inputLabel" for="tmdbKey">TMDB API key</label><input is="emby-input" type="password" id="tmdbKey" autocomplete="off" spellcheck="false">
-        <div class="fieldDescription">Free from themoviedb.org → Settings → API. Either the API key or the read access token works. The channel stays hidden until a key is set.</div></div>
-      <h3>Content filters</h3>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult / explicit titles</span></label>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide Ecchi / sexual fan service</span></label>
-      <p>These filters use AniList classifications and apply to anime browsing, search, and playback. They do not classify every scene and are not an age rating. Movies &amp; TV always leaves out titles TMDB marks as adult.</p>
-      <h3>Who can watch</h3><p>Only selected users can browse or play. With no users selected, access is disabled.</p>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="streamfinEnabled"><span>Turn on StreamFin</span></label>
+      <h3>Who can watch</h3>
+      <p>Only ticked users see the channels. Nobody is ticked by default.</p>
       <div id="streamfinUsers"></div>
-      <div class="inputContainer"><label class="inputLabel" for="streamfinCache">Metadata cache (minutes)</label><input is="emby-input" type="number" id="streamfinCache" min="1" max="1440" required></div>
-      <p>AniList and TMDB provide catalog metadata. Availability depends on the enabled providers. Source changes can temporarily interrupt playback.</p>
+      <h3>Anime sources</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="zokoEnabled"><span>HiAnime</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeGgEnabled"><span>AnimeGG</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeHeavenEnabled"><span>AnimeHeaven</span></label>
+      <p>Open a title, then pick a source. If one fails, go back and pick another.</p>
+      <h3>Movies &amp; TV</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmEnabled"><span>Show the Movies &amp; TV channel</span></label>
+      <div class="inputContainer"><label class="inputLabel" for="tmdbKey">TMDB API key</label><input is="emby-input" type="password" id="tmdbKey" autocomplete="off" spellcheck="false">
+        <div class="fieldDescription">Make a free account on themoviedb.org, then go to Settings &gt; API. The short API key and the long read access token both work. The channel stays hidden until a key is set.</div></div>
+      <h3>Content filters</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult titles</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide ecchi titles</span></label>
+      <p>Anime only, based on AniList tags, not an age rating. Movies &amp; TV never shows titles TMDB marks as adult.</p>
+      <h3>Cache</h3>
+      <div class="inputContainer"><label class="inputLabel" for="streamfinCache">Catalog cache (minutes)</label><input is="emby-input" type="number" id="streamfinCache" min="1" max="1440" required></div>
       <p id="streamfinStatus" role="status">Loading settings…</p>
       <button is="emby-button" type="submit" id="streamfinSave" class="raised button-submit block" disabled><span>Save</span></button>
-      <button is="emby-button" type="button" id="streamfinRefresh" class="raised block" disabled><span>Refresh catalog cache</span></button>
-      <h3>Search results</h3>
-      <p>Clear the saved titles in Anime → Search results and Movies &amp; TV → Search results for all StreamFin users. Watched status and resume positions stay saved. Titles reappear when searched again.</p>
+      <h3>Maintenance</h3>
+      <button is="emby-button" type="button" id="streamfinRefresh" class="raised block" disabled><span>Refresh catalogs now</span></button>
       <button is="emby-button" type="button" id="streamfinClearSearch" class="raised block" disabled><span>Clear search results</span></button>
+      <p>Clearing removes found titles from both channels' Search results, for every user. Watched status and resume positions are kept.</p>
       <p id="streamfinClearStatus" role="status"></p>
     </form>
     <script>

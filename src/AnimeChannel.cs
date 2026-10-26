@@ -186,6 +186,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
             IndexNumber = episode.Number == decimal.Truncate(episode.Number) ? (int)episode.Number : null,
             ParentIndexNumber = 1, ProductionYear = anime.Year,
             RunTimeTicks = anime.Duration is > 0 ? TimeSpan.FromMinutes(anime.Duration.Value).Ticks : null,
+            // The AniFin provider key predates the rename; watch state is matched on it.
             Tags = ["StreamFin"], ProviderIds = new Dictionary<string, string> { ["AniFinEpisode"] = SourceRegistry.Key(provider, episode.Id) }
         }));
     }

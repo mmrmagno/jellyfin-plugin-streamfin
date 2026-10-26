@@ -8,7 +8,7 @@ namespace StreamFin;
 // HiAnime's own player, the one ani-cli uses. It is addressed by MyAnimeList ID and episode
 // number, which AniList already supplies, so no title search or fuzzy matching is involved.
 // The page carries its settings as base64 JSON XORed with a fixed key; decode data only.
-public sealed class ZokoSource(SafeHttp http) : IDirectAnimeSource
+public sealed class HiAnimeSource(SafeHttp http) : IDirectAnimeSource
 {
     public string Id => "zoko";
     public string Name => "HiAnime";
