@@ -1,0 +1,25 @@
+name: dependabot
+
+on: pull_request
+
+permissions: {}
+
+concurrency:
+  group: dependabot-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  automerge:
+    name: Auto-merge Dependabot
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write # merge the pull request once the required checks pass
+      pull-requests: write # turn on auto-merge
+    steps:
+      - run: gh pr merge --auto --squash "$PR"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}

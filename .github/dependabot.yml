@@ -9,3 +9,15 @@ updates:
     groups:
       actions:
         patterns: ['*']
+  - package-ecosystem: nuget
+    directory: /fuzz
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7

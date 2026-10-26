@@ -52,7 +52,6 @@ if args.bootstrap:
     token = admin['AccessToken']
     users = {}
     state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # Preserve bootstrap credentials before doing subsequent calls, to make failures recoverable.
     fd = os.open(state_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as file:
         json.dump({'admin': token, 'users': users}, file)
