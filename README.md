@@ -76,55 +76,16 @@ checks on every chunk that the user is still allowed to watch. Every outgoing re
 land on a public address, redirects included, and player pages are read as text. Packed
 JavaScript gets unpacked as a string, it is never run.
 
-## The parts that were not obvious
-
-- **The 429s were not the video sites.** AniList is in a degraded mode at 30 requests a
-  minute, and the plugin was asking about every title one by one. Now everything shares one
-  budget of 25 a minute, searches get at most 15 and are dropped instead of queued, and a
-  busy AniList means the last good answer from cache.
-- **FFmpeg refuses HLS segments with odd extensions.** Some CDNs serve video segments as
-  `.jpg`. The relay renames them to something FFmpeg accepts.
-- **Jellyfin does not extract subtitles from remote streams**, only from local files. The
-  subtitle tracks get served as separate VTT files instead.
-- **TV apps load images without logging in.** The web app sends credentials for artwork,
-  Android TV and Chromecast do not, so the covers were missing on the TV. Artwork is now
-  public like it is for library items. Everything else still needs a permitted user.
-- **Sources die.** AllAnime and animepahe were the obvious picks, and both now need a real
-  browser to get past their protection, so they are not in here.
-
 ## Building it
 
-Needs Docker, Python 3 and Bash, no local .NET. The Jellyfin and .NET images are pinned by
-digest, and the build compiles against the exact Jellyfin it targets.
+Needs Docker, Python 3 and Bash, no local .NET:
 
 ```sh
 bash scripts/fetch-references.sh
 bash scripts/build.sh
 ```
 
-That runs 133 checks (parsers, episode order, the rate budget, playlist rewriting,
-subtitles, the URL and address rules) and writes `artifacts/StreamFin-<version>.zip`.
-`--provider-live` and `--hls-live` on the test project fetch from the real sites. Stream
-links are tied to the network that resolved them, so I run those on the server.
-
-The other scripts in `scripts/` drive a throwaway Jellyfin through login, search, playback,
-seeking and an AniFin upgrade. They create test accounts, so never point them at a real
-server. `install-remote.py` is how I install a build on my own server by hand: it checks
-the Jellyfin version, backs up the config, and puts the old version back if Jellyfin does
-not come up.
-
-### Releasing
-
-Bump `<Version>` in `src/StreamFin.csproj`, then push a matching annotated tag. The tag
-message becomes the changelog:
-
-```sh
-git tag -a v0.5.0.0 -m "StreamFin 0.5.0.0" -m "What changed, one line each."
-git push origin v0.5.0.0
-```
-
-GitHub Actions builds it, publishes the release with the zip, and adds the version to
-`manifest.json` on main, which is what Jellyfin reads.
+That runs the tests and writes the plugin zip to `artifacts/`.
 
 ## Credits
 
