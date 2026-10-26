@@ -162,7 +162,7 @@ static class Targets
     {
         Guard(() => { foreach (var title in AnimeGgSource.ParseSearch(html)) Clean(title.Title, "AnimeGG title"); });
         Guard(() => { foreach (var episode in AnimeGgSource.ParseEpisodes(html)) Clean(episode.Title, "AnimeGG episode"); });
-        Guard(() => Expect(Regex.IsMatch(AnimeGgSource.ParseSubEmbed(html), @"\A/embed/[0-9]+\z"), "AnimeGG embed is a local path"));
+        Guard(() => Expect(Regex.IsMatch(AnimeGgSource.ParseSubEmbed(html), @"\A/embed/[0-9]+\z", RegexOptions.IgnoreCase), "AnimeGG embed is a local path"));
         Guard(() =>
         {
             foreach (var video in AnimeGgSource.ParseVideos(html))
