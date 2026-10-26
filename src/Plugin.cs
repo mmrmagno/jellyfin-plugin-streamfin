@@ -28,7 +28,7 @@ public sealed class Plugin : BasePlugin<Configuration>, IHasWebPages
     public Plugin(IApplicationPaths paths, IXmlSerializer serializer) : base(paths, serializer) => Instance = this;
     public override Guid Id => PluginId;
     public override string Name => "StreamFin";
-    public override string Description => "Stream anime, movies and TV from online sources.";
+    public override string Description => "Anime, movies and TV from online sources, as Jellyfin channels.";
     public IEnumerable<PluginPageInfo> GetPages() => [new() { Name = "streamfin", EmbeddedResourcePath = "StreamFin.Configuration.html" }];
     public static bool Allows(Guid id) => id != Guid.Empty && Instance?.Configuration is { Enabled: true } c
         && c.AllowedUserIds.Any(value => Guid.TryParse(value, out var allowed) && allowed == id);

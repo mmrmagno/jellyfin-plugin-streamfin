@@ -12,8 +12,8 @@ const fs = require('node:fs');
     await page.goto(base + '/web/', {waitUntil: 'networkidle'});
     try { await page.locator('#txtManualName').waitFor({state: 'visible', timeout: 5000}); }
     catch { await page.getByRole('button', {name: 'Manual Login', exact: true}).click(); }
-    await page.locator('#txtManualName').fill('marc');
-    await page.locator('#txtManualPassword').fill(state.users.marc.password);
+    await page.locator('#txtManualName').fill('viewer');
+    await page.locator('#txtManualPassword').fill(state.users.viewer.password);
     await page.locator('#txtManualPassword').press('Enter');
     await page.locator(':text-is("Anime"):visible').last().waitFor({timeout: 30000});
     await page.screenshot({path: 'artifacts/test-home.png'});

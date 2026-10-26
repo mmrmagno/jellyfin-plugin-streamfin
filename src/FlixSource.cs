@@ -9,7 +9,7 @@ namespace StreamFin;
 
 public sealed record FlixServer(string Name, Uri Link);
 
-// Movies and TV from the two FlixHQ layouts, ported from mediastack's flixdl. Each site lists
+// Movies and TV from the two FlixHQ layouts, ported from my flixdl downloader. Each site lists
 // third-party players; the player page is read as text, packed scripts are unpacked as a pure
 // string transform, and nothing from the page is ever executed.
 public sealed class FlixSource(SafeHttp http) : IDisposable

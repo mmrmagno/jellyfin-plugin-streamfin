@@ -89,74 +89,74 @@ if args.phase == 'before':
     admin = ok('/Users/AuthenticateByName', data={'Username': 'streamfin-test-admin', 'Pw': password})['AccessToken']
     state = {'admin': admin, 'users': {}}
     save(state)
-    for name in ('marc', 'other'):
+    for name in ('viewer', 'other'):
         user_password = secrets.token_urlsafe(24)
         ok('/Users/New', admin, {'Name': name, 'Password': user_password})
         session = ok('/Users/AuthenticateByName', data={'Username': name, 'Pw': user_password})
         state['users'][name] = {'id': session['User']['Id'], 'token': session['AccessToken']}
         save(state)
-    marc = state['users']['marc']
+    viewer = state['users']['viewer']
     plugin = next(p for p in ok('/Plugins', admin) if p['Id'].replace('-', '') == PLUGIN.replace('-', ''))
     assert plugin['Name'] == 'AniFin' and plugin['Version'] == '0.4.0.0', plugin
     ok('/Plugins/' + PLUGIN + '/Configuration', admin, {
-        'Enabled': True, 'AllowedUserIds': [marc['id']], 'AnimeGgEnabled': False, 'AnimeHeavenEnabled': True,
+        'Enabled': True, 'AllowedUserIds': [viewer['id']], 'AnimeGgEnabled': False, 'AnimeHeavenEnabled': True,
         'HideAdultContent': True, 'HideEcchiContent': False, 'MetadataCacheMinutes': 45, 'CacheRevision': int(time.time())})
     refresh_channels(admin)
-    channel('Anime', marc)
-    series = next(x for x in search('Cowboy Bebop', marc) if x['Name'] == 'Cowboy Bebop')
-    seasons = children(series['Id'], marc)
+    channel('Anime', viewer)
+    series = next(x for x in search('Cowboy Bebop', viewer) if x['Name'] == 'Cowboy Bebop')
+    seasons = children(series['Id'], viewer)
     heaven = next(x for x in seasons if x['Name'] == 'Episodes · AnimeHeaven')
-    episode = children(heaven['Id'], marc)[2]
-    ok('/UserItems/' + episode['Id'] + '/UserData?UserId=' + marc['id'], marc['token'], {'Played': False, 'PlaybackPositionTicks': 7200000000, 'PlayCount': 1, 'IsFavorite': True})
-    state.update(series=series['Id'], season=heaven['Id'], episode=episode['Id'], progress=ok('/UserItems/' + episode['Id'] + '/UserData?UserId=' + marc['id'], marc['token']))
+    episode = children(heaven['Id'], viewer)[2]
+    ok('/UserItems/' + episode['Id'] + '/UserData?UserId=' + viewer['id'], viewer['token'], {'Played': False, 'PlaybackPositionTicks': 7200000000, 'PlayCount': 1, 'IsFavorite': True})
+    state.update(series=series['Id'], season=heaven['Id'], episode=episode['Id'], progress=ok('/UserItems/' + episode['Id'] + '/UserData?UserId=' + viewer['id'], viewer['token']))
     save(state)
     print('PASS: AniFin 0.4 bootstrapped, progress recorded on ' + episode['Name'], flush=True)
     raise SystemExit(0)
 
 state = json.loads(state_path.read_text())
-admin, marc, other = state['admin'], state['users']['marc'], state['users']['other']
+admin, viewer, other = state['admin'], state['users']['viewer'], state['users']['other']
 assert ok('/System/Info/Public')['ServerName'] == 'StreamFin isolated test'
 plugin = next(p for p in ok('/Plugins', admin) if p['Id'].replace('-', '') == PLUGIN.replace('-', ''))
 assert plugin['Name'] == 'StreamFin' and plugin['Version'] == '0.5.0.0' and plugin['Status'] == 'Active', plugin
 print('PASS: StreamFin 0.5 replaced AniFin 0.4 under the same plugin ID', flush=True)
 config = ok('/Plugins/' + PLUGIN + '/Configuration', admin)
-assert config['AllowedUserIds'] == [marc['id']] and config['AnimeGgEnabled'] is False and config['HideEcchiContent'] is False and config['MetadataCacheMinutes'] == 45, config
+assert config['AllowedUserIds'] == [viewer['id']] and config['AnimeGgEnabled'] is False and config['HideEcchiContent'] is False and config['MetadataCacheMinutes'] == 45, config
 assert config['ZokoEnabled'] is True and config['FilmEnabled'] is True and config['TmdbApiKey'] == '', config
 print('PASS: settings carried over, new switches default on', flush=True)
 refresh_channels(admin)
-anime = channel('Anime', marc)
+anime = channel('Anime', viewer)
 assert not any(c['Name'] == 'Anime' for c in ok('/Channels?UserId=' + other['id'], other['token'])['Items'])
-assert not any(c['Name'] == 'Movies & TV' for c in ok('/Channels?UserId=' + marc['id'], marc['token'])['Items'])
-print('PASS: Anime still restricted to marc; Movies & TV hidden without a TMDB key', flush=True)
-after = ok('/UserItems/' + state['episode'] + '/UserData?UserId=' + marc['id'], marc['token'])
+assert not any(c['Name'] == 'Movies & TV' for c in ok('/Channels?UserId=' + viewer['id'], viewer['token'])['Items'])
+print('PASS: Anime still restricted to viewer; Movies & TV hidden without a TMDB key', flush=True)
+after = ok('/UserItems/' + state['episode'] + '/UserData?UserId=' + viewer['id'], viewer['token'])
 for key in ('Played', 'PlaybackPositionTicks', 'PlayCount', 'IsFavorite'):
     assert after[key] == state['progress'][key], (key, after[key], state['progress'][key])
-seasons = children(state['series'], marc)
+seasons = children(state['series'], viewer)
 print('Provider choices:', ', '.join(s['Name'] for s in seasons), flush=True)
 assert any(s['Id'] == state['season'] for s in seasons), 'AnimeHeaven folder ID changed'
-assert state['episode'] in {e['Id'] for e in children(state['season'], marc)}, 'AnimeHeaven episode ID changed'
+assert state['episode'] in {e['Id'] for e in children(state['season'], viewer)}, 'AnimeHeaven episode ID changed'
 print('PASS: episode IDs, resume position and favourite survived the upgrade', flush=True)
 
 hianime = next(s for s in seasons if s['Name'] == 'Episodes · HiAnime')
-episodes = children(hianime['Id'], marc)
+episodes = children(hianime['Id'], viewer)
 assert len(episodes) == 26 and all(e['Name'].endswith('Episode ' + e['Name'].split(' · ')[0]) for e in episodes), [e['Name'] for e in episodes[:3]]
 episode = episodes[0]
 for token in (other['token'], None):
     assert request('/Items/' + episode['Id'] + '/PlaybackInfo', token)[0] in (401, 403, 404)
-info = ok('/Items/' + episode['Id'] + '/PlaybackInfo?UserId=' + marc['id'], marc['token'], {'UserId': marc['id']}, method='POST')
+info = ok('/Items/' + episode['Id'] + '/PlaybackInfo?UserId=' + viewer['id'], viewer['token'], {'UserId': viewer['id']}, method='POST')
 source = info['MediaSources'][0]
 kinds = [(s['Type'], s.get('Language')) for s in source['MediaStreams']]
 print('HiAnime source:', source['Name'], source['Container'], kinds, round(source['RunTimeTicks'] / 600000000), 'min', flush=True)
 assert '/StreamFin/Internal/Stream/' in source['Path'] and source['Path'].endswith('/master.m3u8')
 assert ('Video', None) in [(t, None) for t, _ in kinds] and any(t == 'Audio' for t, _ in kinds) and any(t == 'Subtitle' for t, _ in kinds), kinds
 assert 20 * 600000000 < source['RunTimeTicks'] < 30 * 600000000
-print('PASS: HiAnime resolves to HLS with video, audio and a subtitle track, restricted to marc', flush=True)
+print('PASS: HiAnime resolves to HLS with video, audio and a subtitle track, restricted to viewer', flush=True)
 
 
 def transcode(start_ticks):
     query = urllib.parse.urlencode({
         'MediaSourceId': source['Id'], 'PlaySessionId': secrets.token_hex(8), 'VideoCodec': 'h264', 'AudioCodec': 'aac',
-        'VideoBitrate': 2000000, 'AudioBitrate': 128000, 'MaxWidth': 640, 'StartTimeTicks': start_ticks, 'ApiKey': marc['token']})
+        'VideoBitrate': 2000000, 'AudioBitrate': 128000, 'MaxWidth': 640, 'StartTimeTicks': start_ticks, 'ApiKey': viewer['token']})
     started = time.time()
     status, body = request('/Videos/' + episode['Id'] + '/stream.ts?' + query, raw=True, limit=2 * 1024 * 1024)
     assert status == 200 and len(body) > 256 * 1024 and body[0] == 0x47, (status, len(body), body[:40])
@@ -167,16 +167,16 @@ print(f'PASS: Jellyfin transcodes HiAnime from the start ({transcode(0):.1f}s fo
 print(f'PASS: seeking to 12:00 transcodes from the middle ({transcode(12 * 60 * 10_000_000):.1f}s for 2 MB)', flush=True)
 subtitle = next(s for s in source['MediaStreams'] if s['Type'] == 'Subtitle')
 assert subtitle['IsExternal'] and subtitle['Language'] == 'en' and subtitle['IsDefault'], subtitle
-status, body = request(f"/Videos/{episode['Id']}/{source['Id']}/Subtitles/{subtitle['Index']}/0/Stream.vtt?ApiKey={marc['token']}")
+status, body = request(f"/Videos/{episode['Id']}/{source['Id']}/Subtitles/{subtitle['Index']}/0/Stream.vtt?ApiKey={viewer['token']}")
 assert status == 200 and 'WEBVTT' in body and '-->' in body, (status, body[:200])
 print(f"PASS: Jellyfin extracts the English subtitles ({body.count('-->')} cues)", flush=True)
 
 started = time.time()
 for i in range(60):
-    search(f'zz{secrets.token_hex(3)} {i}', marc)
+    search(f'zz{secrets.token_hex(3)} {i}', viewer)
 print(f'60 uncached searches took {time.time() - started:.0f}s', flush=True)
-listing = children(anime['Id'], marc)
-popular = children(next(f for f in listing if f['Name'] == 'Popular')['Id'], marc)
+listing = children(anime['Id'], viewer)
+popular = children(next(f for f in listing if f['Name'] == 'Popular')['Id'], viewer)
 assert len(popular) > 10 and not any('rate limit' in t['Name'].lower() or 'HTTP 429' in t['Name'] for t in popular), [t['Name'] for t in popular[:5]]
 print('PASS: catalog still answers after a burst of searches, no 429 status folders', flush=True)
 print('Upgrade smoke checks passed.', flush=True)

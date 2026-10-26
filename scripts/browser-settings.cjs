@@ -23,7 +23,7 @@ const fs = require('node:fs');
     await page.goto(base + '/web/#/configurationpage?name=streamfin', {waitUntil: 'networkidle'});
     await page.locator('#streamfinSave:enabled').waitFor({timeout: 20000});
     const selected = await page.locator('#streamfinUsers input:checked').evaluateAll(inputs => inputs.map(input => input.value));
-    if (!selected.some(id => id.replaceAll('-', '').toLowerCase() === state.users.marc.id)) throw new Error('marc was not loaded as selected');
+    if (!selected.some(id => id.replaceAll('-', '').toLowerCase() === state.users.viewer.id)) throw new Error('viewer was not loaded as selected');
     console.log('PASS: settings load existing permitted users');
     await page.screenshot({path: 'artifacts/test-settings.png'});
     await Promise.all([

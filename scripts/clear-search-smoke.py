@@ -11,11 +11,11 @@ parser.add_argument('--url', default='http://127.0.0.1:18096')
 parser.add_argument('--verify-after-restart', action='store_true')
 args = parser.parse_args()
 state = json.loads(pathlib.Path('.test-state/session.secret').read_text())
-marc = state['users']['marc']['token']
+viewer = state['users']['viewer']['token']
 clear_path = '/StreamFin/SearchResults/Clear'
 saved_path = pathlib.Path('.test-state/clear.secret')
 
-def request(path, token=marc, data=None):
+def request(path, token=viewer, data=None):
     headers = {'Content-Type': 'application/json'}
     if token:
         headers['Authorization'] = 'MediaBrowser Token="' + token + '"'
@@ -27,7 +27,7 @@ def request(path, token=marc, data=None):
     except urllib.error.HTTPError as error:
         return error.code, None
 
-def ok(path, token=marc, data=None):
+def ok(path, token=viewer, data=None):
     status, body = request(path, token, data)
     assert status < 400, (path, status)
     return body
@@ -53,7 +53,7 @@ if not args.verify_after_restart:
     channel = next(x for x in ok('/Channels')['Items'] if x['Name'] == 'Anime')
     folder = next(x for x in children(channel['Id']) if x['Name'] == 'Search results')
     saved = {'folder': folder['Id'], 'series': series['Id'], 'episodes': {item: user_data(item) for item in (watched, resumed)}}
-    for token in (None, state['users']['other']['token'], marc):
+    for token in (None, state['users']['other']['token'], viewer):
         assert request(clear_path, token, {})[0] in (401, 403)
     print('PASS: clearing requires an administrator', flush=True)
     assert ok(clear_path, state['admin'], {})['ClearedCount'] > 0

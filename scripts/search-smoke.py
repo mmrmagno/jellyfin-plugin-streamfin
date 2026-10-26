@@ -28,12 +28,12 @@ def ok(path, token, data=None):
     assert status < 400, (path, status)
     return body
 
-marc = state['users']['marc']['token']
+viewer = state['users']['viewer']['token']
 other = state['users']['other']['token']
-assert ok('/System/Info/Public', marc)['ServerName'] == 'StreamFin isolated test'
+assert ok('/System/Info/Public', viewer)['ServerName'] == 'StreamFin isolated test'
 config = ok(config_path, state['admin'])
 
-def search(term, token=marc):
+def search(term, token=viewer):
     return ok('/Items?Recursive=true&IncludeItemTypes=Series&Fields=Tags,ProviderIds&SearchTerm=' + urllib.parse.quote(term), token)['Items']
 
 try:
@@ -51,8 +51,8 @@ try:
     ok(config_path, state['admin'], dict(config, HideAdultContent=True, HideEcchiContent=False))
     ecchi = next(x for x in search('High School DxD') if x['Name'] == 'High School DxD')
     ok(config_path, state['admin'], dict(config, HideAdultContent=True, HideEcchiContent=True))
-    assert request('/Items/' + ecchi['Id'], marc)[0] == 404
-    assert request('/Items?ParentId=' + ecchi['Id'], marc)[0] == 404
+    assert request('/Items/' + ecchi['Id'], viewer)[0] == 404
+    assert request('/Items?ParentId=' + ecchi['Id'], viewer)[0] == 404
     assert all(x['Id'] != ecchi['Id'] for x in search('High School DxD'))
     print('PASS: enabling Ecchi filter hides cached titles and denies direct access', flush=True)
 finally:

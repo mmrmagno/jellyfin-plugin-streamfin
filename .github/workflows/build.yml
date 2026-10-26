@@ -1,15 +1,22 @@
-name: Build AniFin
-on: [push, pull_request, workflow_dispatch]
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/fetch-references.sh
       - run: bash scripts/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: AniFin
-          path: artifacts/AniFin-*.zip
+          name: StreamFin
+          path: artifacts/StreamFin-*.zip

@@ -24,7 +24,7 @@ the C# adapter is written independently and adds validation, bounded requests an
 ## FlixHQ provider
 
 `src/FlixSource.cs` ports the site, server-list, unpacking and player logic of the author's own
-`flixdl.py` downloader (mediastack repository).
+`flixdl.py` downloader.
 
 ## AnimeGG provider
 
@@ -66,6 +66,6 @@ SOFTWARE.
 
 ## Jellyfin
 
-StreamFin references Jellyfin's server API assemblies, which are GPL-3.0 licensed.
+StreamFin references Jellyfin's server API assemblies, which are GPL-2.0 licensed.
 Those assemblies are obtained from the pinned upstream image for compilation
 and are not included in the StreamFin plugin ZIP.

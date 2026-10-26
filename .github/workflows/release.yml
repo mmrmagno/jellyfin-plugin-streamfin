@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the tag matches the project version
+        run: |
+          version=$(grep -oP '(?<=<Version>)[^<]+' src/StreamFin.csproj)
+          test "v$version" = "$TAG" || { echo "tag $TAG does not match version $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - run: bash scripts/fetch-references.sh
+      - run: bash scripts/build.sh
+      - name: Publish the release
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents:body)' "$TAG" > notes.txt
+          gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" --title "StreamFin $VERSION" --notes-file notes.txt
+      - name: Add the release to manifest.json
+        run: |
+          cp "artifacts/StreamFin-$VERSION.zip" "$RUNNER_TEMP/"
+          git checkout main
+          python3 scripts/manifest.py --zip "$RUNNER_TEMP/StreamFin-$VERSION.zip" \
+            --url "https://github.com/${{ github.repository }}/releases/download/$TAG/StreamFin-$VERSION.zip" \
+            --changelog "$(cat notes.txt)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add manifest.json
+          git commit -m "release: StreamFin $VERSION"
+          git push origin main

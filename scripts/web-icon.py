@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 parser = argparse.ArgumentParser()
 parser.add_argument('--url', required=True)
 parser.add_argument('--config', type=pathlib.Path, required=True)
-parser.add_argument('--user', default='marc')
+parser.add_argument('--user', required=True, help='administrator whose session is used')
 parser.add_argument('--icon', type=pathlib.Path)
 parser.add_argument('--channel', default='Anime', help='channel name, e.g. Anime or "Movies & TV"')
 parser.add_argument('--channel-id', help='channel ID when the administrator is not permitted to browse it')

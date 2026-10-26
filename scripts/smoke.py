@@ -57,7 +57,7 @@ if args.bootstrap:
     fd = os.open(state_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as file:
         json.dump({'admin': token, 'users': users}, file)
-    for name in ('marc', 'other'):
+    for name in ('viewer', 'other'):
         user_password = secrets.token_urlsafe(24)
         ok('/Users/New', token, {'Name': name, 'Password': user_password})
         session = ok('/Users/AuthenticateByName', data={'Username': name, 'Pw': user_password})
@@ -73,19 +73,19 @@ else:
 admin = state['admin']
 if not state['users']:
     assert ok('/System/Info/Public')['ServerName'] == 'StreamFin isolated test', 'Test account creation is only for the isolated instance.'
-    for name in ('marc', 'other'):
+    for name in ('viewer', 'other'):
         user_password = secrets.token_urlsafe(24)
         ok('/Users/New', admin, {'Name': name, 'Password': user_password})
         session = ok('/Users/AuthenticateByName', data={'Username': name, 'Pw': user_password})
         state['users'][name] = {'id': session['User']['Id'], 'token': session['AccessToken'], 'password': user_password}
         state_path.write_text(json.dumps(state))
-marc = state['users']['marc']
+viewer = state['users']['viewer']
 other = state['users']['other']
 plugins = ok('/Plugins', admin)
 assert any(p['Id'].replace('-', '') == PLUGIN.replace('-', '') and p['Status'] == 'Active' for p in plugins), plugins
 print('PASS: StreamFin loaded', flush=True)
 ok('/Plugins/' + PLUGIN + '/Configuration', admin, {
-    'Enabled': True, 'AllowedUserIds': [marc['id']], 'AnimeGgEnabled': True,
+    'Enabled': True, 'AllowedUserIds': [viewer['id']], 'AnimeGgEnabled': True,
     'MetadataCacheMinutes': 60, 'CacheRevision': int(time.time()),
 })
 tasks = ok('/ScheduledTasks', admin)
@@ -93,21 +93,21 @@ refresh = next((t for t in tasks if 'channel' in t['Name'].lower()), None)
 if refresh and refresh['State'] != 'Running':
     ok('/ScheduledTasks/Running/' + refresh['Id'], admin, method='POST')
 for _ in range(20):
-    channels = ok('/Channels?UserId=' + marc['id'], marc['token'])['Items']
+    channels = ok('/Channels?UserId=' + viewer['id'], viewer['token'])['Items']
     if any(c['Name'] == 'Anime' for c in channels):
         break
     time.sleep(1)
 channel = next(c for c in channels if c['Name'] == 'Anime')
-print('PASS: marc can see Anime', flush=True)
+print('PASS: viewer can see Anime', flush=True)
 assert not any(c['Name'] == 'Anime' for c in ok('/Channels?UserId=' + other['id'], other['token'])['Items'])
 print('PASS: other user cannot see Anime', flush=True)
-views = ok('/UserViews?UserId=' + marc['id'], marc['token'])
+views = ok('/UserViews?UserId=' + viewer['id'], viewer['token'])
 assert any(c['Id'] == channel['Id'] for c in views['Items'])
 print('PASS: Anime appears among library choices', flush=True)
 
 
 def children(parent):
-    return ok('/Items?ParentId=' + parent + '&UserId=' + marc['id'] + '&Fields=Overview,ProviderIds', marc['token'])['Items']
+    return ok('/Items?ParentId=' + parent + '&UserId=' + viewer['id'] + '&Fields=Overview,ProviderIds', viewer['token'])['Items']
 
 
 folders = children(channel['Id'])
@@ -128,7 +128,7 @@ for identity in (other['token'], None):
         status, _ = request(path, identity)
         assert status in (401, 403, 404), (path, status)
 print('PASS: direct catalog/item/playback access denied to other and anonymous users', flush=True)
-info = ok('/Items/' + episode['Id'] + '/PlaybackInfo?UserId=' + marc['id'], marc['token'])
+info = ok('/Items/' + episode['Id'] + '/PlaybackInfo?UserId=' + viewer['id'], viewer['token'])
 assert info.get('MediaSources'), info
 source = next(s for s in info['MediaSources'] if '/StreamFin/' in s.get('Path', ''))
 assert source['MediaStreams'], 'Resolved source lacks media stream information'
@@ -149,7 +149,7 @@ config = ok(config_path, admin)
 try:
     disabled = dict(config, AllowedUserIds=[])
     ok(config_path, admin, disabled)
-    status, _ = request('/Items/' + episode['Id'] + '/PlaybackInfo', marc['token'])
+    status, _ = request('/Items/' + episode['Id'] + '/PlaybackInfo', viewer['token'])
     assert status in (401, 403, 404), 'Cached media bypassed revoked access'
 finally:
     ok(config_path, admin, config)

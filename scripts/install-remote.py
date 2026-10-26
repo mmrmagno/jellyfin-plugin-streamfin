@@ -19,9 +19,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=pathlib.Path, required=True)
 parser.add_argument('--artifact', type=pathlib.Path, required=True)
 parser.add_argument('--backups', type=pathlib.Path, required=True)
-parser.add_argument('--user', default='marc')
+parser.add_argument('--user', required=True, help='Jellyfin user who gets access on a first install')
 parser.add_argument('--container', default='jellyfin')
-parser.add_argument('--owner', default='1500:1500', help='uid:gid of the Jellyfin service user')
+parser.add_argument('--owner', required=True, help='uid:gid of the Jellyfin service user')
 args = parser.parse_args()
 uid, gid = (int(part) for part in args.owner.split(':'))
 if os.geteuid() not in (0, uid):
@@ -43,7 +43,7 @@ if len(rows) != 1:
     raise SystemExit('The requested Jellyfin account must exist and be unambiguous.')
 user_id = rows[0][0]
 with zipfile.ZipFile(args.artifact) as package:
-    expected = {'Jellyfin.Plugin.StreamFin.dll', 'meta.json', 'LICENSE', 'THIRD_PARTY_NOTICES.txt', 'APACHE-2.0.txt'}
+    expected = {'Jellyfin.Plugin.StreamFin.dll', 'meta.json', 'streamfin.png', 'LICENSE', 'THIRD_PARTY_NOTICES.txt', 'APACHE-2.0.txt'}
     if set(package.namelist()) != expected:
         raise SystemExit('Unexpected release archive contents.')
     files = {name: package.read(name) for name in expected}

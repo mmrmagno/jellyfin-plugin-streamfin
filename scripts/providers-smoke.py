@@ -12,11 +12,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--url', default='http://127.0.0.1:18096')
 args = parser.parse_args()
 state = json.loads(pathlib.Path('.test-state/session.secret').read_text())
-marc = state['users']['marc']['token']
+viewer = state['users']['viewer']['token']
 config_path = '/Plugins/a74fdb2e-938f-483b-b2ef-f527e14ff724/Configuration'
 
 
-def request(path, token=marc, data=None):
+def request(path, token=viewer, data=None):
     headers = {'Content-Type': 'application/json'}
     if token:
         headers['Authorization'] = 'MediaBrowser Token="' + token + '"'
@@ -29,7 +29,7 @@ def request(path, token=marc, data=None):
         return error.code, None
 
 
-def ok(path, token=marc, data=None):
+def ok(path, token=viewer, data=None):
     status, body = request(path, token, data)
     assert status < 400, (path, status)
     return body
