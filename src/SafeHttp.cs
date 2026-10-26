@@ -52,9 +52,15 @@ public sealed class SafeHttp : IDisposable
     public static bool IsKnownSite(string host) => host is "www.animegg.org" or "animegg.org" or "graphql.anilist.co" or "animeheaven.me"
         or "zokoanime.video" or "api.themoviedb.org" or "flixhqz.net" or "flixhq.ws";
 
+    private static string Host(Uri uri)
+    {
+        try { return uri.IdnHost; }
+        catch (UriFormatException) { throw new ProviderException("Source returned an unsupported destination."); }
+    }
+
     public static void Validate(Uri uri, bool media)
     {
-        var host = uri.IdnHost.ToLowerInvariant();
+        var host = Host(uri).ToLowerInvariant();
         var site = IsKnownSite(host);
         var heaven = media && AnimeHeavenSource.IsMediaHost(host);
         var cdn = media && (host == "vidcache.net" || host.EndsWith(".vidcache.net", StringComparison.Ordinal));
@@ -76,7 +82,7 @@ public sealed class SafeHttp : IDisposable
         if (uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0 || uri.HostNameType is UriHostNameType.Unknown
             || !(uri.IsDefaultPort || uri.Port >= 1024))
             throw new ProviderException("Source returned an unsupported destination.");
-        if (IPAddress.TryParse(uri.IdnHost.Trim('[', ']'), out var literal) && !IsPublicAddress(literal))
+        if (IPAddress.TryParse(Host(uri).Trim('[', ']'), out var literal) && !IsPublicAddress(literal))
             throw new ProviderException("Source returned an unsupported destination.");
     }
 

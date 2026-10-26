@@ -376,16 +376,14 @@ public static class Hls
     public static string RewriteMedia(string text, Uri playlist, HlsLinks links)
     {
         var output = new StringBuilder("#EXTM3U\n");
-        string Relay(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url); }
+        string Relay(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url)[2..]; }
         foreach (var raw in Lines(text))
         {
             var line = raw.Trim();
             if (line.Length == 0 || line == "#EXTM3U") continue;
             if (!line.StartsWith('#'))
             {
-                var segment = Absolute(playlist, line);
-                // Inside p/, so a bare name resolves to the sibling relay path.
-                output.Append(Part(links.Add(segment, false), false, segment)[2..]).Append('\n');
+                output.Append(Relay(line)).Append('\n');
                 continue;
             }
             var colon = line.IndexOf(':');
@@ -414,7 +412,7 @@ public static class Hls
     public static string WebVtt(string text)
     {
         text = text.TrimStart('\uFEFF').Replace("\r\n", "\n");
-        if (text.TrimStart().StartsWith("WEBVTT", StringComparison.Ordinal)) return text;
+        if (text.TrimStart().StartsWith("WEBVTT", StringComparison.Ordinal)) return text.TrimStart();
         if (!Regex.IsMatch(text, @"\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->", RegexOptions.None, TimeSpan.FromSeconds(2))) throw new ProviderException("The subtitle file is not SubRip or WebVTT.");
         return "WEBVTT\n\n" + Regex.Replace(text, @"(\d{2}:\d{2}:\d{2}),(\d{3})", "$1.$2", RegexOptions.None, TimeSpan.FromSeconds(2));
     }

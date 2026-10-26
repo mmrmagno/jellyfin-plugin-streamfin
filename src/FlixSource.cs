@@ -231,7 +231,8 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
             {
                 var file = TrackFile.Match(block.Value);
                 var label = TrackLabel.Match(block.Value);
-                if (!file.Success || !label.Success || label.Groups[1].Value.Contains("thumbnail", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!file.Success || !label.Success || label.Groups[1].Value.Trim().Length == 0
+                    || label.Groups[1].Value.Contains("thumbnail", StringComparison.OrdinalIgnoreCase)) continue;
                 if (Valid(file.Groups[1].Value) is { } url) found.Add(new(label.Groups[1].Value.Trim(), Languages.Code("", label.Groups[1].Value), url));
             }
         return found.DistinctBy(s => s.Url).ToArray();

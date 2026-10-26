@@ -124,7 +124,7 @@ public sealed class TmdbCatalog(SafeHttp http) : IDisposable
         var date = Text(node, k == FilmKind.Movie ? "release_date" : "first_air_date");
         int? year = date is { Length: >= 4 } && int.TryParse(date[..4], NumberStyles.None, CultureInfo.InvariantCulture, out var y) ? y : null;
         int? runtime = Number(node, "runtime") ?? (node.TryGetProperty("episode_run_time", out var runs) && runs.ValueKind == JsonValueKind.Array
-            && runs.EnumerateArray().FirstOrDefault() is { ValueKind: JsonValueKind.Number } first ? first.GetInt32() : null);
+            && runs.EnumerateArray().FirstOrDefault() is { ValueKind: JsonValueKind.Number } first && first.TryGetInt32(out var run) ? run : null);
         return new Film(id, k, title, year, Text(node, "overview") ?? "", Image(node, "poster_path"), runtime,
             node.TryGetProperty("adult", out var adult) && adult.ValueKind == JsonValueKind.True);
     }

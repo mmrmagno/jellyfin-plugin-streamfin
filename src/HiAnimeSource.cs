@@ -102,5 +102,5 @@ public static class Languages
 
     // English first, at most eight tracks: each one is a separate stream FFmpeg opens.
     public static IReadOnlyList<Subtitle> Arrange(IEnumerable<Subtitle> subtitles) => subtitles
-        .DistinctBy(s => s.Url).OrderBy(s => s.Language == "en" ? 0 : 1).Take(8).ToArray();
+        .OrderBy(s => s.Language == "en" ? 0 : 1).DistinctBy(s => s.Url).Take(8).ToArray();
 }
