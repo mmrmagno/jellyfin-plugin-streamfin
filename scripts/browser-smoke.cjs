@@ -4,7 +4,7 @@ const fs = require('node:fs');
 
 (async () => {
   const state = JSON.parse(fs.readFileSync('.test-state/session.secret', 'utf8'));
-  const base = process.env.ANIFIN_TEST_URL || 'http://127.0.0.1:18096';
+  const base = process.env.STREAMFIN_TEST_URL || 'http://127.0.0.1:18096';
   const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', headless: true, args: ['--no-sandbox']});
   const context = await browser.newContext({viewport: {width: 1440, height: 900}});
   const page = await context.newPage();

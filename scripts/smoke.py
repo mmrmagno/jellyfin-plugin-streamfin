@@ -19,7 +19,7 @@ state_path = pathlib.Path(args.state)
 
 
 def request(path, token=None, data=None, method=None):
-    headers = {'Content-Type': 'application/json', 'Authorization': 'MediaBrowser Client="AniFin Tests", Device="Integration", DeviceId="anifin-smoke", Version="0.1.0"'}
+    headers = {'Content-Type': 'application/json', 'Authorization': 'MediaBrowser Client="StreamFin Tests", Device="Integration", DeviceId="streamfin-smoke", Version="0.1.0"'}
     if token:
         headers['Authorization'] += ', Token="' + token + '"'
     req = urllib.request.Request(args.url + path, headers=headers,
@@ -44,12 +44,12 @@ if args.bootstrap:
     if info['StartupWizardCompleted']:
         raise SystemExit('Refusing to bootstrap an initialized server.')
     password = secrets.token_urlsafe(24)
-    ok('/Startup/Configuration', data={'ServerName': 'AniFin isolated test', 'UICulture': 'en-US', 'MetadataCountryCode': 'CH', 'PreferredMetadataLanguage': 'en'})
+    ok('/Startup/Configuration', data={'ServerName': 'StreamFin isolated test', 'UICulture': 'en-US', 'MetadataCountryCode': 'CH', 'PreferredMetadataLanguage': 'en'})
     ok('/Startup/User')
-    ok('/Startup/User', data={'Name': 'anifin-test-admin', 'Password': password})
+    ok('/Startup/User', data={'Name': 'streamfin-test-admin', 'Password': password})
     ok('/Startup/RemoteAccess', data={'EnableRemoteAccess': True, 'EnableAutomaticPortMapping': False})
     ok('/Startup/Complete', data={})
-    admin = ok('/Users/AuthenticateByName', data={'Username': 'anifin-test-admin', 'Pw': password})
+    admin = ok('/Users/AuthenticateByName', data={'Username': 'streamfin-test-admin', 'Pw': password})
     token = admin['AccessToken']
     users = {}
     state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -72,7 +72,7 @@ else:
 
 admin = state['admin']
 if not state['users']:
-    assert ok('/System/Info/Public')['ServerName'] == 'AniFin isolated test', 'Test account creation is only for the isolated instance.'
+    assert ok('/System/Info/Public')['ServerName'] == 'StreamFin isolated test', 'Test account creation is only for the isolated instance.'
     for name in ('marc', 'other'):
         user_password = secrets.token_urlsafe(24)
         ok('/Users/New', admin, {'Name': name, 'Password': user_password})
@@ -83,7 +83,7 @@ marc = state['users']['marc']
 other = state['users']['other']
 plugins = ok('/Plugins', admin)
 assert any(p['Id'].replace('-', '') == PLUGIN.replace('-', '') and p['Status'] == 'Active' for p in plugins), plugins
-print('PASS: AniFin loaded', flush=True)
+print('PASS: StreamFin loaded', flush=True)
 ok('/Plugins/' + PLUGIN + '/Configuration', admin, {
     'Enabled': True, 'AllowedUserIds': [marc['id']], 'AnimeGgEnabled': True,
     'MetadataCacheMinutes': 60, 'CacheRevision': int(time.time()),
@@ -130,7 +130,7 @@ for identity in (other['token'], None):
 print('PASS: direct catalog/item/playback access denied to other and anonymous users', flush=True)
 info = ok('/Items/' + episode['Id'] + '/PlaybackInfo?UserId=' + marc['id'], marc['token'])
 assert info.get('MediaSources'), info
-source = next(s for s in info['MediaSources'] if '/AniFin/' in s.get('Path', ''))
+source = next(s for s in info['MediaSources'] if '/StreamFin/' in s.get('Path', ''))
 assert source['MediaStreams'], 'Resolved source lacks media stream information'
 state['episode'] = episode['Id']
 state['channel'] = channel['Id']
@@ -138,8 +138,8 @@ state['source'] = source
 state_path.write_text(json.dumps(state))
 print('PASS: fresh stream resolved and probed (' + source['Name'] + ')', flush=True)
 all_other = ok('/Items?Recursive=true&IncludeItemTypes=Series,Season,Episode&Fields=Tags', other['token'])['Items']
-assert all('AniFin' not in item.get('Tags', []) for item in all_other)
-print('PASS: generic cached item listings do not leak AniFin to other users', flush=True)
+assert all('StreamFin' not in item.get('Tags', []) for item in all_other)
+print('PASS: generic cached item listings do not leak StreamFin to other users', flush=True)
 status, _ = request('/Items/' + episode['Id'] + '/Images/Primary')
 assert status in (401, 403, 404)
 print('PASS: anonymous artwork requests remain restricted', flush=True)

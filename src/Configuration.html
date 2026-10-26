@@ -1,51 +1,60 @@
 <!DOCTYPE html>
-<html><head><title>AniFin</title></head><body>
-<div id="anifinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+<html><head><title>StreamFin</title></head><body>
+<div id="streamfinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
   <div data-role="content"><div class="content-primary">
-    <h2>AniFin</h2>
-    <p>Browse anime in the Anime channel and play Japanese audio with English subtitles.</p>
-    <form id="anifinForm">
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="anifinEnabled"><span>Enable Anime channel</span></label>
+    <h2>StreamFin</h2>
+    <p>Browse anime in the Anime channel and movies and shows in Movies &amp; TV, then play them with Jellyfin's own player.</p>
+    <form id="streamfinForm">
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="streamfinEnabled"><span>Enable StreamFin</span></label>
+      <h3>Anime</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="zokoEnabled"><span>Enable HiAnime</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeGgEnabled"><span>Enable AnimeGG</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="animeHeavenEnabled"><span>Enable AnimeHeaven</span></label>
-      <p>Open a title and choose Episodes · AnimeGG or Episodes · AnimeHeaven. If one source fails, return to the title and choose the other.</p>
+      <p>Open a title and choose Episodes · HiAnime, AnimeGG or AnimeHeaven. If one source fails, return to the title and choose another.</p>
+      <h3>Movies &amp; TV</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmEnabled"><span>Enable Movies &amp; TV channel</span></label>
+      <div class="inputContainer"><label class="inputLabel" for="tmdbKey">TMDB API key</label><input is="emby-input" type="password" id="tmdbKey" autocomplete="off" spellcheck="false">
+        <div class="fieldDescription">Free from themoviedb.org → Settings → API. Either the API key or the read access token works. The channel stays hidden until a key is set.</div></div>
       <h3>Content filters</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult / explicit titles</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide Ecchi / sexual fan service</span></label>
-      <p>Filters use AniList classifications and apply to browsing, search, and playback. They do not classify every scene and are not an age rating.</p>
+      <p>These filters use AniList classifications and apply to anime browsing, search, and playback. They do not classify every scene and are not an age rating. Movies &amp; TV always leaves out titles TMDB marks as adult.</p>
       <h3>Who can watch</h3><p>Only selected users can browse or play. With no users selected, access is disabled.</p>
-      <div id="anifinUsers"></div>
-      <div class="inputContainer"><label class="inputLabel" for="anifinCache">Metadata cache (minutes)</label><input is="emby-input" type="number" id="anifinCache" min="1" max="1440" required></div>
-      <p>AniList provides catalog metadata. Availability depends on the enabled providers. Source changes can temporarily interrupt playback. English subtitles are part of the video.</p>
-      <p id="anifinStatus" role="status">Loading settings…</p>
-      <button is="emby-button" type="submit" id="anifinSave" class="raised button-submit block" disabled><span>Save</span></button>
-      <button is="emby-button" type="button" id="anifinRefresh" class="raised block" disabled><span>Refresh catalog cache</span></button>
+      <div id="streamfinUsers"></div>
+      <div class="inputContainer"><label class="inputLabel" for="streamfinCache">Metadata cache (minutes)</label><input is="emby-input" type="number" id="streamfinCache" min="1" max="1440" required></div>
+      <p>AniList and TMDB provide catalog metadata. Availability depends on the enabled providers. Source changes can temporarily interrupt playback.</p>
+      <p id="streamfinStatus" role="status">Loading settings…</p>
+      <button is="emby-button" type="submit" id="streamfinSave" class="raised button-submit block" disabled><span>Save</span></button>
+      <button is="emby-button" type="button" id="streamfinRefresh" class="raised block" disabled><span>Refresh catalog cache</span></button>
       <h3>Search results</h3>
-      <p>Clear the saved titles in Anime → Search results for all AniFin users. Watched status and resume positions stay saved. Titles reappear when searched again.</p>
-      <button is="emby-button" type="button" id="anifinClearSearch" class="raised block" disabled><span>Clear search results</span></button>
-      <p id="anifinClearStatus" role="status"></p>
+      <p>Clear the saved titles in Anime → Search results and Movies &amp; TV → Search results for all StreamFin users. Watched status and resume positions stay saved. Titles reappear when searched again.</p>
+      <button is="emby-button" type="button" id="streamfinClearSearch" class="raised block" disabled><span>Clear search results</span></button>
+      <p id="streamfinClearStatus" role="status"></p>
     </form>
     <script>
       (function () {
         const pluginId = 'a74fdb2e-938f-483b-b2ef-f527e14ff724';
-        const page = document.querySelector('#anifinConfig');
+        const page = document.querySelector('#streamfinConfig');
         let loaded = false;
         page.addEventListener('viewshow', async function () {
           loaded = false;
-          page.querySelector('#anifinSave').disabled = true;
-          page.querySelector('#anifinRefresh').disabled = true;
-          page.querySelector('#anifinClearSearch').disabled = true;
-          page.querySelector('#anifinStatus').textContent = 'Loading settings…';
+          page.querySelector('#streamfinSave').disabled = true;
+          page.querySelector('#streamfinRefresh').disabled = true;
+          page.querySelector('#streamfinClearSearch').disabled = true;
+          page.querySelector('#streamfinStatus').textContent = 'Loading settings…';
           Dashboard.showLoadingMsg();
           try {
             const [config, users] = await Promise.all([ApiClient.getPluginConfiguration(pluginId), ApiClient.getUsers()]);
-            page.querySelector('#anifinEnabled').checked = config.Enabled;
+            page.querySelector('#streamfinEnabled').checked = config.Enabled;
+            page.querySelector('#zokoEnabled').checked = config.ZokoEnabled !== false;
             page.querySelector('#animeGgEnabled').checked = config.AnimeGgEnabled;
+            page.querySelector('#filmEnabled').checked = config.FilmEnabled !== false;
+            page.querySelector('#tmdbKey').value = config.TmdbApiKey || '';
             page.querySelector('#animeHeavenEnabled').checked = config.AnimeHeavenEnabled !== false;
             page.querySelector('#hideAdult').checked = config.HideAdultContent !== false;
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
-            page.querySelector('#anifinCache').value = config.MetadataCacheMinutes;
-            const container = page.querySelector('#anifinUsers');
+            page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
+            const container = page.querySelector('#streamfinUsers');
             container.replaceChildren();
             users.forEach(user => {
               const label = document.createElement('label'); label.className = 'checkboxContainer';
@@ -55,45 +64,48 @@
               label.append(input, text); container.append(label);
             });
             loaded = true;
-            page.querySelector('#anifinSave').disabled = false;
-            page.querySelector('#anifinRefresh').disabled = false;
-            page.querySelector('#anifinClearSearch').disabled = false;
-            page.querySelector('#anifinStatus').textContent = '';
+            page.querySelector('#streamfinSave').disabled = false;
+            page.querySelector('#streamfinRefresh').disabled = false;
+            page.querySelector('#streamfinClearSearch').disabled = false;
+            page.querySelector('#streamfinStatus').textContent = '';
           } catch (error) {
-            console.warn('AniFin settings could not load:', error.message);
-            page.querySelector('#anifinStatus').textContent = 'Could not load settings. Reload this page before making changes.';
+            console.warn('StreamFin settings could not load:', error.message);
+            page.querySelector('#streamfinStatus').textContent = 'Could not load settings. Reload this page before making changes.';
           } finally { Dashboard.hideLoadingMsg(); }
         });
-        page.querySelector('#anifinForm').addEventListener('submit', async function (event) {
+        page.querySelector('#streamfinForm').addEventListener('submit', async function (event) {
           event.preventDefault();
           if (!loaded) return;
           Dashboard.showLoadingMsg();
           try {
             const config = await ApiClient.getPluginConfiguration(pluginId);
-            config.Enabled = page.querySelector('#anifinEnabled').checked;
+            config.Enabled = page.querySelector('#streamfinEnabled').checked;
+            config.ZokoEnabled = page.querySelector('#zokoEnabled').checked;
             config.AnimeGgEnabled = page.querySelector('#animeGgEnabled').checked;
+            config.FilmEnabled = page.querySelector('#filmEnabled').checked;
+            config.TmdbApiKey = page.querySelector('#tmdbKey').value.trim();
             config.AnimeHeavenEnabled = page.querySelector('#animeHeavenEnabled').checked;
             config.HideAdultContent = page.querySelector('#hideAdult').checked;
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
-            config.MetadataCacheMinutes = Number(page.querySelector('#anifinCache').value);
-            config.AllowedUserIds = Array.from(page.querySelectorAll('#anifinUsers input:checked'), input => input.value);
+            config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
+            config.AllowedUserIds = Array.from(page.querySelectorAll('#streamfinUsers input:checked'), input => input.value);
             config.CacheRevision++;
             Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
           } finally { Dashboard.hideLoadingMsg(); }
         });
-        page.querySelector('#anifinRefresh').addEventListener('click', async function () {
+        page.querySelector('#streamfinRefresh').addEventListener('click', async function () {
           if (!loaded) return;
           const config = await ApiClient.getPluginConfiguration(pluginId); config.CacheRevision++;
           Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
         });
-        page.querySelector('#anifinClearSearch').addEventListener('click', async function () {
+        page.querySelector('#streamfinClearSearch').addEventListener('click', async function () {
           if (!loaded) return;
-          const button = page.querySelector('#anifinClearSearch');
-          const status = page.querySelector('#anifinClearStatus');
+          const button = page.querySelector('#streamfinClearSearch');
+          const status = page.querySelector('#streamfinClearStatus');
           button.disabled = true;
           status.textContent = 'Clearing search results…';
           try {
-            const result = await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('AniFin/SearchResults/Clear'), dataType: 'json'});
+            const result = await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('StreamFin/SearchResults/Clear'), dataType: 'json'});
             status.textContent = result.ClearedCount ? 'Search results cleared. Watched status and resume positions were kept.' : 'Search results are already empty.';
           } catch {
             status.textContent = 'Could not clear search results. Please try again.';

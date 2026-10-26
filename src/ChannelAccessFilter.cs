@@ -10,7 +10,7 @@ using Microsoft.AspNetCore.Mvc.Filters;
 using MediaBrowser.Model.Search;
 using MediaBrowser.Model.Entities;
 
-namespace AniFin;
+namespace StreamFin;
 
 // IChannel.IsEnabledFor hides the channel, but cached descendants can also be requested
 // via Jellyfin's generic item/playback endpoints. Protect those routes and their results.
@@ -19,13 +19,8 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
 {
     // Jellyfin writes a channel's cache before persisting the returned children.
     // Serialize our native-view population so parallel web requests cannot observe that gap.
-    private Guid ChannelId => library.GetNewItemId("Channel Anime", typeof(Channel));
-    private bool IsOurs(Guid id)
-    {
-        if (id == Guid.Empty) return false;
-        if (id == ChannelId) return true;
-        return library.GetItemById(id)?.ChannelId == ChannelId;
-    }
+    private bool IsOurs(Guid id) => id != Guid.Empty && content.IsOurs(id);
+    private bool IsOurChannel(Guid id) => id == content.ChannelId || id == content.FilmChannelId;
     private Task<bool> Allowed(ActionContext context) => artwork.AllowsAsync(context.HttpContext);
     private static IEnumerable<Guid> Identifiers(object? value, int depth = 0)
     {
@@ -49,7 +44,7 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     {
         var ids = context.ActionArguments.Values.SelectMany(v => Identifiers(v))
             .Concat(context.HttpContext.Request.Query.SelectMany(v => Identifiers(v.Value.ToString()))).Distinct().ToArray();
-        context.HttpContext.Items[SearchHistory.HiddenTag] = ids.Contains(library.GetNewItemId("searchAnime16", typeof(Folder)));
+        context.HttpContext.Items[SearchHistory.HiddenTag] = SearchHistory.Folders(library).Any(ids.Contains);
         if (!await Allowed(context))
         {
             if (ids.Any(IsOurs)) { context.Result = new NotFoundResult(); return; }
@@ -68,11 +63,12 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
                 foreach (var id in ids)
                 {
                     var item = library.GetItemById(id);
-                    if (item is not Folder || (item.ChannelId != ChannelId && item.Id != ChannelId)) continue;
+                    if (item is not Folder || (!IsOurChannel(item.ChannelId) && !IsOurChannel(item.Id))) continue;
+                    var channelId = IsOurChannel(item.Id) ? item.Id : item.ChannelId;
                     await ChannelNavigation.Gate.WaitAsync(context.HttpContext.RequestAborted);
                     try
                     {
-                        await channels.GetChannelItemsInternal(new InternalItemsQuery(auth.User) { Parent = item, ChannelIds = [ChannelId] },
+                        await channels.GetChannelItemsInternal(new InternalItemsQuery(auth.User) { Parent = item, ChannelIds = [channelId] },
                             new Progress<double>(), context.HttpContext.RequestAborted);
                         // Search series received distinct grouping keys in 0.2, but Jellyfin
                         // does not refresh existing channel descendants on every listing.
@@ -107,6 +103,13 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
             && await content.AllowsAsync(id, context.HttpContext.RequestAborted));
         if (context.Result is ObjectResult result)
         {
+            if (allowed) await content.PrefetchAsync(result.Value switch
+            {
+                QueryResult<BaseItemDto> query => query.Items.Select(dto => dto.Id),
+                IEnumerable<BaseItemDto> items => items.Select(dto => dto.Id),
+                SearchHintResult hints => hints.SearchHints.Select(hint => hint.Id),
+                _ => []
+            }, context.HttpContext.RequestAborted);
             switch (result.Value)
             {
                 case BaseItemDto item:

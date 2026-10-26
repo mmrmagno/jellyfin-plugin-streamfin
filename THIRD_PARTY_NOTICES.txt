@@ -5,7 +5,26 @@
 `src/Assets/shuriken.svg` is the Material Design Icons **shuriken** icon by
 Michael Richins, from https://github.com/Templarian/MaterialDesign.
 Copyright the Pictogrammers contributors. Licensed under Apache-2.0;
-see `APACHE-2.0.txt`. `anime.svg` and `anime.png` add AniFin colors and a background.
+see `APACHE-2.0.txt`. `anime.svg` and `anime.png` add StreamFin colors and a background.
+
+## Popcorn icon
+
+`src/Assets/popcorn.svg` is the Material Design Icons **popcorn** icon,
+from https://github.com/Templarian/MaterialDesign (@mdi/svg 7.4.47).
+Copyright the Pictogrammers contributors. Licensed under Apache-2.0;
+see `APACHE-2.0.txt`. `streamfin.svg` and `popcorn.png` add StreamFin colors and a background.
+
+## HiAnime provider
+
+`src/ZokoSource.cs` follows the request flow that ani-cli (https://github.com/pystardust/ani-cli,
+version 5.1.6, inspected 2026-10-26) uses for the hianime.at player: the MyAnimeList-keyed
+player address and the fixed XOR key of its configuration blob. No ani-cli code is included;
+the C# adapter is written independently and adds validation, bounded requests and English-only selection.
+
+## FlixHQ provider
+
+`src/FlixSource.cs` ports the site, server-list, unpacking and player logic of the author's own
+`flixdl.py` downloader (mediastack repository).
 
 ## AnimeGG provider
 
@@ -47,6 +66,6 @@ SOFTWARE.
 
 ## Jellyfin
 
-AniFin references Jellyfin's server API assemblies, which are GPL-3.0 licensed.
+StreamFin references Jellyfin's server API assemblies, which are GPL-3.0 licensed.
 Those assemblies are obtained from the pinned upstream image for compilation
-and are not included in the AniFin plugin ZIP.
+and are not included in the StreamFin plugin ZIP.

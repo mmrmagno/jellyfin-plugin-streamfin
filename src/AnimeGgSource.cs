@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Text.RegularExpressions;
 
-namespace AniFin;
+namespace StreamFin;
 
 // Adapted from Seanime-contributions/Seanime-Providers (MIT), AnimeGG by Pal.
 // Parse data only: never evaluate scripts or load the upstream page in the client.
@@ -28,7 +28,7 @@ public sealed class AnimeGgSource(SafeHttp http) : IAnimeSource
         .Select(m => new SourceTitle(m.Groups[1].Value, Clean(m.Groups[2].Value)))
         .DistinctBy(x => x.Id).ToArray();
 
-    public async Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string seriesId, CancellationToken ct)
+    public async Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string seriesId, Anime anime, CancellationToken ct)
     {
         ValidateId(seriesId);
         var result = ParseEpisodes(await http.TextAsync(new Uri(Origin, "series/" + seriesId), ct));

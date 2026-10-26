@@ -9,14 +9,14 @@ using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
-namespace AniFin;
+namespace StreamFin;
 
 // Register alongside the internal providers so results merge with the local library.
 // Jellyfin's external-provider path replaces local results whenever it finds a match.
 public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library, SearchHistory history, IHttpContextAccessor contexts,
     IAuthorizationContext authorization, ILogger<OnlineSearch> logger) : IInternalSearchProvider
 {
-    public string Name => "AniFin";
+    public string Name => "StreamFin";
     public MetadataPluginType Type => MetadataPluginType.SearchProvider;
     public int Priority => 50;
     public Guid ChannelId => library.GetNewItemId("Channel Anime", typeof(Channel));
@@ -46,7 +46,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
                 var parent = library.GetItemById(SearchFolderId) as Folder;
                 if (parent is null)
                 {
-                    parent = new Folder { Id = SearchFolderId, Name = "Search results", ExternalId = "search", ChannelId = ChannelId, ParentId = ChannelId, Tags = ["AniFin"] };
+                    parent = new Folder { Id = SearchFolderId, Name = "Search results", ExternalId = "search", ChannelId = ChannelId, ParentId = ChannelId, Tags = ["StreamFin"] };
                     parent.OnMetadataChanged();
                     library.CreateItem(parent, channel);
                 }
@@ -64,7 +64,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
                     item.Overview = anime.Overview;
                     item.ProductionYear = anime.Year;
                     item.Genres = anime.Genres;
-                    item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("AniFin").Distinct().ToArray();
+                    item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Distinct().ToArray();
                     item.ProviderIds = new Dictionary<string, string> { ["Custom"] = $"anifin-series-{anime.Id}" };
                     // Generic search groups series by this persisted key; NULL would collapse unrelated anime.
                     item.PresentationUniqueKey = $"anifin-search-{anime.Id}";
@@ -80,7 +80,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
         }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException or OperationCanceledException && !ct.IsCancellationRequested)
         {
-            logger.LogWarning("AniFin online search unavailable ({ErrorType}); local search remains available", ex.GetType().Name);
+            logger.LogWarning("StreamFin online search unavailable ({ErrorType}); local search remains available", ex.GetType().Name);
             return [];
         }
     }

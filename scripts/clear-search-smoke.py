@@ -12,7 +12,7 @@ parser.add_argument('--verify-after-restart', action='store_true')
 args = parser.parse_args()
 state = json.loads(pathlib.Path('.test-state/session.secret').read_text())
 marc = state['users']['marc']['token']
-clear_path = '/AniFin/SearchResults/Clear'
+clear_path = '/StreamFin/SearchResults/Clear'
 saved_path = pathlib.Path('.test-state/clear.secret')
 
 def request(path, token=marc, data=None):
@@ -42,7 +42,7 @@ def user_data(item):
     data = ok('/UserItems/' + item + '/UserData')
     return {key: data[key] for key in ('Played', 'PlaybackPositionTicks', 'PlayCount', 'IsFavorite')}
 
-assert ok('/System/Info/Public')['ServerName'] == 'AniFin isolated test'
+assert ok('/System/Info/Public')['ServerName'] == 'StreamFin isolated test'
 if not args.verify_after_restart:
     series = next(x for x in search() if x['Name'] == 'Cowboy Bebop')
     ok('/UserItems/' + series['Id'] + '/UserData', data={'IsFavorite': True})

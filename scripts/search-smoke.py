@@ -30,7 +30,7 @@ def ok(path, token, data=None):
 
 marc = state['users']['marc']['token']
 other = state['users']['other']['token']
-assert ok('/System/Info/Public', marc)['ServerName'] == 'AniFin isolated test'
+assert ok('/System/Info/Public', marc)['ServerName'] == 'StreamFin isolated test'
 config = ok(config_path, state['admin'])
 
 def search(term, token=marc):
@@ -39,15 +39,15 @@ def search(term, token=marc):
 try:
     ok(config_path, state['admin'], dict(config, HideAdultContent=True, HideEcchiContent=True))
     results = search('Cowboy Bebop')
-    assert any(x['Name'] == 'Cowboy Bebop' and 'AniFin' in x.get('Tags', []) for x in results), results
+    assert any(x['Name'] == 'Cowboy Bebop' and 'StreamFin' in x.get('Tags', []) for x in results), results
     print('PASS: online search discovers anime outside the browsed catalog', flush=True)
     aliases = search('Sousou no Frieren')
     assert any('Frieren' in x['Name'] for x in aliases), aliases
     print('PASS: Japanese title query finds English catalog title', flush=True)
-    assert not any('AniFin' in x.get('Tags', []) for x in search('Cowboy Bebop', other))
+    assert not any('StreamFin' in x.get('Tags', []) for x in search('Cowboy Bebop', other))
     hints = ok('/Search/Hints?SearchTerm=Cowboy%20Bebop', other)
     assert not any(x.get('Name') == 'Cowboy Bebop' for x in hints['SearchHints'])
-    print('PASS: both search endpoints hide AniFin from other users', flush=True)
+    print('PASS: both search endpoints hide StreamFin from other users', flush=True)
     ok(config_path, state['admin'], dict(config, HideAdultContent=True, HideEcchiContent=False))
     ecchi = next(x for x in search('High School DxD') if x['Name'] == 'High School DxD')
     ok(config_path, state['admin'], dict(config, HideAdultContent=True, HideEcchiContent=True))

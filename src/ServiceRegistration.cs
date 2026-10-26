@@ -4,7 +4,7 @@ using MediaBrowser.Controller.Channels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AniFin;
+namespace StreamFin;
 
 public sealed class ServiceRegistration : IPluginServiceRegistrator
 {
@@ -13,13 +13,18 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddHttpContextAccessor();
         services.AddSingleton<SafeHttp>();
         services.AddSingleton<AniListCatalog>();
+        services.AddSingleton<TmdbCatalog>();
+        services.AddSingleton<FlixSource>();
+        services.AddSingleton<IAnimeSource, ZokoSource>();
         services.AddSingleton<IAnimeSource, AnimeGgSource>();
         services.AddSingleton<IAnimeSource, AnimeHeavenSource>();
         services.AddSingleton<SourceRegistry>();
         services.AddSingleton<StreamRelay>();
         services.AddSingleton<IChannel, AnimeChannel>();
+        services.AddSingleton<IChannel, FilmChannel>();
         services.AddSingleton<SearchHistory>();
         services.AddSingleton<MediaBrowser.Controller.Library.ISearchProvider, OnlineSearch>();
+        services.AddSingleton<MediaBrowser.Controller.Library.ISearchProvider, FilmSearch>();
         services.AddScoped<ContentAccess>();
         services.AddScoped<ChannelAccessFilter>();
         services.AddScoped<ArtworkAccess>();

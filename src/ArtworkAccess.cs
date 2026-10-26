@@ -3,15 +3,15 @@ using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 
-namespace AniFin;
+namespace StreamFin;
 
 // Jellyfin Web requests cover images without an Authorization header. An encrypted,
 // HttpOnly, path-scoped cookie carries the existing session for artwork requests only.
 // The token is revalidated by Jellyfin, so logout and account restrictions still apply.
 public sealed class ArtworkAccess(IDataProtectionProvider protection, IAuthorizationContext authorization)
 {
-    private const string Cookie = "AniFinArtwork";
-    private readonly ITimeLimitedDataProtector protector = protection.CreateProtector("AniFin.Artwork.v1").ToTimeLimitedDataProtector();
+    private const string Cookie = "StreamFinArtwork";
+    private readonly ITimeLimitedDataProtector protector = protection.CreateProtector("StreamFin.Artwork.v1").ToTimeLimitedDataProtector();
 
     public async Task<bool> AllowsAsync(HttpContext context)
     {

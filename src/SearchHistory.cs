@@ -7,17 +7,21 @@ using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace AniFin;
+namespace StreamFin;
 
 // Keep item IDs and their user data intact. Only the discovery list is cleared.
 public sealed class SearchHistory(ILibraryManager library)
 {
+    // Stored in item tags since AniFin 0.2. Renaming it would resurface every cleared result.
     public const string HiddenTag = "AniFin:ClearedSearchResult";
     private long generation;
     public long Generation => Interlocked.Read(ref generation);
-    public static bool IsHidden(BaseItem? item) => item is Series
-        && item.ExternalId?.StartsWith("title/search/", StringComparison.Ordinal) == true
-        && item.Tags.Contains(HiddenTag, StringComparer.Ordinal);
+    public static bool IsSearchResult(BaseItem? item) => item is Series or MediaBrowser.Controller.Entities.Movies.Movie
+        && item.ExternalId is { } id && (id.StartsWith("title/search/", StringComparison.Ordinal)
+            || id.StartsWith("tv/search/", StringComparison.Ordinal) || id.StartsWith("movie/search/", StringComparison.Ordinal));
+    public static bool IsHidden(BaseItem? item) => IsSearchResult(item) && item!.Tags.Contains(HiddenTag, StringComparer.Ordinal);
+    public static Guid[] Folders(ILibraryManager library) =>
+        [library.GetNewItemId("searchAnime16", typeof(Folder)), library.GetNewItemId(FilmSearch.FolderKey, typeof(Folder))];
 
     public async Task<int> ClearAsync(CancellationToken ct)
     {
@@ -26,15 +30,14 @@ public sealed class SearchHistory(ILibraryManager library)
         {
             // Searches already in flight must not refill the list after this clear.
             Interlocked.Increment(ref generation);
-            var channelId = library.GetNewItemId("Channel Anime", typeof(Channel));
-            var parentId = library.GetNewItemId("searchAnime16", typeof(Folder));
-            var items = library.GetItemList(new InternalItemsQuery
+            var channels = new[] { library.GetNewItemId("Channel Anime", typeof(Channel)), library.GetNewItemId("Channel " + FilmChannel.ChannelName, typeof(Channel)) };
+            // Both channels' lists, Anime → Search results and Movies & TV → Search results.
+            var items = Folders(library).SelectMany(parentId => library.GetItemList(new InternalItemsQuery
             {
                 ParentId = parentId, Recursive = false, GroupByPresentationUniqueKey = false
-            });
+            }));
             var count = 0;
-            foreach (var item in items.OfType<Series>().Where(i => i.ChannelId == channelId
-                         && i.ExternalId?.StartsWith("title/search/", StringComparison.Ordinal) == true && !IsHidden(i)))
+            foreach (var item in items.Where(i => channels.Contains(i.ChannelId) && IsSearchResult(i) && !IsHidden(i)))
             {
                 var previous = item.Tags;
                 item.Tags = [.. previous, HiddenTag];
@@ -50,7 +53,7 @@ public sealed class SearchHistory(ILibraryManager library)
 
 [ApiController]
 [Authorize(Policy = Policies.RequiresElevation)]
-[Route("AniFin/SearchResults")]
+[Route("StreamFin/SearchResults")]
 public sealed class SearchHistoryController(SearchHistory history) : ControllerBase
 {
     [HttpPost("Clear")]

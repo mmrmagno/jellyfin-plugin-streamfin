@@ -1,9 +1,12 @@
 using System.Net;
-using AniFin;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using StreamFin;
 
 var count = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); Console.WriteLine("PASS: " + name); count++; }
 void Reject(Action action, string name) { try { action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
+async Task RejectAsync(Func<Task> action, string name) { try { await action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
 
 var titles = AnimeGgSource.ParseSearch("<a href=\"/series/test-show\" class=\"mse\"><h2>Test &amp; Show</h2></a><a href=\"/series/test-show\" class=\"mse\"><h2>Duplicate</h2></a>");
 Check(titles.Count == 1 && titles[0].Title == "Test & Show", "search decodes entities and deduplicates");
@@ -79,6 +82,111 @@ var redirectResponse = AnimeHeavenPages.ParseResponse("HTTP/1.1 302 Found\r\nLoc
 Check(redirectResponse.Status == 302 && redirectResponse.Location == "/gate.php", "curl page redirects are parsed for validation before following");
 Check(AnimeHeavenPages.ParseResponse("HTTP/2 200\r\nContent-Type: text/html\r\n\r\n<body>ok</body>").Body == "<body>ok</body>", "curl page headers are separate from body");
 Reject(() => AnimeHeavenPages.ParseResponse("<html>not an HTTP response</html>"), "malformed curl response rejected");
+
+var window = new RateWindow(3, TimeSpan.FromMinutes(1));
+var t0 = new DateTime(2026, 10, 26, 12, 0, 0, DateTimeKind.Utc);
+Check(Enumerable.Range(0, 3).All(_ => window.Reserve(t0, TimeSpan.FromSeconds(8)) == TimeSpan.Zero), "rate window grants its budget immediately");
+Check(window.Reserve(t0, TimeSpan.FromSeconds(8)) is null, "rate window refuses a slot further away than the caller will wait");
+Check(window.Reserve(t0, TimeSpan.FromMinutes(2)) == TimeSpan.FromMinutes(1), "rate window schedules the next slot after the oldest expires");
+Check(window.Reserve(t0.AddMinutes(1), TimeSpan.FromSeconds(8)) == TimeSpan.Zero, "rate window frees slots as the window slides");
+var blocked = new RateWindow(30, TimeSpan.FromMinutes(1));
+blocked.Exhaust(t0, TimeSpan.FromSeconds(40));
+Check(blocked.Reserve(t0, TimeSpan.FromSeconds(8)) is null && blocked.Reserve(t0.AddSeconds(40), TimeSpan.Zero) == TimeSpan.Zero, "an upstream 429 blocks the budget until Retry-After");
+
+JsonElement Json(string text) => JsonDocument.Parse(text).RootElement;
+var airing = AniListCatalog.Parse(Json("""{"id":1,"idMal":52991,"title":{"romaji":"Sousou no Frieren","english":"Frieren","native":null},"synonyms":[],"startDate":{"year":2023},"description":"x","coverImage":{"large":"https://s4.anilist.co/a.jpg"},"duration":24,"isAdult":false,"genres":["Drama"],"episodes":28,"nextAiringEpisode":{"episode":11}}"""));
+Check(airing.MalId == 52991 && airing.AvailableEpisodes == 10, "airing anime lists episodes up to the next one");
+Check(AniListCatalog.Parse(Json("""{"id":2,"idMal":null,"title":{"romaji":"Done"},"synonyms":[],"startDate":{"year":null},"description":null,"coverImage":{"large":null},"duration":null,"isAdult":false,"genres":[],"episodes":12,"nextAiringEpisode":null}""")) is { MalId: null, AvailableEpisodes: 12 }, "finished anime uses its episode total");
+Check(AniListCatalog.Parse(Json("""{"id":3,"title":{"romaji":"Soon"},"synonyms":[],"startDate":{"year":2027},"coverImage":{},"isAdult":false,"genres":[],"episodes":12,"nextAiringEpisode":{"episode":1}}""")).AvailableEpisodes is null, "an anime before its first episode lists nothing");
+
+string Blob(string json) { var raw = System.Text.Encoding.UTF8.GetBytes(json); var key = "otaku-embed-v1"u8.ToArray(); for (var i = 0; i < raw.Length; i++) raw[i] ^= key[i % key.Length]; return Convert.ToBase64String(raw); }
+var embed = $"<script>window.__P=\"{Blob("""{"src":"https://hls.example.top/p/a/master.m3u8","subtitles":[{"lang":"pt","label":"Portuguese","src":"https://hls.example.top/v/pt.vtt"},{"lang":"en","label":"English","default":true,"src":"https://hls.example.top/v/en.vtt"},{"lang":"en","label":"Local","src":"https://127.0.0.1/x.vtt"}]}""")}\";</script>";
+var zoko = ZokoSource.ParseEmbed(embed)[0];
+Check(zoko.Hls && zoko.Url.AbsoluteUri == "https://hls.example.top/p/a/master.m3u8" && zoko.Headers["Referer"] == "https://zokoanime.video/", "HiAnime player configuration decodes to an HLS stream with its referrer");
+Check(zoko.Subtitles!.Select(x => x.Language).SequenceEqual(["en", "pt"]), "HiAnime subtitles put English first and drop private destinations");
+Reject(() => ZokoSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://hls.example.top/m.m3u8","subtitles":[{"lang":"pt","label":"Portuguese","src":"https://hls.example.top/pt.vtt"}]}""")}\";</script>"), "HiAnime without English subtitles is refused");
+Reject(() => ZokoSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://10.0.0.5/m.m3u8","subtitles":[]}""")}\";</script>"), "HiAnime stream on a private address is refused");
+Reject(() => ZokoSource.ParseEmbed("<html>episode missing</html>"), "HiAnime page without a player fails explicitly");
+foreach (var bad in new[] { "0", "12a", "1/2", "../1", "123456789012" }) Reject(() => ZokoSource.ValidateId(bad), "HiAnime rejects identifier " + bad);
+Reject(() => ZokoSource.ValidateId("52991", episode: true), "HiAnime episode IDs need an episode number");
+var zokoSource = new ZokoSource(new SafeHttp());
+var direct = await SourceRegistry.MatchAsync(zokoSource, airing, default);
+Check(direct.Titles.Single().Id == "52991", "HiAnime matches by MyAnimeList ID without searching");
+Check((await SourceRegistry.MatchAsync(zokoSource, ordinary, default)).Error is not null, "HiAnime explains a title without a MyAnimeList entry");
+var zokoEpisodes = await zokoSource.EpisodesAsync("52991", airing, default);
+Check(zokoEpisodes.Count == 10 && zokoEpisodes[9].Id == "52991-10" && zokoEpisodes[9].Number == 10, "HiAnime lists the aired episodes");
+await RejectAsync(() => zokoSource.EpisodesAsync("1", airing, default), "HiAnime refuses an entry that belongs to another title");
+await RejectAsync(() => zokoSource.EpisodesAsync("52991", airing with { AvailableEpisodes = null }, default), "HiAnime refuses an unknown episode count");
+Check(SourceRegistry.Key("zoko", "52991") == "zoko:52991" && SourceRegistry.Split("zoko:52991-3") == ("zoko", "52991-3"), "HiAnime keys use the provider prefix");
+Check(SourceRegistry.IsEnabled("zoko", new Configuration { Enabled = true }) && !SourceRegistry.IsEnabled("zoko", new Configuration { Enabled = true, ZokoEnabled = false }), "HiAnime has its own switch");
+
+Check(Languages.Code("en", "x") == "en" && Languages.Code("pt-BR", "x") == "pt" && Languages.Code("", "English [CC]") == "en" && Languages.Code("", "Klingon") == "und", "subtitle languages map to two-letter codes");
+Check(Languages.Arrange(Enumerable.Range(0, 12).Select(i => new Subtitle("L" + i, i == 7 ? "en" : "fr", new Uri($"https://s.example/{i}.vtt")))).Count == 8
+    && Languages.Arrange([new Subtitle("F", "fr", new Uri("https://s.example/f.vtt")), new Subtitle("E", "en", new Uri("https://s.example/e.vtt"))])[0].Language == "en", "subtitle tracks are capped with English first");
+
+var links = new HlsLinks();
+var master = Hls.RewriteMaster("""
+#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Japanese",DEFAULT=YES,URI="audio/ja.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="other",NAME="Dub",URI="audio/en.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Old",URI="subs/old.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360,AUDIO="aud"
+360/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5300000,RESOLUTION=1920x1080,AUDIO="aud",SUBTITLES="subs"
+https://cdn2.example.top/1080/index.m3u8
+#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100,URI="iframe.m3u8"
+""", new Uri("https://cdn.example.top/p/a/master.m3u8"), links);
+Check(!master.Contains("cdn") && !master.Contains("Dub") && !master.Contains("Old") && !master.Contains("iframe") && master.Contains("RESOLUTION=1920x1080"), "master keeps only the best variant and the audio it uses");
+Check(links.Get(Hls.FirstVariant(master))!.AbsoluteUri == "https://cdn2.example.top/1080/index.m3u8" && links.Get(0)!.AbsoluteUri == "https://cdn.example.top/p/a/audio/ja.m3u8", "relayed links resolve relative and absolute playlist addresses");
+Check(!master.Contains("SUBTITLES"), "upstream subtitle renditions are dropped, Jellyfin cannot extract them from a remote stream");
+var media = Hls.RewriteMedia("""
+#EXTM3U
+#EXT-X-TARGETDURATION:10
+#EXT-X-KEY:METHOD=AES-128,URI="https://keys.example.top/k.bin"
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:9.5,
+seg_00000.ts.jpg
+#EXTINF:4.25,
+https://hls1.example.cfd/s/1080/seg_00001.m4s
+#EXT-X-ENDLIST
+""", new Uri("https://cdn2.example.top/1080/index.m3u8"), links);
+Check(!media.Contains("example") && media.Contains("METHOD=AES-128,URI=\"p/") && Regex.IsMatch(media, @"\n\d+\.ts\n") && Regex.IsMatch(media, @"\n\d+\.m4s\n"), "media playlists relay keys, init segments and segments with recognised extensions");
+Check(Math.Abs(Hls.Duration(media) - 13.75) < 0.001, "playlist duration sums its segments");
+Check(Hls.WebVtt("\uFEFF1\r\n00:00:20,240 --> 00:00:29,210\r\nHello\r\n") == "WEBVTT\n\n1\n00:00:20.240 --> 00:00:29.210\nHello\n" && Hls.WebVtt("WEBVTT\n\n00:20.240 --> 00:29.210\nHi\n").StartsWith("WEBVTT\n\n00:20"), "SubRip subtitles become WebVTT, WebVTT passes through");
+Reject(() => Hls.WebVtt("<html>blocked</html>"), "a subtitle URL returning a web page is refused");
+Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nhttps://192.168.1.10/seg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "playlist segment on a private address is refused");
+Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nfile:///etc/passwd\n", new Uri("https://cdn.example.top/a.m3u8"), links), "playlist segment with a local scheme is refused");
+Reject(() => Hls.RewriteMaster("<html>blocked</html>", new Uri("https://cdn.example.top/a.m3u8"), links), "non-HLS response is refused");
+
+foreach (var good in new[] { "https://cdn.example.top/a.m3u8", "http://cdn.example.top:8080/a.ts", "https://1.1.1.1/x" }) { SafeHttp.ValidateOpen(new Uri(good)); Check(true, "open policy allows " + good); }
+foreach (var bad in new[] { "https://cdn.example.top:22/x", "ftp://cdn.example.top/x", "https://u:p@cdn.example.top/x", "https://10.1.2.3/x", "https://[::1]/x", "https://169.254.169.254/latest" })
+    Reject(() => SafeHttp.ValidateOpen(new Uri(bad)), "open policy refuses " + bad);
+await RejectAsync(() => new SafeHttp().OpenAsync(new Uri("https://www.animegg.org/"), false, default, headers: new Dictionary<string, string> { ["Authorization"] = "Bearer x" }), "API tokens are only sent to TMDB");
+Check(TmdbCatalog.IsValidKey("0123456789abcdef0123456789abcdef") && TmdbCatalog.IsValidKey("eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJ4In0.signature_part") && !TmdbCatalog.IsValidKey("key&api_key=x"), "TMDB keys are validated before use");
+
+var movie = TmdbCatalog.Parse(Json("""{"id":1290938,"title":"South Park: The End of Obesity","release_date":"2024-05-24","overview":"o","poster_path":"/zx.jpg","adult":false,"runtime":51}"""), FilmKind.Movie)!;
+Check(movie is { Kind: FilmKind.Movie, Year: 2024, Runtime: 51, Image: "https://image.tmdb.org/t/p/w500/zx.jpg" }, "TMDB movie parses title, year, runtime and poster");
+Check(TmdbCatalog.Parse(Json("""{"id":2190,"name":"South Park","first_air_date":"1997-08-13","media_type":"tv","poster_path":"/../evil.jpg","episode_run_time":[22]}"""), null) is { Kind: FilmKind.Tv, Year: 1997, Runtime: 22, Image: null }, "TMDB TV parses from trending and refuses odd image paths");
+Check(TmdbCatalog.Parse(Json("""{"id":5,"name":"A Person","media_type":"person"}"""), null) is null, "TMDB people are skipped in mixed search results");
+
+Check(FlixSource.Slug("South Park: The End of Obesity") == "south-park-the-end-of-obesity" && FlixSource.Slug("Bob's Burgers & Friends") == "bobs-burgers-and-friends", "FlixHQ slugs follow the site's naming");
+var watchHtml = """<a href="https://flixhqz.net/watch-movie/south-park-the-end-of-obesity-2024-watch-online/" class="x"></a><a href="https://flixhqz.net/watch-series/south-park-1997-watch-online/"></a><a href="https://flixhqz.net/watch-movie/south-park-bigger-longer-uncut-1999-watch-online/"></a>""";
+Check(FlixSource.MatchWatch(watchHtml, movie)?.AbsolutePath == "/watch-movie/south-park-the-end-of-obesity-2024-watch-online/", "flixhqz.net matches a movie by slug and year");
+Check(FlixSource.MatchWatch(watchHtml, new Film(2190, FilmKind.Tv, "South Park", 1998, "", null, null, false))?.AbsolutePath == "/watch-series/south-park-1997-watch-online/", "flixhqz.net tolerates a one-year difference");
+Check(FlixSource.MatchWatch(watchHtml, movie with { Title = "South Park" }) is null, "flixhqz.net never substitutes a different title");
+var classicHtml = """<div class="flw-item"><a href="https://flixhq.ws/movie/south-park-the-end-of-obesity-70928/" title="South Park: The End Of Obesity" class="film-poster-ahref"></a><div class="fd-infor"><span class="fdi-item">2024</span></div><div class="clearfix"></div>""";
+Check(FlixSource.MatchClassic(classicHtml, movie)?.AbsolutePath == "/movie/south-park-the-end-of-obesity-70928/" && FlixSource.MatchClassic(classicHtml, movie with { Year = 2010 }) is null, "flixhq.ws matches title and year");
+var players = FlixSource.ParsePlayers("""[{"name":"Vidmoly","link":"https://vidmoly.net/embed-x.html"},{"name":"Bad","link":"javascript:alert(1)"},{"name":"VidSrc","link":"https://vidsrc.example/e/1"}]""");
+Check(players.Count == 2 && players.OrderBy(p => FlixSource.Rank(p.Name)).First().Name == "Vidmoly", "FlixHQ player list keeps web links in preference order");
+Check(FlixSource.ParseListing("""<a class="sv-item active" data-id="https://vidmoly.net/embed-1.html" data-srv="vidmoly">Vidmoly</a><a class="sv-item" data-id="/relative">x</a>""").Single().Name == "vidmoly", "FlixHQ server listing keeps absolute player links");
+var packed = """<script>eval(function(p,a,c,k,e,d){return p}('0 1={2:"3://4.5/6/7.8",9:"a"};',36,11,'var|cfg|file|https|cdn|example|hls|master|m3u8|label|HD'.split('|'),0,{}))</script>""";
+Check(FlixSource.Unpack(packed).Single() == "var cfg={file:\"https://cdn.example/hls/master.m3u8\",label:\"HD\"};", "packed player scripts unpack as plain text");
+Check(FlixSource.FindMedia(packed)?.AbsoluteUri == "https://cdn.example/hls/master.m3u8", "player stream found inside a packed script");
+Check(FlixSource.FindMedia("""file:"https://127.0.0.1/x.m3u8" """) is null, "player stream on a private address is ignored");
+Check(FlixSource.FindSubtitles("""tracks:[{file:"https:\/\/s.example\/en.vtt",label:"English"},{file:"https://s.example/t.vtt",label:"thumbnails"}]""").Single().Language == "en", "player subtitle tracks parsed, thumbnails skipped");
+Check(FlixSource.ParseSubtitleIndex("""[{"file":"https://s.example/es.srt","label":"Spanish"},{"src":"https://s.example/x.vtt","label":""}]""").Single().Language == "es", "subtitle index parsed");
+Check(FlixSource.Unbase("zz", 36) == 1295 && FlixSource.Unbase("Z", 62) == 61 && FlixSource.Unbase("!", 36) is null, "packer number bases");
+
 if (args.Contains("--provider-live"))
 {
     using var http = new SafeHttp();
@@ -86,7 +194,7 @@ if (args.Contains("--provider-live"))
     var results = await heaven.SearchAsync("Cowboy Bebop", default);
     var series = results.Single(t => t.Title == "Cowboy Bebop");
     Console.WriteLine("Live matched title: " + series.Title + " / " + series.Id);
-    var listed = await heaven.EpisodesAsync(series.Id, default);
+    var listed = await heaven.EpisodesAsync(series.Id, ordinary, default);
     Check(listed.Count == 26 && listed[0].Number == 1, "live AnimeHeaven title and episode listing");
     var gate = await AnimeHeavenPages.TextAsync(new Uri("https://animeheaven.me/gate.php"), default, headers: new Dictionary<string, string> { ["Cookie"] = "key=" + listed[0].Id, ["Referer"] = "https://animeheaven.me/anime.php" });
     foreach (System.Text.RegularExpressions.Match tag in System.Text.RegularExpressions.Regex.Matches(gate, "<source[^>]+>", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
@@ -101,6 +209,39 @@ if (args.Contains("--provider-live"))
     var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token);
     Check(bytes.Length == 1024, "live AnimeHeaven bounded video read");
 }
+if (args.Contains("--hls-live"))
+{
+    using var http = new SafeHttp();
+    async Task<int> FirstSegmentAsync(ResolvedVideo video, string label)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var hlsLinks = new HlsLinks();
+        var text = await http.TextAsync(video.Url, timeout.Token, headers: video.Headers, open: true);
+        var variantUrl = video.Url;
+        if (Hls.IsMaster(text))
+        {
+            var rewritten = Hls.RewriteMaster(text, video.Url, hlsLinks);
+            variantUrl = hlsLinks.Get(Hls.FirstVariant(rewritten))!;
+            Console.WriteLine($"{label}: master ok, best variant {variantUrl.Host}");
+        }
+        var mediaText = await http.TextAsync(variantUrl, timeout.Token, headers: video.Headers, open: true);
+        var relayed = Hls.RewriteMedia(mediaText, variantUrl, hlsLinks);
+        var first = relayed.Split('\n').First(l => l.Length > 0 && !l.StartsWith('#'));
+        var segment = hlsLinks.Get(int.Parse(first[..first.IndexOf('.')]))!;
+        using var response = await http.OpenAsync(segment, true, timeout.Token, range: "bytes=0-187", headers: video.Headers, open: true);
+        var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token);
+        Console.WriteLine($"{label}: {Hls.Duration(mediaText):0}s, segment {(int)response.StatusCode} from {segment.Host}, {bytes.Length} bytes, subtitles {video.Subtitles?.Count ?? 0}");
+        return bytes.Length > 0 ? bytes[0] : -1;
+    }
+    var zokoLive = await new ZokoSource(http).ResolveAsync("52991-1", default);
+    Check(await FirstSegmentAsync(zokoLive[0], "HiAnime Frieren 1") == 0x47 && zokoLive[0].Subtitles![0].Language == "en", "live HiAnime playlist, segment and English subtitles");
+    using var flix = new FlixSource(http);
+    var obesity = new Film(1290938, FilmKind.Movie, "South Park: The End of Obesity", 2024, "", null, null, false);
+    var movieLive = await flix.ResolveAsync(obesity, null, null, default);
+    Check(!movieLive[0].Hls || await FirstSegmentAsync(movieLive[0], "FlixHQ movie") >= 0, "live FlixHQ movie resolves");
+    var showLive = await flix.ResolveAsync(new Film(2190, FilmKind.Tv, "South Park", 1997, "", null, null, false), 1, 1, default);
+    Check(!showLive[0].Hls || await FirstSegmentAsync(showLive[0], "FlixHQ South Park S01E01") >= 0, "live FlixHQ episode resolves");
+}
 Console.WriteLine($"{count} checks passed.");
 
 sealed class FakeSource(Func<string, CancellationToken, Task<IReadOnlyList<SourceTitle>>> search) : IAnimeSource
@@ -108,6 +249,6 @@ sealed class FakeSource(Func<string, CancellationToken, Task<IReadOnlyList<Sourc
     public string Id => "fake";
     public string Name => "Fake";
     public Task<IReadOnlyList<SourceTitle>> SearchAsync(string title, CancellationToken ct) => search(title, ct);
-    public Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string id, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string id, Anime anime, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<ResolvedVideo>> ResolveAsync(string id, CancellationToken ct) => throw new NotSupportedException();
 }

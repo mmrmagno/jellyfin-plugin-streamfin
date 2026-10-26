@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-image='jellyfin/jellyfin:12.1.20260915-010956@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e'
+# Jellyfin 12.3.0, the image mediastack runs.
+image='jellyfin/jellyfin@sha256:2038fe038ab3876a80f6e7b7e0aef6607b032c7dc0c9b3ad3296d0b2eba3bbb5'
 mkdir -p .jellyfin
 container=$(docker create "$image")
 trap 'docker rm "$container" >/dev/null' EXIT

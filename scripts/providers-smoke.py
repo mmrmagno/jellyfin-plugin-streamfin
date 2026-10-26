@@ -43,7 +43,7 @@ def search(term):
     return ok('/Items?Recursive=true&IncludeItemTypes=Series&SearchTerm=' + urllib.parse.quote(term))['Items']
 
 
-assert ok('/System/Info/Public')['ServerName'] == 'AniFin isolated test'
+assert ok('/System/Info/Public')['ServerName'] == 'StreamFin isolated test'
 config = ok(config_path, state['admin'])
 try:
     enabled = dict(config, AnimeGgEnabled=True, AnimeHeavenEnabled=True, CacheRevision=int(time.time()))
@@ -75,7 +75,7 @@ try:
     ok('/UserItems/' + episode + '/UserData', data={'Played': False, 'PlaybackPositionTicks': 1250000000, 'PlayCount': 1})
     before_heaven = ok('/UserItems/' + episode + '/UserData')
     info = ok('/Items/' + episode + '/PlaybackInfo')
-    media = next(s for s in info['MediaSources'] if '/AniFin/' in s.get('Path', ''))
+    media = next(s for s in info['MediaSources'] if '/StreamFin/' in s.get('Path', ''))
     assert media['Name'].startswith('AnimeHeaven') and media['MediaStreams'] and media['RunTimeTicks'] > 0
     print('PASS: AnimeHeaven episode resolves and FFprobe reads its media streams', flush=True)
     for token in (None, state['users']['other']['token']):

@@ -3,7 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace AniFin;
+namespace StreamFin;
 
 // On the target host this site returns unrelated pages to .NET's HTTP transport.
 // curl is already included in the pinned Jellyfin image. Use it only for this
@@ -28,7 +28,7 @@ public static class AnimeHeavenPages
             // redirects, credential jar, or files; pin the validated address before connecting.
             foreach (var arg in new[] { "-q", "--silent", "--globoff", "--noproxy", "*", "--proto", "=https", "--compressed", "--include",
                 "--connect-timeout", "15", "--max-time", "30", "--max-filesize", "4194304", "--resolve", $"{uri.IdnHost}:443:{ip}",
-                "--user-agent", "Mozilla/5.0 AniFin/0.4", "--url", uri.AbsoluteUri }) start.ArgumentList.Add(arg);
+                "--user-agent", "Mozilla/5.0 StreamFin/0.4", "--url", uri.AbsoluteUri }) start.ArgumentList.Add(arg);
             if (headers is not null)
                 foreach (var header in headers)
                 {

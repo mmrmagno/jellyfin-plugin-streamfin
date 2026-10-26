@@ -7,7 +7,7 @@ if [[ ! -f .jellyfin/MediaBrowser.Controller.dll ]]; then
   exit 1
 fi
 docker run --rm --user "$(id -u):$(id -g)" -e DOTNET_CLI_HOME=/tmp/dotnet \
-  -v "$PWD:/work" -w /work "$SDK_IMAGE" dotnet build src/AniFin.csproj -c Release -o artifacts/plugin
+  -v "$PWD:/work" -w /work "$SDK_IMAGE" dotnet build src/StreamFin.csproj -c Release -o artifacts/plugin
 docker run --rm --user "$(id -u):$(id -g)" -e DOTNET_CLI_HOME=/tmp/dotnet \
-  -v "$PWD:/work" -w /work "$SDK_IMAGE" dotnet run --project tests/AniFin.Tests.csproj -c Release
+  -v "$PWD:/work" -w /work "$SDK_IMAGE" dotnet run --project tests/StreamFin.Tests.csproj -c Release
 python3 scripts/package.py

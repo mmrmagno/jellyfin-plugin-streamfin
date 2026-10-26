@@ -2,12 +2,13 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace AniFin;
+namespace StreamFin;
 
 // Source pages control links and redirects. Validate both the hostname and the address
 // actually connected to, including on every redirect, so this cannot become a LAN proxy.
 public sealed class SafeHttp : IDisposable
 {
+    public const string UserAgent = "Mozilla/5.0 StreamFin/0.5";
     private readonly HttpClient client;
     public SafeHttp()
     {
@@ -28,7 +29,7 @@ public sealed class SafeHttp : IDisposable
             }
         };
         client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 AniFin/0.1");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
     }
 
     public static bool IsPublicAddress(IPAddress address)
@@ -43,33 +44,58 @@ public sealed class SafeHttp : IDisposable
             && !(b[0] == 198 && b[1] is 18 or 19);
     }
 
+    // Sites and catalogs StreamFin talks to by name. Embed players and HLS CDNs rotate
+    // hostnames weekly, so those use the open policy below instead of a list.
+    public static bool IsKnownSite(string host) => host is "www.animegg.org" or "animegg.org" or "graphql.anilist.co" or "animeheaven.me"
+        or "zokoanime.video" or "api.themoviedb.org" or "flixhqz.net" or "flixhq.ws";
+
     public static void Validate(Uri uri, bool media)
     {
         var host = uri.IdnHost.ToLowerInvariant();
-        var site = host is "www.animegg.org" or "animegg.org";
-        var catalog = host == "graphql.anilist.co";
-        var heaven = host == "animeheaven.me" || (media && AnimeHeavenSource.IsMediaHost(host));
+        var site = IsKnownSite(host);
+        var heaven = media && AnimeHeavenSource.IsMediaHost(host);
         var cdn = media && (host == "vidcache.net" || host.EndsWith(".vidcache.net", StringComparison.Ordinal));
-        if (uri.Scheme != "https" || uri.UserInfo.Length > 0 || (!site && !catalog && !cdn && !heaven)
+        if (uri.Scheme != "https" || uri.UserInfo.Length > 0 || (!site && !cdn && !heaven)
             || (!cdn && uri.Port != 443) || (cdn && uri.Port is not (443 or 8161 or 8162 or 8163 or 8164 or 8165 or 8166)))
             throw new ProviderException("Source returned an unsupported destination.");
     }
 
+    public static bool Allowed(Uri uri, bool media)
+    {
+        try { Validate(uri, media); return true; }
+        catch (ProviderException) { return false; }
+    }
+
+    // Any public web host, still behind the connect-time address check. Ports below 1024
+    // other than the web defaults are refused so a page cannot aim requests at mail or SSH.
+    public static void ValidateOpen(Uri uri)
+    {
+        if (uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0 || uri.HostNameType is UriHostNameType.Unknown
+            || !(uri.IsDefaultPort || uri.Port >= 1024))
+            throw new ProviderException("Source returned an unsupported destination.");
+        if (IPAddress.TryParse(uri.IdnHost.Trim('[', ']'), out var literal) && !IsPublicAddress(literal))
+            throw new ProviderException("Source returned an unsupported destination.");
+    }
+
     public async Task<HttpResponseMessage> OpenAsync(Uri uri, bool media, CancellationToken ct,
-        string? range = null, string? json = null, bool head = false, IReadOnlyDictionary<string, string>? headers = null)
+        string? range = null, string? json = null, bool head = false, IReadOnlyDictionary<string, string>? headers = null,
+        bool open = false, IReadOnlyDictionary<string, string>? form = null)
     {
         var originalHost = uri.IdnHost;
         for (var redirect = 0; redirect < 6; redirect++)
         {
-            Validate(uri, media);
-            using var request = new HttpRequestMessage(head ? HttpMethod.Head : json is null ? HttpMethod.Get : HttpMethod.Post, uri);
+            if (open) ValidateOpen(uri);
+            else Validate(uri, media);
+            using var request = new HttpRequestMessage(head ? HttpMethod.Head : json is null && form is null ? HttpMethod.Get : HttpMethod.Post, uri);
             if (json is not null) request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+            else if (form is not null) request.Content = new FormUrlEncodedContent(form);
             if (headers is not null)
                 foreach (var pair in headers)
                 {
-                    if (pair.Key is not ("Referer" or "Origin" or "Cookie")) throw new ProviderException("Unsupported source header.");
-                    // A gate cookie is specific to one website, never forward it to a CDN redirect.
-                    if (pair.Key != "Cookie" || uri.IdnHost == originalHost) request.Headers.Add(pair.Key, pair.Value);
+                    if (pair.Key is not ("Referer" or "Origin" or "Cookie" or "Authorization")
+                        || (pair.Key == "Authorization" && originalHost != "api.themoviedb.org")) throw new ProviderException("Unsupported source header.");
+                    // Gate cookies and API tokens belong to one website, never forward them to a redirect elsewhere.
+                    if (pair.Key is not ("Cookie" or "Authorization") || uri.IdnHost == originalHost) request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
                 }
             if (range is not null) request.Headers.Range = System.Net.Http.Headers.RangeHeaderValue.Parse(range);
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -84,11 +110,19 @@ public sealed class SafeHttp : IDisposable
         throw new ProviderException("Too many source redirects.");
     }
 
-    public async Task<string> TextAsync(Uri uri, CancellationToken ct, string? json = null, IReadOnlyDictionary<string, string>? headers = null)
+    public async Task<string> TextAsync(Uri uri, CancellationToken ct, string? json = null, IReadOnlyDictionary<string, string>? headers = null,
+        bool open = false, IReadOnlyDictionary<string, string>? form = null)
+        => (await PageAsync(uri, ct, json, headers, open, form)).Text;
+
+    // Also reports where redirects ended: embed players expect that page as the referrer.
+    public async Task<(Uri Final, string Text)> PageAsync(Uri uri, CancellationToken ct, string? json = null, IReadOnlyDictionary<string, string>? headers = null,
+        bool open = false, IReadOnlyDictionary<string, string>? form = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        using var response = await OpenAsync(uri, false, timeout.Token, json: json, headers: headers);
+        using var response = await OpenAsync(uri, false, timeout.Token, json: json, headers: headers, open: open, form: form);
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            throw new RateLimitedException($"{uri.IdnHost} is rate limiting requests. Please try again in a minute.", RetryAfter(response));
         if (!response.IsSuccessStatusCode)
             throw new ProviderException($"Source returned HTTP {(int)response.StatusCode}. Please try again later.");
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
@@ -100,8 +134,14 @@ public sealed class SafeHttp : IDisposable
             if (output.Length + count > 4 * 1024 * 1024) throw new ProviderException("Source response is too large.");
             output.Write(buffer, 0, count);
         }
-        var text = Encoding.UTF8.GetString(output.ToArray());
-        return text;
+        return (response.RequestMessage?.RequestUri ?? uri, Encoding.UTF8.GetString(output.ToArray()));
     }
+
+    public static TimeSpan? RetryAfter(HttpResponseMessage response) => response.Headers.RetryAfter switch
+    {
+        { Delta: { } delta } => delta,
+        { Date: { } date } => date - DateTimeOffset.UtcNow,
+        _ => null
+    };
     public void Dispose() => client.Dispose();
 }

@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Text.RegularExpressions;
 
-namespace AniFin;
+namespace StreamFin;
 
 // Adapted from Pal's MIT-licensed Seanime AnimeHeaven adapter. Read data only;
 // the episode key cookie is the site's normal gate navigation, not a user session.
@@ -44,7 +44,7 @@ public sealed class AnimeHeavenSource : IAnimeSource
         return results.DistinctBy(t => t.Id).ToArray();
     }
 
-    public async Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string seriesId, CancellationToken ct)
+    public async Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string seriesId, Anime anime, CancellationToken ct)
     {
         ValidateId(seriesId);
         var html = await AnimeHeavenPages.TextAsync(new Uri(Origin, "anime.php?" + seriesId), ct);
