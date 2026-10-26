@@ -5,8 +5,8 @@ import json
 import pathlib
 import zipfile
 
-root = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
+parser.add_argument('--manifest', type=pathlib.Path, required=True)
 parser.add_argument('--zip', type=pathlib.Path, required=True)
 parser.add_argument('--url', required=True, help='download URL of the release ZIP')
 parser.add_argument('--changelog', default='')
@@ -14,7 +14,7 @@ args = parser.parse_args()
 
 with zipfile.ZipFile(args.zip) as package:
     meta = json.loads(package.read('meta.json'))
-path = root / 'manifest.json'
+path = args.manifest
 plugins = json.loads(path.read_text()) if path.exists() else []
 plugin = next((p for p in plugins if p['guid'] == meta['guid']), None)
 if plugin is None:
