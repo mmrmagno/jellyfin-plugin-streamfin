@@ -3,6 +3,14 @@
     "guid": "a74fdb2e-938f-483b-b2ef-f527e14ff724",
     "versions": [
       {
+        "version": "0.5.2.0",
+        "changelog": "Security hardening for the stream relay and safer handling of scraped text.",
+        "targetAbi": "12.3.0.0",
+        "sourceUrl": "https://github.com/mmrmagno/jellyfin-plugin-streamfin/releases/download/v0.5.2.0/StreamFin-0.5.2.0.zip",
+        "checksum": "085975e2100bc4389b7ea92a440e9515",
+        "timestamp": "2026-10-26T19:19:32Z"
+      },
+      {
         "version": "0.5.1.0",
         "changelog": "Simpler settings page, steadier movie playback, NAT64 support.",
         "targetAbi": "12.3.0.0",
