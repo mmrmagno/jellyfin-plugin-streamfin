@@ -4,7 +4,6 @@ public sealed record SourceMatches(string Id, string Name, IReadOnlyList<SourceT
 
 public sealed class SourceRegistry(IEnumerable<IAnimeSource> providers)
 {
-    // Shown in this order under every title: the most reliable source first.
     public static readonly string[] Order = ["zoko", "animegg", "animeheaven"];
     private readonly IAnimeSource[] ordered = providers.OrderBy(p => Array.IndexOf(Order, p.Id) is var i and >= 0 ? i : Order.Length).ToArray();
     private readonly IReadOnlyDictionary<string, IAnimeSource> sources = providers.ToDictionary(p => p.Id, StringComparer.Ordinal);
@@ -43,7 +42,6 @@ public sealed class SourceRegistry(IEnumerable<IAnimeSource> providers)
     public async Task<IReadOnlyList<SourceMatches>> SearchAsync(Anime anime, CancellationToken ct)
         => await Task.WhenAll(ordered.Where(p => IsEnabled(p.Id)).Select(p => MatchAsync(p, anime, ct)));
 
-    // Each provider has its own budget. One failed site must not hide the working source.
     public static async Task<SourceMatches> MatchAsync(IAnimeSource source, Anime anime, CancellationToken ct)
     {
         if (source is IDirectAnimeSource direct)

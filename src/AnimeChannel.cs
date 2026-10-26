@@ -135,7 +135,6 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
                         match.Titles.Count == 1 && names.Contains(AnimeGgSource.Normalize(candidate.Title)) ? $"Episodes · {match.Name}" : $"{match.Name} · {candidate.Title}",
                         "Japanese audio with English subtitles. Choose another provider here if this source is unavailable.");
                     item.FolderType = ChannelFolderType.Season;
-                    // Both sources describe the same season; their episode numbers remain comparable.
                     item.IndexNumber = 1;
                     item.ImageUrl = anime.Image;
                     items.Add(item);

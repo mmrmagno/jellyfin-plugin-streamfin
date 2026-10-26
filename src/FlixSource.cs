@@ -65,7 +65,6 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
 
     public static int Rank(string name) => Array.FindIndex(ServerOrder, p => name.Contains(p, StringComparison.OrdinalIgnoreCase)) is var i and >= 0 ? i : ServerOrder.Length;
 
-    // ---- finding the title page --------------------------------------------------------
 
     public static string Slug(string title) => Regex.Replace(Regex.Replace(WebUtility.HtmlDecode(title).ToLowerInvariant().Replace("&", "and"),
         @"['’]", "", RegexOptions.None, TimeSpan.FromSeconds(1)), @"[^a-z0-9]+", "-", RegexOptions.None, TimeSpan.FromSeconds(1)).Trim('-');
@@ -110,7 +109,6 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
         return null;
     }
 
-    // ---- server lists -----------------------------------------------------------------
 
     public static IEnumerable<(Dictionary<string, string> Attributes, string Text)> Anchors(string html, string cls) => AnchorTag.Matches(html)
         .Select(m => (Attributes: Attributes(m.Groups[1].Value), Text: Regex.Replace(WebUtility.HtmlDecode(Regex.Replace(m.Groups[2].Value, "<[^>]+>", " ",
@@ -187,7 +185,6 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
 
     private static Dictionary<string, string> Referer(Uri page) => new() { ["Referer"] = page.AbsoluteUri };
 
-    // ---- player pages -----------------------------------------------------------------
 
     private async Task<ResolvedVideo?> PlayerAsync(Uri embed, Uri referer, int depth, CancellationToken ct)
     {

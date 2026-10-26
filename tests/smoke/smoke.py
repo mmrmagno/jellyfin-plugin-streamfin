@@ -134,6 +134,7 @@ info = ok('/Items/' + episode['Id'] + '/PlaybackInfo?UserId=' + viewer['id'], vi
 assert info.get('MediaSources'), info
 source = next(s for s in info['MediaSources'] if '/StreamFin/' in s.get('Path', ''))
 assert source['MediaStreams'], 'Resolved source lacks media stream information'
+assert (source.get('RunTimeTicks') or 0) > 60 * 10_000_000, 'Resolved source is a short clip, not an episode: ' + str(source.get('RunTimeTicks'))
 state['episode'] = episode['Id']
 state['channel'] = channel['Id']
 state['source'] = source

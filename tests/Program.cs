@@ -49,14 +49,16 @@ Check(heavenEpisodes.Select(e => e.Number).SequenceEqual(new[] { 2.5m, 10m }), "
 foreach (var bad in new[] { "../x", "a&other=1", "a;key=evil", "a/b", "", "https://localhost" })
     Reject(() => AnimeHeavenSource.ValidateId(bad), "AnimeHeaven rejects identifier " + bad);
 Reject(() => AnimeHeavenSource.ValidateId("abc12", episode: true), "AnimeHeaven gate requires an episode key");
-var heavenVideo = AnimeHeavenSource.ParseVideos("""<video><source src='https://ax.animeheaven.me/video.mp4?token&amp;expiry' type='video/mp4'></video>""")[0];
+var heavenVideo = AnimeHeavenSource.ParseVideos("""<video><source src='https://co.animeheaven.me/video.mp4?token&amp;expiry' type='video/mp4'></video>""")[0];
 Check(heavenVideo.Url.Query == "?token&expiry" && heavenVideo.HardcodedEnglishSubtitles, "AnimeHeaven parses escaped MP4 URL");
 Check(heavenVideo.Headers["Referer"] == "https://animeheaven.me/" && heavenVideo.Headers["Origin"] == "https://animeheaven.me", "provider-specific media headers");
 Reject(() => AnimeHeavenSource.ParseVideos("<script>execute()</script>"), "AnimeHeaven missing video fails explicitly");
-foreach (var bad in new[] { "https://localhost/video.mp4", "http://ax.animeheaven.me/video.mp4", "https://ax.animeheaven.me:8161/video.mp4", "https://ax.animeheaven.me.evil.example/video.mp4", "https://ax.animeheaven.me/private" })
+foreach (var bad in new[] { "https://localhost/video.mp4", "http://co.animeheaven.me/video.mp4", "https://co.animeheaven.me:8161/video.mp4", "https://co.animeheaven.me.evil.example/video.mp4", "https://co.animeheaven.me/private", "https://ax.animeheaven.me/video.mp4" })
     Reject(() => AnimeHeavenSource.ParseVideos($"<source src='{bad}'>"), "AnimeHeaven rejects stream " + bad);
 var rotated = AnimeHeavenSource.ParseVideos("""<source src='https://unknown.example/video.mp4'><source src='https://ct.animeheaven.me/video.mp4?valid'>""");
 Check(rotated.Count == 1 && rotated[0].Url.Host == "ct.animeheaven.me", "unrecognized rotated CDN cannot hide a validated backup");
+var decoy = AnimeHeavenSource.ParseVideos("""<source src='https://ax.animeheaven.me/video.mp4?a'><source src='https://po.animeheaven.me/video.mp4?a'>""");
+Check(decoy.Count == 1 && decoy[0].Url.Host == "po.animeheaven.me", "AnimeHeaven skips the decoy clip host");
 SafeHttp.Validate(heavenVideo.Url, true);
 Check(true, "AnimeHeaven CDN permitted for media");
 Reject(() => SafeHttp.Validate(heavenVideo.Url, false), "AnimeHeaven CDN excluded from metadata requests");
@@ -238,12 +240,17 @@ if (args.Contains("--hls-live"))
         }
         var mediaText = await http.TextAsync(variantUrl, timeout.Token, headers: video.Headers, open: true);
         var relayed = Hls.RewriteMedia(mediaText, variantUrl, hlsLinks);
-        var first = relayed.Split('\n').First(l => l.Length > 0 && !l.StartsWith('#'));
-        var segment = hlsLinks.Get(int.Parse(first[..first.IndexOf('.')]))!;
-        using var response = await http.OpenAsync(segment, true, timeout.Token, range: "bytes=0-187", headers: video.Headers, open: true);
-        var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token);
-        Console.WriteLine($"{label}: {Hls.Duration(mediaText):0}s, segment {(int)response.StatusCode} from {segment.Host}, {bytes.Length} bytes, subtitles {video.Subtitles?.Count ?? 0}");
-        return bytes.Length > 0 ? bytes[0] : -1;
+        foreach (var line in relayed.Split('\n').Where(l => l.Length > 0 && !l.StartsWith('#')).Take(5))
+        {
+            var segment = hlsLinks.Get(int.Parse(line[..line.IndexOf('.')]))!;
+            using var response = await http.OpenAsync(segment, true, timeout.Token, headers: video.Headers, open: true);
+            await using var body = await response.Content.ReadAsStreamAsync(timeout.Token);
+            var bytes = new byte[188];
+            bytes = bytes[..await body.ReadAtLeastAsync(bytes, bytes.Length, false, timeout.Token)];
+            Console.WriteLine($"{label}: {Hls.Duration(mediaText):0}s, segment {(int)response.StatusCode} from {segment.Host}, {bytes.Length} bytes, subtitles {video.Subtitles?.Count ?? 0}");
+            if (response.IsSuccessStatusCode && bytes.Length > 0) return bytes[0];
+        }
+        return -1;
     }
     var zokoLive = await new HiAnimeSource(http).ResolveAsync("52991-1", default);
     Check(await FirstSegmentAsync(zokoLive[0], "HiAnime Frieren 1") == 0x47 && zokoLive[0].Subtitles![0].Language == "en", "live HiAnime playlist, segment and English subtitles");

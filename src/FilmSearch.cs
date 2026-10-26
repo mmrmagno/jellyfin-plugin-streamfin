@@ -12,8 +12,6 @@ using Microsoft.Extensions.Logging;
 
 namespace StreamFin;
 
-// The Movies & TV counterpart of OnlineSearch: TMDB matches become native items under
-// Movies & TV → Search results, merged with local library results.
 public sealed class FilmSearch(TmdbCatalog catalog, ILibraryManager library, SearchHistory history, IHttpContextAccessor contexts,
     IAuthorizationContext authorization, ILogger<FilmSearch> logger) : IInternalSearchProvider
 {

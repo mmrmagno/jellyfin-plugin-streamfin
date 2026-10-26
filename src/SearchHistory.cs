@@ -9,7 +9,6 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace StreamFin;
 
-// Keep item IDs and their user data intact. Only the discovery list is cleared.
 public sealed class SearchHistory(ILibraryManager library)
 {
     // Stored in item tags since AniFin 0.2. Renaming it would resurface every cleared result.
@@ -31,7 +30,6 @@ public sealed class SearchHistory(ILibraryManager library)
             // Searches already in flight must not refill the list after this clear.
             Interlocked.Increment(ref generation);
             var channels = new[] { library.GetNewItemId("Channel Anime", typeof(Channel)), library.GetNewItemId("Channel " + FilmChannel.ChannelName, typeof(Channel)) };
-            // Both channels' lists, Anime → Search results and Movies & TV → Search results.
             var items = Folders(library).SelectMany(parentId => library.GetItemList(new InternalItemsQuery
             {
                 ParentId = parentId, Recursive = false, GroupByPresentationUniqueKey = false

@@ -11,8 +11,6 @@ public sealed record FilmPage(IReadOnlyList<Film> Items, bool HasNext);
 public sealed record FilmSeason(int Number, string Name, int Episodes, string? Image);
 public sealed record FilmEpisode(int Season, int Number, string Name, string Overview, string? Image, int? Runtime, DateTime? Aired);
 
-// TMDB metadata for the Movies & TV channel. The administrator supplies the free API key;
-// both the short v3 key and the long read access token work.
 public sealed class TmdbCatalog(SafeHttp http) : IDisposable
 {
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 4000 });
