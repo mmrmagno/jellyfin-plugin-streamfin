@@ -1,3 +1,4 @@
+using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
@@ -22,6 +23,11 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     private bool IsOurs(Guid id) => id != Guid.Empty && content.IsOurs(id);
     private bool IsOurChannel(Guid id) => id == content.ChannelId || id == content.FilmChannelId;
     private Task<bool> Allowed(ActionContext context) => artwork.AllowsAsync(context.HttpContext);
+    private void Countable(BaseItemDto dto)
+    {
+        if (dto.Type != BaseItemKind.Season || dto.ChildCount > 0 || !IsOurs(dto.Id)) return;
+        dto.ChildCount = Math.Max(1, library.GetCount(new InternalItemsQuery { ParentId = dto.Id, Recursive = false }));
+    }
     private static IEnumerable<Guid> Identifiers(object? value, int depth = 0)
     {
         if (value is Guid guid) { yield return guid; yield break; }
@@ -116,17 +122,18 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
             {
                 case BaseItemDto item:
                     if (!await Visible(item.Id, listing: false)) context.Result = new NotFoundResult();
+                    else Countable(item);
                     break;
                 case QueryResult<BaseItemDto> query:
                     var kept = new List<BaseItemDto>();
-                    foreach (var dto in query.Items) if (await Visible(dto.Id)) kept.Add(dto);
+                    foreach (var dto in query.Items) if (await Visible(dto.Id)) { Countable(dto); kept.Add(dto); }
                     var filtered = kept.ToArray();
                     query.TotalRecordCount = Math.Max(filtered.Length, query.TotalRecordCount - (query.Items.Count - filtered.Length));
                     query.Items = filtered;
                     break;
                 case IEnumerable<BaseItemDto> items:
                     var visible = new List<BaseItemDto>();
-                    foreach (var dto in items) if (await Visible(dto.Id)) visible.Add(dto);
+                    foreach (var dto in items) if (await Visible(dto.Id)) { Countable(dto); visible.Add(dto); }
                     result.Value = visible.ToArray();
                     break;
                 // Remote-control users see what others are playing; hide StreamFin titles they may not see.

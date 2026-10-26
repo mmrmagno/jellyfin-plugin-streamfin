@@ -122,6 +122,9 @@ if episodes and all(e.get('IsFolder') for e in episodes):
 assert episodes and any(not e.get('IsFolder') for e in episodes), 'Source episode listing failed: ' + str(episodes)
 episode = next(e for e in episodes if not e.get('IsFolder'))
 print('PASS: episodes available for ' + title['Name'], flush=True)
+seasons = ok('/Shows/' + title['Id'] + '/Seasons?UserId=' + viewer['id'] + '&Fields=ChildCount', viewer['token'])['Items']
+assert seasons and all(s.get('ChildCount', 0) > 0 for s in seasons), [(s['Name'], s.get('ChildCount')) for s in seasons]
+print('PASS: seasons report a child count, which Android TV needs to open them', flush=True)
 for identity in (other['token'], None):
     for path in ('/Items/' + episode['Id'], '/Items/' + episode['Id'] + '/PlaybackInfo', '/Items?ParentId=' + title['Id']):
         status, _ = request(path, identity)
