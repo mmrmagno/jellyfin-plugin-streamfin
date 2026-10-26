@@ -2,7 +2,7 @@
   <defs>
     <linearGradient id="g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#aa5cc3"/><stop offset="1" stop-color="#00a4dc"/></linearGradient>
     <clipPath id="c"><rect width="512" height="372"/></clipPath>
-    <mask id="m"><rect width="512" height="512" fill="#fff"/><path d="M226 214 L226 302 L296 258 Z" fill="#000" stroke="#000" stroke-width="16" stroke-linejoin="round"/></mask>
+    <mask id="m"><rect width="512" height="512" fill="#fff"/><path d="M257 224 L257 304 L321 264 Z" fill="#000" stroke="#000" stroke-width="16" stroke-linejoin="round"/></mask>
   </defs>
   <rect width="512" height="512" rx="112" fill="#0f1b2a"/>
   <g clip-path="url(#c)"><path mask="url(#m)" d="M112 400 C 176 290, 248 160, 356 92 C 332 200, 344 300, 408 400 Z" fill="url(#g)" stroke="url(#g)" stroke-width="16" stroke-linejoin="round"/></g>
