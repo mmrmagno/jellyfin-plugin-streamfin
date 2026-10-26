@@ -1,4 +1,3 @@
-"""Package only the plugin DLL and metadata, never the server's API assemblies."""
 import json
 import pathlib
 import zipfile

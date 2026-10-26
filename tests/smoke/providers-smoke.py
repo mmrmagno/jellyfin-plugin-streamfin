@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Provider routing and saved-progress checks; disposable instance only."""
 import argparse
 import json
 import pathlib

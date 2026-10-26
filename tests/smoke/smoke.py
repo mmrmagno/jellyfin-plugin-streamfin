@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Integration checks against a disposable Jellyfin instance; never bootstrap production."""
 import argparse
 import json
 import os

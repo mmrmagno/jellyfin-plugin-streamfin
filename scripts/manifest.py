@@ -1,4 +1,3 @@
-"""Add a release to manifest.json, the plugin repository Jellyfin reads under Dashboard > Plugins > Repositories."""
 import argparse
 import datetime
 import hashlib

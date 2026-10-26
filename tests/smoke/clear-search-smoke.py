@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Clear discovery results and verify native user data on a disposable instance."""
 import argparse
 import json
 import pathlib

@@ -1,0 +1,37 @@
+name: compat
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: compat
+  cancel-in-progress: true
+
+jobs:
+  latest:
+    name: Newest Jellyfin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build against the pinned Jellyfin
+        run: |
+          bash scripts/fetch-references.sh
+          bash scripts/build.sh
+      - name: Load it on jellyfin:latest
+        run: bash tests/smoke/compat.sh jellyfin/jellyfin:latest
+      - name: Build against jellyfin:latest
+        env:
+          JELLYFIN_IMAGE: jellyfin/jellyfin:latest
+        run: |
+          rm -rf .jellyfin artifacts
+          bash scripts/fetch-references.sh
+          bash scripts/build.sh

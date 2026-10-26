@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Online search and content-policy checks. Uses disposable smoke.py state only."""
 import argparse
 import json
 import pathlib

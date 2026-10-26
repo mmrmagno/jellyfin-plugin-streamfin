@@ -1,4 +1,3 @@
-// Run with PLAYWRIGHT_MODULE pointing to playwright-core, after the API smoke test.
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 const fs = require('node:fs');
 
@@ -24,7 +23,6 @@ const fs = require('node:fs');
     await page.locator(':text-is("Popular"):visible').last().click();
     await page.locator(':text-is("Naruto"):visible').last().waitFor({timeout: 45000});
     await page.screenshot({path: 'artifacts/test-catalog.png'});
-    // Pick a title that the API smoke test did not pre-populate.
     await page.locator(':text-is("One-Punch Man"):visible').last().click();
     await page.locator(':text-is("Episodes · AnimeGG"):visible').last().waitFor({timeout: 45000});
     await page.screenshot({path: 'artifacts/test-title.png'});

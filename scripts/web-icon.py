@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Apply/remove a scoped Jellyfin Web sidebar icon, preserving existing branding CSS."""
 import argparse
 import json
 import pathlib
@@ -34,7 +33,6 @@ def api(path, data=None):
 
 options = api('/System/Configuration/branding')
 css = options.get('CustomCss') or ''
-# AniFin's old rule goes on any run; StreamFin rules are per channel.
 css = re.sub(r'/\* AniFin icon start \*/.*?/\* AniFin icon end \*/\s*', '', css, flags=re.S)
 found = args.channel_id or next((c['Id'] for c in api('/Channels')['Items'] if c['Name'] == args.channel), None)
 channel_id = uuid.UUID(found).hex if found else None
@@ -45,8 +43,6 @@ if not args.remove:
         raise SystemExit('--icon is required when applying the icon.')
     if not channel_id:
         raise SystemExit('Channel ' + args.channel + ' not found; pass --channel-id.')
-    # A CSS clip path needs no image fetch and works with a strict img-src CSP.
-    # The distributed icon uses a 24x24 viewBox and a single vector path.
     icon = ET.fromstring(args.icon.read_bytes())
     paths = [node.attrib['d'] for node in icon.iter() if node.tag.endswith('}path')]
     if icon.attrib.get('viewBox') != '0 0 24 24' or len(paths) != 1 or not re.fullmatch(r'[A-Za-z0-9., +\-]+', paths[0]):
