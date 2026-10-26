@@ -21,7 +21,6 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
     private static readonly TimeSpan StaleFor = TimeSpan.FromHours(24);
     private int Revision => Plugin.Instance?.Configuration.CacheRevision ?? 0;
     private TimeSpan Lifetime => TimeSpan.FromMinutes(Math.Clamp(Plugin.Instance?.Configuration.MetadataCacheMinutes ?? 60, 1, 1440));
-    // Classification and titles rarely change, and every content check reads them.
     private TimeSpan TitleLifetime => Lifetime < TimeSpan.FromHours(6) ? TimeSpan.FromHours(6) : Lifetime;
     public static bool IsAllowed(Anime anime, bool hideAdult, bool hideEcchi) =>
         !(hideAdult && anime.IsAdult) && !(hideEcchi && anime.Genres.Contains("Ecchi", StringComparer.OrdinalIgnoreCase));
@@ -76,10 +75,8 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
         catch (Exception ex) when (IsUpstreamFailure(ex) && cache.TryGetValue<Anime>("stale/anime/" + id, out var stale)) { return stale!; }
     }
 
-    // What is already known about a title, without a request.
     public Anime? Cached(int id) => cache.TryGetValue<Anime>($"{Revision}/anime/{id}", out var found) || cache.TryGetValue("stale/anime/" + id, out found) ? found : null;
 
-    // One request for a whole listing instead of one per title.
     public async Task PrefetchAsync(IEnumerable<int> ids, CancellationToken ct)
     {
         var missing = ids.Where(id => id > 0 && !cache.TryGetValue($"{Revision}/anime/{id}", out _)).Distinct().ToArray();

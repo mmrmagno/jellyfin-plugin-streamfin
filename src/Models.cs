@@ -9,7 +9,6 @@ public sealed record Subtitle(string Label, string Language, Uri Url);
 public sealed record ResolvedVideo(Uri Url, string Quality, IReadOnlyDictionary<string, string> Headers, bool HardcodedEnglishSubtitles,
     bool Hls = false, IReadOnlyList<Subtitle>? Subtitles = null);
 
-// A provider handles only its own website. Jellyfin, catalog metadata, and permissions live elsewhere.
 public interface IAnimeSource
 {
     string Id { get; }
@@ -19,7 +18,6 @@ public interface IAnimeSource
     Task<IReadOnlyList<ResolvedVideo>> ResolveAsync(string episodeId, CancellationToken ct);
 }
 
-// Sources keyed by a catalog identifier skip fuzzy title matching entirely.
 public interface IDirectAnimeSource : IAnimeSource
 {
     SourceTitle? Direct(Anime anime);

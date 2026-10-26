@@ -3,7 +3,6 @@ using MediaBrowser.Controller.Library;
 
 namespace StreamFin;
 
-// Policy is evaluated from metadata even for items cached before the filter changed.
 public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalog)
 {
     private readonly Dictionary<int, bool> decisions = new();
@@ -17,7 +16,6 @@ public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalo
         return parts is { Length: >= 3 } && parts[0] is "title" or "source" or "episode" && int.TryParse(parts[2], out var id) ? id : null;
     }
 
-    // A listing checks every row. Ask AniList about all of them at once.
     public Task PrefetchAsync(IEnumerable<Guid> ids, CancellationToken ct) => catalog.PrefetchAsync(ids
         .Select(library.GetItemById).OfType<BaseItem>().Where(item => item.ChannelId == ChannelId)
         .Select(AnimeId).OfType<int>().Where(id => !decisions.ContainsKey(id)), ct);

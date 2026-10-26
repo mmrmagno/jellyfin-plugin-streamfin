@@ -61,8 +61,6 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             (resolved.Subtitles ?? []).Select((_, i) => $"{root}/sub/{i}.vtt?key={ticket.SubtitleKey}").ToArray());
     }
 
-    // The media source both channels hand to Jellyfin: probed through the relay, with any
-    // subtitle tracks attached as external text streams that Jellyfin fetches server-side.
     // Jellyfin only extracts embedded subtitles from local files, so remote ones must be external.
     public async Task<MediaSourceInfo> MediaSourceAsync(Guid userId, ResolvedVideo resolved, string name,
         Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> resolve, Func<bool> live, CancellationToken ct)
@@ -375,7 +373,6 @@ public static class Hls
         return int.Parse(line[2..line.IndexOf('.')], CultureInfo.InvariantCulture);
     }
 
-    // Only the tags a media playlist needs survive, each rebuilt from validated values.
     public static string RewriteMedia(string text, Uri playlist, HlsLinks links)
     {
         var output = new StringBuilder("#EXTM3U\n");
@@ -414,7 +411,6 @@ public static class Hls
     public static double Duration(string text) => Regex.Matches(text, @"#EXTINF:\s*([0-9.]+)", RegexOptions.None, TimeSpan.FromSeconds(2))
         .Sum(m => double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : 0);
 
-    // Players hand out WebVTT or SubRip; Jellyfin gets WebVTT either way.
     public static string WebVtt(string text)
     {
         text = text.TrimStart('\uFEFF').Replace("\r\n", "\n");

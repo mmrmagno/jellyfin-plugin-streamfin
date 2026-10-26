@@ -11,8 +11,9 @@ public sealed class AnimeHeavenSource : IAnimeSource
     public string Id => "animeheaven";
     public string Name => "AnimeHeaven";
     private static readonly Uri Origin = new("https://animeheaven.me/");
-    // Observed on the site's player; do not trust arbitrary subdomains from page HTML.
-    public static bool IsMediaHost(string host) => host is "ax.animeheaven.me" or "ci.animeheaven.me" or "ct.animeheaven.me" or "ck.animeheaven.me" or "cu.animeheaven.me";
+    // The player lists a short decoy clip on ax first; the episode itself is on the other two-letter hosts.
+    public static bool IsMediaHost(string host) => host != "ax.animeheaven.me"
+        && Regex.IsMatch(host, @"\A[a-z]{2}\.animeheaven\.me\z", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static MatchCollection Matches(string html, string pattern) => Regex.Matches(html, pattern,
         RegexOptions.Singleline | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));
     private static string? Attribute(string tag, string name) => Matches(tag, @"\b" + name + @"\s*=\s*['""]([^'""]*)['""]").FirstOrDefault()?.Groups[1].Value;

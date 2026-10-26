@@ -92,7 +92,6 @@ public static class Languages
         ["ukrainian"] = "uk", ["persian"] = "fa", ["croatian"] = "hr", ["serbian"] = "sr", ["bulgarian"] = "bg"
     };
 
-    // Two-letter code from an explicit tag, else from the first word of the label ("English [CC]").
     public static string Code(string language, string label)
     {
         var tag = language.Trim().ToLowerInvariant();

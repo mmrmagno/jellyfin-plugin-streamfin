@@ -18,8 +18,6 @@ namespace StreamFin;
 public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationContext authorization, IChannelManager channels, ArtworkAccess artwork, ContentAccess content)
     : IAsyncActionFilter, IAsyncResultFilter
 {
-    // Jellyfin writes a channel's cache before persisting the returned children.
-    // Serialize our native-view population so parallel web requests cannot observe that gap.
     private bool IsOurs(Guid id) => id != Guid.Empty && content.IsOurs(id);
     private bool IsOurChannel(Guid id) => id == content.ChannelId || id == content.FilmChannelId;
     private Task<bool> Allowed(ActionContext context) => artwork.AllowsAsync(context.HttpContext);

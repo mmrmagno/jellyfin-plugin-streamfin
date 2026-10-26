@@ -69,6 +69,14 @@ The channels then show up on the home screen and in the sidebar, next to the lib
 If one is missing, check that your user is ticked and the TMDB key is saved, then reload
 the app. Updates come through the same repository like any other plugin.
 
+The web app's sidebar gives channels a generic icon. For the shuriken and the popcorn,
+make an API key under **Dashboard > API Keys** and run this from a clone of the repo:
+
+```sh
+JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --channel Anime
+JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --channel "Movies & TV"
+```
+
 ## How it works
 
 The catalogs and the video are separate. AniList and TMDB give me titles, posters and
