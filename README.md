@@ -1,14 +1,14 @@
 <p align="center"><img src="assets/banner.png" alt="StreamFin" width="600"></p>
 
 <p align="center">
-  <a href="https://github.com/mmrmagno/jellyfin-plugin-streamfin/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/mmrmagno/jellyfin-plugin-streamfin?label=release&color=aa5cc3"></a>
+  <a href="https://github.com/mmrmagno/jellyfin-plugin-streamfin/releases/latest"><img alt="Release" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmmrmagno%2Fjellyfin-plugin-streamfin%2Fmain%2Fmanifest.json&query=%24%5B0%5D.versions%5B0%5D.version&label=release&prefix=v&color=aa5cc3"></a>
   <a href="#install"><img alt="Jellyfin version" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmmrmagno%2Fjellyfin-plugin-streamfin%2Fmain%2Fmanifest.json&query=%24%5B0%5D.versions%5B0%5D.targetAbi&label=Jellyfin&suffix=%20or%20newer&color=00a4dc"></a>
   <a href="https://github.com/mmrmagno/jellyfin-plugin-streamfin/actions/workflows/compat.yml"><img alt="Newest Jellyfin" src="https://img.shields.io/github/actions/workflow/status/mmrmagno/jellyfin-plugin-streamfin/compat.yml?branch=main&label=newest%20Jellyfin"></a>
   <br>
   <a href="https://github.com/mmrmagno/jellyfin-plugin-streamfin/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/mmrmagno/jellyfin-plugin-streamfin/build.yml?branch=main&label=build"></a>
   <a href="https://github.com/mmrmagno/jellyfin-plugin-streamfin/actions/workflows/security.yml"><img alt="Security" src="https://img.shields.io/github/actions/workflow/status/mmrmagno/jellyfin-plugin-streamfin/security.yml?branch=main&label=security"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/mmrmagno/jellyfin-plugin-streamfin"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/mmrmagno/jellyfin-plugin-streamfin/badge"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/mmrmagno/jellyfin-plugin-streamfin"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--2.0-blue"></a>
 </p>
 
 A Jellyfin plugin that streams anime, movies and TV instead of storing them. They show up
