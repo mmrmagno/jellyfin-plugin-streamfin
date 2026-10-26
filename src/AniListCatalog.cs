@@ -76,6 +76,9 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
         catch (Exception ex) when (IsUpstreamFailure(ex) && cache.TryGetValue<Anime>("stale/anime/" + id, out var stale)) { return stale!; }
     }
 
+    // What is already known about a title, without a request.
+    public Anime? Cached(int id) => cache.TryGetValue<Anime>($"{Revision}/anime/{id}", out var found) || cache.TryGetValue("stale/anime/" + id, out found) ? found : null;
+
     // One request for a whole listing instead of one per title.
     public async Task PrefetchAsync(IEnumerable<int> ids, CancellationToken ct)
     {

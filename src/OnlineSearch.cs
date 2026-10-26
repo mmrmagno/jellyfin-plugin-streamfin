@@ -78,7 +78,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
             }
             finally { ChannelNavigation.Gate.Release(); }
         }
-        catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException or OperationCanceledException && !ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException or OperationCanceledException && !ct.IsCancellationRequested)
         {
             logger.LogWarning("StreamFin online search unavailable ({ErrorType}); local search remains available", ex.GetType().Name);
             return [];

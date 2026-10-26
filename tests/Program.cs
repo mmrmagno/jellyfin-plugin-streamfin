@@ -157,6 +157,17 @@ Check(Hls.WebVtt("\uFEFF1\r\n00:00:20,240 --> 00:00:29,210\r\nHello\r\n") == "WE
 Reject(() => Hls.WebVtt("<html>blocked</html>"), "a subtitle URL returning a web page is refused");
 Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nhttps://192.168.1.10/seg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "playlist segment on a private address is refused");
 Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nfile:///etc/passwd\n", new Uri("https://cdn.example.top/a.m3u8"), links), "playlist segment with a local scheme is refused");
+var hostile = Hls.RewriteMedia("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,KEYFORMATURI=\"x\",URI=https://keys.example.top/k\n#EXT-X-FOO:URI=\"https://evil.example.top/a\"\n#EXT-X-PROGRAM-DATE-TIME:2026-01-01\n#EXTINF:5,https://evil.example.top/t\nseg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links);
+Check(!hostile.Contains("example") && !hostile.Contains("FOO") && !hostile.Contains("KEYFORMATURI") && hostile.Contains("#EXT-X-KEY:METHOD=AES-128,URI=\"p/") && hostile.Contains("#EXTINF:5,\n"), "media playlists keep only rebuilt tags, bare and decoy URIs included");
+Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"http://192.168.1.1/admin\"\n#EXTINF:5,\nseg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "a media playlist that nests renditions is refused");
+Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps://cdn.example.top/b.m3u8\n", new Uri("https://cdn.example.top/a.m3u8"), links), "a media playlist that nests variants is refused");
+Reject(() => Hls.RewriteMedia("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=http://169.254.169.254/latest\n#EXTINF:5,\nseg.ts\n", new Uri("https://cdn.example.top/a.m3u8"), links), "a bare key URI on a private address is refused");
+var bare = Hls.RewriteMaster("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=aud,NAME=\"J\",URI=audio.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=10,AUDIO=aud,URI=\"https://evil.example.top/x\"\nv.m3u8\n", new Uri("https://cdn.example.top/m.m3u8"), links);
+Check(!bare.Contains("example") && bare.Contains("GROUP-ID=\"aud\"") && bare.Contains("AUDIO=\"aud\""), "master renditions with bare URIs are relayed and stray attributes dropped");
+Check(Hls.Attributes("A=1, B=\"x,\\\"y\", A=2,C=bare").SequenceEqual(new Dictionary<string, string> { ["A"] = "2", ["B"] = "x,\"y", ["C"] = "bare" }), "attribute lists parse the way FFmpeg reads them");
+Reject(() => new HlsLinks().Add(new Uri("https://cdn.example.top/" + new string('a', 5000)), false), "overlong stream addresses are refused");
+Reject(() => FlixSource.Unpack("eval(function(p,a,c,k,e,d){}('" + string.Join(" ", Enumerable.Repeat("0", 5000)) + "',10,1,'" + new string('w', 2000) + "'.split('|')))"), "packed pages that expand without bound are refused");
+Check(!AnimeGgSource.Clean("Hi &lt;img src=x onerror=alert(1)&gt; <b>there</b>").Contains('<'), "encoded markup in scraped text cannot become a tag");
 Reject(() => Hls.RewriteMaster("<html>blocked</html>", new Uri("https://cdn.example.top/a.m3u8"), links), "non-HLS response is refused");
 
 foreach (var good in new[] { "https://cdn.example.top/a.m3u8", "http://cdn.example.top:8080/a.ts", "https://1.1.1.1/x" }) { SafeHttp.ValidateOpen(new Uri(good)); Check(true, "open policy allows " + good); }

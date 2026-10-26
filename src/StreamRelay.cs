@@ -168,7 +168,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             await WriteAsync(context, Hls.RewriteMedia(text, upstream, ticket.Links), "application/vnd.apple.mpegurl");
             return;
         }
-        await ProxyAsync(context, ticket, upstream, video.Headers, range, open: true, timeout.Token);
+        await ProxyAsync(context, ticket, upstream, video.Headers, range, open: true, timeout.Token, segment: true);
     }
 
     public async Task ServeSubtitleAsync(HttpContext context, string id, int index, string key)
@@ -200,7 +200,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     }
 
     // Returns false, without writing anything, when a retryable request finds the link expired.
-    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false)
+    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false)
     {
         using var response = await http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
             head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open);
@@ -215,6 +215,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         if (HttpMethods.IsHead(context.Request.Method)) return true;
         await using var input = await response.Content.ReadAsStreamAsync(context.RequestAborted);
         var buffer = new byte[65536];
+        var first = true;
         try
         {
             while (true)
@@ -223,6 +224,13 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
                 idle.CancelAfter(TimeSpan.FromSeconds(45));
                 var read = await input.ReadAsync(buffer, idle.Token);
                 if (read == 0) break;
+                // A "segment" that is really a playlist would make FFmpeg fetch its addresses directly.
+                if (segment && first && Encoding.UTF8.GetString(buffer, 0, Math.Min(read, 64)).TrimStart('﻿', ' ', '\r', '\n', '\t').StartsWith('#'))
+                {
+                    if (!context.Response.HasStarted) context.Response.StatusCode = 502;
+                    break;
+                }
+                first = false;
                 if (!Plugin.Allows(ticket.UserId) || !ticket.Live()) break;
                 await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted);
             }
@@ -243,6 +251,7 @@ public sealed class HlsLinks
     public int Add(Uri url, bool playlist)
     {
         SafeHttp.ValidateOpen(url);
+        if (url.OriginalString.Length > 4096) throw new ProviderException("The stream playlist has an invalid address.");
         lock (links)
         {
             if (known.TryGetValue(url, out var existing)) return existing;
@@ -257,9 +266,11 @@ public sealed class HlsLinks
 
 public static class Hls
 {
-    private static readonly Regex UriAttribute = new("URI=\"([^\"]*)\"", RegexOptions.None, TimeSpan.FromSeconds(2));
-    private static readonly Regex Bandwidth = new(@"[:,]BANDWIDTH=(\d+)", RegexOptions.None, TimeSpan.FromSeconds(1));
-    private static readonly Regex Group = new("AUDIO=\"([^\"]*)\"", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex Bandwidth = new(@"\A\d{1,12}\z", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex Plain = new(@"\A[A-Za-z0-9.\-]{1,64}\z", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex Number = new(@"\A\d{1,12}\z", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex Range = new(@"\A\d{1,15}(@\d{1,15})?\z", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex Seconds = new(@"\A#EXTINF:\s*(\d{1,6}(?:\.\d{1,6})?)", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     public static bool IsMaster(string text) => text.Contains("#EXT-X-STREAM-INF", StringComparison.Ordinal);
     private static string[] Lines(string text)
@@ -278,33 +289,81 @@ public static class Hls
     }
     private static string Part(int index, bool playlist, Uri url) => $"p/{index}.{(playlist ? "m3u8" : Extension(url))}";
 
+    // FFmpeg reads attribute lists loosely: bare or quoted values, backslash escapes, the last
+    // duplicate wins. Parse them the same way so nothing FFmpeg would act on is overlooked.
+    public static Dictionary<string, string> Attributes(string list)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var i = 0;
+        while (true)
+        {
+            while (i < list.Length && (char.IsWhiteSpace(list[i]) || list[i] == ',')) i++;
+            if (i >= list.Length) break;
+            var equals = list.IndexOf('=', i);
+            if (equals < 0) break;
+            var key = list[i..equals];
+            i = equals + 1;
+            var value = new StringBuilder();
+            if (i < list.Length && list[i] == '"')
+            {
+                i++;
+                while (i < list.Length && list[i] != '"')
+                {
+                    if (list[i] == '\\') { if (i + 1 >= list.Length) break; value.Append(list[i + 1]); i += 2; }
+                    else value.Append(list[i++]);
+                }
+                if (i < list.Length) i++;
+            }
+            else while (i < list.Length && !char.IsWhiteSpace(list[i]) && list[i] != ',') value.Append(list[i++]);
+            result[key] = value.ToString();
+        }
+        return result;
+    }
+
+    // Rebuilds a tag from the attributes it may carry; anything else is dropped. A URI is
+    // replaced by a relay path, so FFmpeg never sees an upstream address.
+    private static string Tag(string name, Dictionary<string, string> attributes, string[] quoted, string[] plain, Func<string, string>? uri = null)
+    {
+        var parts = new List<string>();
+        foreach (var (key, value) in attributes)
+        {
+            if (key == "URI" && uri is not null) parts.Add($"URI=\"{uri(value)}\"");
+            else if (quoted.Contains(key) && value.Length <= 256 && value.All(c => c >= ' ' && c != '"' && c != '\\')) parts.Add($"{key}=\"{value}\"");
+            else if (plain.Contains(key) && Plain.IsMatch(value)) parts.Add($"{key}={value}");
+        }
+        return $"#{name}:{string.Join(',', parts)}";
+    }
+
     // Keep the best video variant and the renditions it uses. Jellyfin transcodes for each
     // client anyway, and every variant kept would be another stream FFprobe has to open.
     public static string RewriteMaster(string text, Uri playlist, HlsLinks links)
     {
         var lines = Lines(text);
-        (long Bandwidth, int Line, int Uri)? best = null;
+        (long Bandwidth, Dictionary<string, string> Attributes, int Uri)? best = null;
         for (var i = 0; i < lines.Length; i++)
         {
             if (!lines[i].StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal)) continue;
             var next = Array.FindIndex(lines, i + 1, l => l.Trim().Length > 0 && !l.StartsWith('#'));
             if (next < 0) continue;
-            var bandwidth = Bandwidth.Match(lines[i]) is { Success: true } m ? long.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
-            if (best is null || bandwidth > best.Value.Bandwidth) best = (bandwidth, i, next);
+            var attributes = Attributes(lines[i]["#EXT-X-STREAM-INF:".Length..]);
+            var bandwidth = attributes.TryGetValue("BANDWIDTH", out var b) && Bandwidth.IsMatch(b) ? long.Parse(b, CultureInfo.InvariantCulture) : 0;
+            if (best is null || bandwidth > best.Value.Bandwidth) best = (bandwidth, attributes, next);
         }
         if (best is not { } chosen) throw new ProviderException("The stream playlist lists no playable variant.");
-        var audio = Group.Match(lines[chosen.Line]) is { Success: true } g ? g.Groups[1].Value : null;
+        var audio = chosen.Attributes.GetValueOrDefault("AUDIO");
         var output = new StringBuilder("#EXTM3U\n");
         foreach (var line in lines)
         {
             if (!line.StartsWith("#EXT-X-MEDIA:", StringComparison.Ordinal)) continue;
+            var media = Attributes(line["#EXT-X-MEDIA:".Length..]);
             // Subtitle renditions are dropped: Jellyfin cannot extract them from a remote stream.
-            if (!(audio is not null && line.Contains("TYPE=AUDIO", StringComparison.Ordinal) && line.Contains($"GROUP-ID=\"{audio}\"", StringComparison.Ordinal))) continue;
-            output.Append(UriAttribute.Replace(line, m => $"URI=\"{Part(links.Add(Absolute(playlist, m.Groups[1].Value), true), true, playlist)}\"")).Append('\n');
+            if (audio is null || media.GetValueOrDefault("TYPE") != "AUDIO" || media.GetValueOrDefault("GROUP-ID") != audio) continue;
+            output.Append(Tag("EXT-X-MEDIA", media, ["GROUP-ID", "NAME", "LANGUAGE", "CHANNELS"], ["TYPE", "DEFAULT", "AUTOSELECT"],
+                value => Part(links.Add(Absolute(playlist, value), true), true, playlist))).Append('\n');
         }
-        var info = Regex.Replace(lines[chosen.Line], ",(?:SUBTITLES|CLOSED-CAPTIONS)=\"[^\"]*\"", "", RegexOptions.None, TimeSpan.FromSeconds(1));
         var variant = Absolute(playlist, lines[chosen.Uri]);
-        output.Append(info).Append('\n').Append(Part(links.Add(variant, true), true, variant)).Append('\n');
+        output.Append(Tag("EXT-X-STREAM-INF", chosen.Attributes, ["CODECS", "AUDIO"], ["BANDWIDTH", "AVERAGE-BANDWIDTH", "RESOLUTION", "FRAME-RATE"]))
+            .Append('\n').Append(Part(links.Add(variant, true), true, variant)).Append('\n');
         return output.ToString();
     }
 
@@ -316,25 +375,38 @@ public static class Hls
         return int.Parse(line[2..line.IndexOf('.')], CultureInfo.InvariantCulture);
     }
 
+    // Only the tags a media playlist needs survive, each rebuilt from validated values.
     public static string RewriteMedia(string text, Uri playlist, HlsLinks links)
     {
-        var output = new StringBuilder();
+        var output = new StringBuilder("#EXTM3U\n");
+        string Relay(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url); }
         foreach (var raw in Lines(text))
         {
-            var line = raw.TrimEnd();
-            if (line.Length == 0) continue;
-            if (line.StartsWith('#'))
+            var line = raw.Trim();
+            if (line.Length == 0 || line == "#EXTM3U") continue;
+            if (!line.StartsWith('#'))
             {
-                // Keys, initialisation segments and nested renditions travel through the relay too.
-                output.Append(line.StartsWith("#EXT-X-KEY", StringComparison.Ordinal) || line.StartsWith("#EXT-X-MAP", StringComparison.Ordinal)
-                    || line.StartsWith("#EXT-X-SESSION-KEY", StringComparison.Ordinal)
-                    ? UriAttribute.Replace(line, m => { var url = Absolute(playlist, m.Groups[1].Value); return $"URI=\"{Part(links.Add(url, false), false, url)}\""; })
-                    : line).Append('\n');
+                var segment = Absolute(playlist, line);
+                // Inside p/, so a bare name resolves to the sibling relay path.
+                output.Append(Part(links.Add(segment, false), false, segment)[2..]).Append('\n');
                 continue;
             }
-            var segment = Absolute(playlist, line);
-            // Inside p/, so a bare name resolves to the sibling relay path.
-            output.Append(Part(links.Add(segment, false), false, segment)[2..]).Append('\n');
+            var colon = line.IndexOf(':');
+            var (name, value) = colon < 0 ? (line[1..], "") : (line[1..colon], line[(colon + 1)..]);
+            if (name is "EXT-X-STREAM-INF" or "EXT-X-MEDIA" or "EXT-X-I-FRAME-STREAM-INF" or "EXT-X-SESSION-DATA")
+                throw new ProviderException("The stream playlist nests other playlists.");
+            var kept = name switch
+            {
+                "EXTINF" when Seconds.Match(line) is { Success: true } m => $"#EXTINF:{m.Groups[1].Value},",
+                "EXT-X-TARGETDURATION" or "EXT-X-MEDIA-SEQUENCE" or "EXT-X-DISCONTINUITY-SEQUENCE" or "EXT-X-VERSION" when Number.IsMatch(value) => $"#{name}:{value}",
+                "EXT-X-PLAYLIST-TYPE" when value is "VOD" or "EVENT" => $"#{name}:{value}",
+                "EXT-X-BYTERANGE" when Range.IsMatch(value) => $"#{name}:{value}",
+                "EXT-X-ENDLIST" or "EXT-X-DISCONTINUITY" or "EXT-X-INDEPENDENT-SEGMENTS" when value.Length == 0 => $"#{name}",
+                "EXT-X-KEY" => Tag(name, Attributes(value), [], ["METHOD", "IV"], Relay),
+                "EXT-X-MAP" => Tag(name, Attributes(value), ["BYTERANGE"], [], Relay),
+                _ => null
+            };
+            if (kept is not null) output.Append(kept).Append('\n');
         }
         return output.ToString();
     }

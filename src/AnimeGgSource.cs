@@ -13,7 +13,9 @@ public sealed class AnimeGgSource(SafeHttp http) : IAnimeSource
     private static readonly Uri Origin = new("https://www.animegg.org/");
     private static MatchCollection Matches(string html, string pattern) => Regex.Matches(html, pattern,
         RegexOptions.Singleline | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));
-    public static string Clean(string text) => WebUtility.HtmlDecode(Regex.Replace(text, "<[^>]+>", " ", RegexOptions.None, TimeSpan.FromSeconds(1))).Trim();
+    // Decode before stripping, so encoded markup cannot turn back into tags; stray brackets go too.
+    public static string Clean(string text) => Regex.Replace(WebUtility.HtmlDecode(text), "<[^>]*>", " ", RegexOptions.None, TimeSpan.FromSeconds(1))
+        .Replace("<", "", StringComparison.Ordinal).Replace(">", "", StringComparison.Ordinal).Trim();
     public static string Normalize(string title) => Regex.Replace(Clean(title).ToLowerInvariant(), @"[^\p{L}\p{N}]", "");
     public static void ValidateId(string id)
     {

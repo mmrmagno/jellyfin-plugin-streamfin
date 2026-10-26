@@ -51,8 +51,10 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
         }
         else
         {
+            // Image requests can be anonymous, so they must not spend the AniList budget.
+            var image = ArtworkAccess.IsImage(context.HttpContext);
             foreach (var id in ids.Where(IsOurs))
-                if (!await content.AllowsAsync(id, context.HttpContext.RequestAborted)) { context.Result = new NotFoundResult(); return; }
+                if (!await content.AllowsAsync(id, context.HttpContext.RequestAborted, cachedOnly: image)) { context.Result = new NotFoundResult(); return; }
             // Native series/season screens use the Shows API instead of Channel/Items.
             // Populate those children lazily before Jellyfin answers the normal request.
             var path = context.HttpContext.Request.Path.Value ?? "";
@@ -126,6 +128,14 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
                     var visible = new List<BaseItemDto>();
                     foreach (var dto in items) if (await Visible(dto.Id)) visible.Add(dto);
                     result.Value = visible.ToArray();
+                    break;
+                // Remote-control users see what others are playing; hide StreamFin titles they may not see.
+                case IEnumerable<SessionInfoDto> sessions:
+                    foreach (var session in sessions)
+                    {
+                        if (session.NowPlayingItem is { } playing && !await Visible(playing.Id, listing: false)) { session.NowPlayingItem = null; session.NowPlayingQueue = []; }
+                        if (session.NowViewingItem is { } viewing && !await Visible(viewing.Id, listing: false)) session.NowViewingItem = null;
+                    }
                     break;
                 case SearchHintResult hints:
                     var safeHints = new List<SearchHint>();

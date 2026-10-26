@@ -72,7 +72,7 @@ public sealed class SourceRegistry(IEnumerable<IAnimeSource> providers)
             var exact = unique.Where(c => names.Contains(AnimeGgSource.Normalize(c.Title)) && (!c.Year.HasValue || c.Year == anime.Year)).ToArray();
             return new(source.Id, source.Name, exact.Length == 1 ? exact : unique);
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested && ex is ProviderException or HttpRequestException or System.Text.Json.JsonException or OperationCanceledException)
+        catch (Exception ex) when (!ct.IsCancellationRequested && ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException or OperationCanceledException)
         {
             return new(source.Id, source.Name, [], "Temporarily unavailable. Try the other provider or refresh the catalog cache.");
         }

@@ -81,7 +81,7 @@ public sealed class FilmChannel(TmdbCatalog catalog, FlixSource flix, StreamRela
         if (!IsAvailable) return Result([]);
         var id = query.FolderId ?? "";
         try { return await BrowseAsync(id, ct); }
-        catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException or TaskCanceledException && !ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException or TaskCanceledException && !ct.IsCancellationRequested)
         {
             logger.LogWarning("StreamFin film catalog request failed ({ErrorType})", ex.GetType().Name);
             var message = ex is ProviderException ? ex.Message : "The catalog is temporarily unavailable. Please try again later.";

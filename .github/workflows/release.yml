@@ -4,41 +4,55 @@ on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency: release
 
 jobs:
   release:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the release and commit manifest.json
     env:
-      GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      # The build runs repository code, so the push token stays off disk until the end.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Check the tag matches the project version
+          persist-credentials: false
+      - name: Check the tag is on main and matches the project version
         run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$TAG is not on main"; exit 1; }
           version=$(grep -oP '(?<=<Version>)[^<]+' src/StreamFin.csproj)
-          test "v$version" = "$TAG" || { echo "tag $TAG does not match version $version"; exit 1; }
+          test "v$version" = "$TAG" || { echo "$TAG does not match version $version"; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - run: bash scripts/fetch-references.sh
       - run: bash scripts/build.sh
       - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-          git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$TAG" > notes.txt
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" --title "StreamFin $VERSION" --notes-file notes.txt
+          git fetch --force "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG:refs/tags/$TAG"
+          notes=$(git tag -l --format='%(contents:body)' "$TAG")
+          [ -n "$notes" ] || notes=$(git tag -l --format='%(contents:subject)' "$TAG")
+          printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.txt"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" --verify-tag --title "StreamFin $VERSION" --notes-file "$RUNNER_TEMP/notes.txt"
           gh release download "$TAG" -p "StreamFin-$VERSION.zip" -D "$RUNNER_TEMP"
       - name: Add the release to manifest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          remote="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
           git checkout main
+          git pull --ff-only "$remote" main
           python3 scripts/manifest.py --zip "$RUNNER_TEMP/StreamFin-$VERSION.zip" \
-            --url "https://github.com/${{ github.repository }}/releases/download/$TAG/StreamFin-$VERSION.zip" \
-            --changelog "$(cat notes.txt)"
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/StreamFin-$VERSION.zip" \
+            --changelog "$(cat "$RUNNER_TEMP/notes.txt")"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add manifest.json
-          git diff --cached --quiet || { git commit -m "release: StreamFin $VERSION" && git push origin main; }
+          git diff --cached --quiet && exit 0
+          git commit -m "release: StreamFin $VERSION"
+          git push "$remote" main

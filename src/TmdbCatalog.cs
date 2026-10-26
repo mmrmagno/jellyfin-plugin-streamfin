@@ -111,7 +111,9 @@ public sealed class TmdbCatalog(SafeHttp http) : IDisposable
         return JsonDocument.Parse(text);
     }
 
-    private static string? Text(JsonElement e, string key) => e.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { Length: > 0 } s ? s : null;
+    // TMDB text is plain; angle brackets are dropped so no client can mistake it for markup.
+    private static string? Text(JsonElement e, string key) => e.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
+        && value.GetString()?.Replace("<", "", StringComparison.Ordinal).Replace(">", "", StringComparison.Ordinal) is { Length: > 0 } s ? s : null;
     private static int? Number(JsonElement e, string key) => e.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) ? n : null;
     private static string? Image(JsonElement e, string key) => Text(e, key) is { } path && Regex.IsMatch(path, @"\A/[A-Za-z0-9_-]+\.(?:jpg|png|webp)\z", RegexOptions.None, TimeSpan.FromSeconds(1)) ? Images + path : null;
 

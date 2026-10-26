@@ -57,7 +57,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
         if (Plugin.Instance?.Configuration is not { Enabled: true }) return Result([]);
         var id = query.FolderId ?? "";
         try { return await BrowseAsync(id, ct); }
-        catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException or TaskCanceledException && !ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException or TaskCanceledException && !ct.IsCancellationRequested)
         {
             logger.LogWarning("StreamFin catalog request failed ({ErrorType})", ex.GetType().Name);
             var message = ex is ProviderException ? ex.Message : "The catalog or source is temporarily unavailable. Please try again later.";

@@ -64,9 +64,9 @@ The catalogs and the video are separate. AniList and TMDB give me titles, poster
 episode lists. The sources only have to turn "this episode" into a video URL.
 
 Jellyfin never sees that URL. It gets a loopback address into the plugin with a one-off
-ticket, and the plugin fetches the video from the site. MP4 is streamed as byte ranges and
-re-resolved on every seek. HLS gets its playlist rewritten so every segment points back at
-the relay, which means FFmpeg only ever talks to localhost.
+ticket, and the plugin fetches the video from the site. MP4 is streamed as byte ranges, and
+the link is only looked up again if it expires. HLS gets its playlist rewritten so every
+segment points back at the relay, which means FFmpeg only ever talks to localhost.
 
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
 every outgoing request has to land on a public address. Nothing from the sites is ever run.

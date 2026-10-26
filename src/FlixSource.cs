@@ -48,14 +48,14 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
                         var extra = (await SubtitleIndexAsync(server.Link, referer, ct)).Where(s => !known.Contains(s.Url));
                         return [video with { Subtitles = Languages.Arrange(video.Subtitles!.Concat(extra)) }];
                     }
-                    catch (Exception ex) when (ex is ProviderException or HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+                    catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or TaskCanceledException && !ct.IsCancellationRequested)
                     {
                         errors.Add(server.Name);
                     }
                 }
                 errors.Add(site.Host + ": no working player");
             }
-            catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or TaskCanceledException && !ct.IsCancellationRequested)
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or JsonException or TaskCanceledException && !ct.IsCancellationRequested)
             {
                 errors.Add(site.Host + ": unavailable");
             }
@@ -205,7 +205,7 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
         foreach (var frame in Iframe.Matches(html).Select(m => Http(final, m.Groups[1].Value)).OfType<Uri>().Distinct().Take(4))
         {
             try { if (await PlayerAsync(frame, final, depth + 1, ct) is { } found) return found; }
-            catch (Exception ex) when (ex is ProviderException or HttpRequestException && !ct.IsCancellationRequested) { }
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException && !ct.IsCancellationRequested) { }
         }
         return null;
     }
@@ -248,7 +248,7 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
         {
             if (Valid(query[name] ?? "") is not { } index) continue;
             try { return ParseSubtitleIndex(await http.TextAsync(index, ct, headers: Referer(referer), open: true)); }
-            catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException && !ct.IsCancellationRequested) { return []; }
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or JsonException && !ct.IsCancellationRequested) { return []; }
         }
         return [];
     }
@@ -274,9 +274,14 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
             if (!int.TryParse(m.Groups[2].Value, out var radix) || !int.TryParse(m.Groups[3].Value, out var count) || radix is < 2 or > 62) continue;
             var words = m.Groups[4].Value.Split('|');
             var payload = m.Groups[1].Value.Replace("\\'", "'", StringComparison.Ordinal).Replace("\\\\", "\\", StringComparison.Ordinal);
+            // A hostile page could repeat a huge word millions of times; stop well before that.
+            var size = 0L;
             output.Add(Regex.Replace(payload, @"\b\w+\b", w =>
-                Unbase(w.Value, radix) is { } i && i < words.Length && i < count && words[i].Length > 0 ? words[i] : w.Value,
-                RegexOptions.None, TimeSpan.FromSeconds(2)));
+            {
+                var word = Unbase(w.Value, radix) is { } i && i < words.Length && i < count && words[i].Length > 0 ? words[i] : w.Value;
+                if ((size += word.Length) > 8_000_000) throw new ProviderException("The player page is too large.");
+                return word;
+            }, RegexOptions.None, TimeSpan.FromSeconds(2)));
         }
         return output;
     }
