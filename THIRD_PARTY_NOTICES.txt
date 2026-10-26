@@ -12,7 +12,7 @@ see `APACHE-2.0.txt`. `anime.svg` and `anime.png` add StreamFin colors and a bac
 `src/Assets/popcorn.svg` is the Material Design Icons **popcorn** icon,
 from https://github.com/Templarian/MaterialDesign (@mdi/svg 7.4.47).
 Copyright the Pictogrammers contributors. Licensed under Apache-2.0;
-see `APACHE-2.0.txt`. `streamfin.svg` and `popcorn.png` add StreamFin colors and a background.
+see `APACHE-2.0.txt`. `popcorn-tile.svg` and `popcorn.png` add StreamFin colors and a background.
 
 ## HiAnime provider
 

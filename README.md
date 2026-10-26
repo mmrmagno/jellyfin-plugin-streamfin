@@ -1,4 +1,4 @@
-# StreamFin
+<p align="center"><img src="assets/banner.png" alt="StreamFin" width="600"></p>
 
 A Jellyfin plugin that streams anime, movies and TV instead of storing them. They show up
 as two channels, **Anime** and **Movies & TV**, and play in Jellyfin's own player, with

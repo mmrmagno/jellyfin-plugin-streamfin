@@ -16,6 +16,6 @@
     "overview": "Stream instead of storing: browse Anime and Movies & TV, play in Jellyfin's own player.",
     "owner": "mmrmagno",
     "category": "Channels",
-    "imageUrl": "https://raw.githubusercontent.com/mmrmagno/jellyfin-plugin-streamfin/main/src/Assets/popcorn.png"
+    "imageUrl": "https://raw.githubusercontent.com/mmrmagno/jellyfin-plugin-streamfin/main/assets/banner.png"
   }
 ]

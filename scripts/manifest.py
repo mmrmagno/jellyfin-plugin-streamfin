@@ -24,7 +24,7 @@ if plugin is None:
 plugin.update(
     name=meta['name'], description=meta['description'], overview=meta['overview'],
     owner=meta['owner'], category=meta['category'],
-    imageUrl='https://raw.githubusercontent.com/mmrmagno/jellyfin-plugin-streamfin/main/src/Assets/popcorn.png',
+    imageUrl='https://raw.githubusercontent.com/mmrmagno/jellyfin-plugin-streamfin/main/assets/banner.png',
 )
 plugin['versions'] = [v for v in plugin['versions'] if v['version'] != meta['version']]
 plugin['versions'].insert(0, {
