@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: write # create the release and commit manifest.json
+      contents: write # create the release and upload its assets
       id-token: write # sign the build provenance with Sigstore
       attestations: write # store the build provenance
     env:
@@ -41,7 +41,7 @@ jobs:
       - run: cp "$BUNDLE" "artifacts/StreamFin-$VERSION.zip.sigstore.json"
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-      - name: Publish the release
+      - name: Publish the release with an updated manifest.json
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -49,21 +49,11 @@ jobs:
           notes=$(git tag -l --format='%(contents:body)' "$TAG")
           [ -n "$notes" ] || notes=$(git tag -l --format='%(contents:subject)' "$TAG")
           printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.txt"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" "artifacts/StreamFin-$VERSION.zip.sigstore.json" --verify-tag --title "StreamFin $VERSION" --notes-file "$RUNNER_TEMP/notes.txt"
-          gh release download "$TAG" -p "StreamFin-$VERSION.zip" -D "$RUNNER_TEMP"
-      - name: Add the release to manifest.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          remote="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
-          git checkout main
-          git pull --ff-only "$remote" main
-          python3 scripts/manifest.py --zip "$RUNNER_TEMP/StreamFin-$VERSION.zip" \
+          if gh release view "$TAG" >/dev/null 2>&1; then previous=$TAG; else previous=$(gh release view --json tagName --jq .tagName); fi
+          gh release download "$previous" -p manifest.json -D "$RUNNER_TEMP/previous"
+          cp "$RUNNER_TEMP/previous/manifest.json" artifacts/manifest.json
+          python3 scripts/manifest.py --manifest artifacts/manifest.json --zip "artifacts/StreamFin-$VERSION.zip" \
             --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/StreamFin-$VERSION.zip" \
             --changelog "$(cat "$RUNNER_TEMP/notes.txt")"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add manifest.json
-          git diff --cached --quiet && exit 0
-          git commit -m "release: StreamFin $VERSION"
-          git push "$remote" main
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" "artifacts/StreamFin-$VERSION.zip.sigstore.json" --verify-tag --title "StreamFin $VERSION" --notes-file "$RUNNER_TEMP/notes.txt"
+          gh release upload "$TAG" artifacts/manifest.json --clobber
