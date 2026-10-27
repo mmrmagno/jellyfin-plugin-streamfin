@@ -13,6 +13,8 @@ var titles = AnimeGgSource.ParseSearch("<a href=\"/series/test-show\" class=\"ms
 Check(titles.Count == 1 && titles[0].Title == "Test & Show", "search decodes entities and deduplicates");
 var episodes = AnimeGgSource.ParseEpisodes("<a href=\"/test-episode-10\" class=\"anm_det_pop\"><strong>10</strong><i class=\"anititle\">Ten</i></a><a href=\"/test-episode-2\" class=\"anm_det_pop\"><strong>2</strong><i class=\"anititle\">Two</i></a><a href=\"/test-episode-2.5\" class=\"anm_det_pop\"><strong>2.5</strong><i class=\"anititle\">Special</i></a>");
 Check(episodes.Select(e => e.Number).SequenceEqual(new decimal[] { 2, 2.5m, 10 }), "episodes sort numerically and preserve specials");
+Check(AnimeGgSource.ParseEpisodes("<a href=\"/test-episode-" + new string('9', 40) + "\" class=\"anm_det_pop\"><strong>1</strong><i class=\"anititle\">Huge</i></a><a href=\"/test-episode-3\" class=\"anm_det_pop\"><strong>3</strong><i class=\"anititle\">Three</i></a>")
+    .Single().Number == 3, "an episode number too large to be real is skipped, not a crash");
 Reject(() => AnimeGgSource.ParseSubEmbed("<div id=\"dubbed-Animegg\"><iframe src=\"/embed/999\">"), "dub-only episode is rejected");
 Check(AnimeGgSource.ParseSubEmbed("<div id=\"subbed-Animegg\" class=\"tab-pane\">\n<iframe src=\"/embed/123\">") == "/embed/123", "selects the subtitled embed");
 var videos = AnimeGgSource.ParseVideos("var videoSources = [{file: \"/play/1/video.mp4\", label: \"480p\"},{file: \"/play/2/video.mp4\", label: \"1080p\"}];");

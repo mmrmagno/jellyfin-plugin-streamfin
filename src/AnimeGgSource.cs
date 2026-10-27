@@ -42,9 +42,11 @@ public sealed class AnimeGgSource(SafeHttp http) : IAnimeSource
         .Select(m =>
         {
             var number = Regex.Match(m.Groups[1].Value, @"-episode-(\d+(?:\.\d+)?)", RegexOptions.None, TimeSpan.FromSeconds(1));
-            return new SourceEpisode(m.Groups[1].Value, number.Success ? decimal.Parse(number.Groups[1].Value, CultureInfo.InvariantCulture) : 0,
-                Clean(m.Groups[3].Value));
-        }).DistinctBy(e => e.Id).OrderBy(e => e.Number).ToArray();
+            if (!number.Success) return new SourceEpisode(m.Groups[1].Value, 0, Clean(m.Groups[3].Value));
+            // A number too large for an episode is page damage, not an episode.
+            return decimal.TryParse(number.Groups[1].Value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var n) && n <= int.MaxValue
+                ? new SourceEpisode(m.Groups[1].Value, n, Clean(m.Groups[3].Value)) : null;
+        }).OfType<SourceEpisode>().DistinctBy(e => e.Id).OrderBy(e => e.Number).ToArray();
 
     public static string ParseSubEmbed(string html)
     {
