@@ -72,15 +72,19 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
 
     private async Task<MediaSourceInfo> ProbeAsync(Playback playback, ResolvedVideo resolved, string name, CancellationToken ct)
     {
+        // Audio is direct played so the FLAC reaches the client untouched: with a required header, clients
+        // ask Jellyfin's static stream, which fetches the loopback URL itself and forwards User-Agent and Range.
+        // Jellyfin 12 disables direct stream for every HTTP source, and a transcode follows the client's
+        // profile, which is often lossy.
         var media = new MediaSourceInfo
         {
-            Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Hls ? "hls" : "mp4", IsRemote = true,
-            Name = name, SupportsDirectPlay = false, SupportsDirectStream = false, SupportsTranscoding = true, SupportsProbing = true,
+            Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Audio ? "flac" : resolved.Hls ? "hls" : "mp4", IsRemote = true,
+            Name = name, SupportsDirectPlay = resolved.Audio, SupportsDirectStream = resolved.Audio, SupportsTranscoding = true, SupportsProbing = true,
             RequiredHttpHeaders = new Dictionary<string, string> { [Header] = playback.Secret }
         };
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
-        var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
+        var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = resolved.Audio ? DlnaProfileType.Audio : DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
         var streams = info.MediaStreams.Where(s => s.Type != MediaStreamType.Subtitle).ToList();
         var subtitles = resolved.Subtitles ?? [];
         for (var i = 0; i < subtitles.Count; i++)
@@ -126,7 +130,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         // (403/404/410) the episode is resolved again, once, and only another MP4 is accepted.
         var video = ticket.Video!;
         // Reviewed anime hosts keep their strict rules; film players live on rotating hosts.
-        if (await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true)) return;
+        if (await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true, audio: video.Audio)) return;
         await ticket.Gate.WaitAsync(timeout.Token);
         try
         {
@@ -139,7 +143,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             video = ticket.Video!;
         }
         finally { ticket.Gate.Release(); }
-        await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token);
+        await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, audio: video.Audio);
     }
 
     public async Task ServeMasterAsync(HttpContext context, string id)
@@ -198,7 +202,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     }
 
     // Returns false, without writing anything, when a retryable request finds the link expired.
-    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false)
+    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false, bool audio = false)
     {
         using var response = await http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
             head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open);
@@ -210,6 +214,8 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             if (response.Content.Headers.TryGetValues(name, out var contentValues)) context.Response.Headers[name] = contentValues.ToArray();
             else if (response.Headers.TryGetValues(name, out var values)) context.Response.Headers[name] = values.ToArray();
         }
+        // Jellyfin's static stream passes this on to the client; the catalog labels FLAC as octet-stream.
+        if (audio && response.IsSuccessStatusCode) context.Response.ContentType = "audio/flac";
         if (HttpMethods.IsHead(context.Request.Method)) return true;
         await using var input = await response.Content.ReadAsStreamAsync(context.RequestAborted);
         var buffer = new byte[65536];

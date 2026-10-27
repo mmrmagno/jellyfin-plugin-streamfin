@@ -8,7 +8,9 @@ public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalo
     private readonly Dictionary<int, bool> decisions = new();
     public Guid ChannelId => library.GetNewItemId("Channel Anime", typeof(MediaBrowser.Controller.Channels.Channel));
     public Guid FilmChannelId => library.GetNewItemId("Channel " + FilmChannel.ChannelName, typeof(MediaBrowser.Controller.Channels.Channel));
-    public bool IsOurs(Guid id) => id == ChannelId || id == FilmChannelId || library.GetItemById(id)?.ChannelId is { } channel && (channel == ChannelId || channel == FilmChannelId);
+    public Guid MusicChannelId => library.GetNewItemId("Channel " + MusicChannel.ChannelName, typeof(MediaBrowser.Controller.Channels.Channel));
+    public bool IsOurs(Guid id) => IsChannel(id) || library.GetItemById(id)?.ChannelId is { } channel && IsChannel(channel);
+    public bool IsChannel(Guid id) => id == ChannelId || id == FilmChannelId || id == MusicChannelId;
 
     private static int? AnimeId(BaseItem item)
     {
@@ -25,6 +27,7 @@ public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalo
     {
         var item = library.GetItemById(id);
         if (item?.ChannelId == FilmChannelId) return FilmChannel.IsAvailable;
+        if (item?.ChannelId == MusicChannelId) return MusicChannel.IsAvailable;
         if (item?.ChannelId != ChannelId) return true;
         var parts = item.ExternalId?.Split('/');
         if (parts is { Length: >= 4 } && parts[0] is "source" or "episode"

@@ -15,6 +15,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["hianime_config"] = Targets.HiAnimeConfig,
     ["text"] = Targets.Text,
     ["tmdb"] = Targets.Tmdb,
+    ["music"] = Targets.Music,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -239,6 +240,42 @@ static class Targets
                 Expect(film.Title.Length > 0, "TMDB title is not empty");
                 Expect(film.Image is null || film.Image.StartsWith("https://image.tmdb.org/t/p/w500/", StringComparison.Ordinal), "TMDB poster stays on the TMDB image host");
             }
+        });
+    }
+
+    private static void Track(MusicTrack track)
+    {
+        Clean(track.Title, "music title");
+        Expect(MusicCatalog.IsId(track.Id) && MusicCatalog.IsId(track.ReleaseId), "music track IDs are numeric");
+        Expect(track.Artists.All(a => MusicCatalog.IsId(a.Id) && !a.Name.Contains('<') && !a.Name.Contains('>')), "music artists are clean");
+        Expect(track.Artwork is null || track.Artwork.StartsWith("https://tracks.monochrome.st/proxy/", StringComparison.Ordinal), "music artwork stays on the catalog host");
+        Expect(MusicCatalog.StreamUri(track.Id).IdnHost == "tracks.monochrome.st", "music stream stays on the catalog host");
+    }
+
+    private static void Release(MusicRelease release)
+    {
+        Clean(release.Title, "music release title");
+        Expect(MusicCatalog.IsId(release.Id), "music release ID is numeric");
+        Expect(release.Tracks.All(t => t.ReleaseId == release.Id) || release.Tracks.Count == 0, "release tracks belong to the release");
+        foreach (var track in release.Tracks) Track(track);
+    }
+
+    public static void Music(string json)
+    {
+        Guard(() =>
+        {
+            var results = MusicCatalog.ParseSearch(json);
+            foreach (var track in results.Tracks) Track(track);
+            foreach (var release in results.Releases) Release(release);
+        });
+        Guard(() => Release(MusicCatalog.ParseRelease(json)));
+        Guard(() =>
+        {
+            var artist = MusicCatalog.ParseArtist(json);
+            Clean(artist.Name, "music artist name");
+            Clean(artist.Bio, "music artist biography");
+            foreach (var track in artist.TopTracks) Track(track);
+            foreach (var release in artist.Releases) Release(release);
         });
     }
 }

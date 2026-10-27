@@ -11,9 +11,10 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--2.0-blue"></a>
 </p>
 
-A Jellyfin plugin that streams anime, movies and TV instead of storing them. They show up
-as two channels, **Anime** and **Movies & TV**, and play in Jellyfin's own player, with
-progress, resume and subtitles working like they do for everything else in the library.
+A Jellyfin plugin that streams anime, movies, TV and music instead of storing them. They
+show up as three channels, **Anime**, **Movies & TV** and **Music**, and play in Jellyfin's
+own player, with progress, resume and subtitles working like they do for everything else in
+the library. Music is lossless FLAC.
 
 Nothing gets downloaded. StreamFin finds the stream when I press play, and Jellyfin plays
 it through a small relay inside the plugin.
@@ -37,7 +38,12 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   an episode. Japanese audio with English subtitles only, never a dub.
 - **Movies & TV**: Popular movies, Popular TV and Trending, from TMDB. Movies play
   directly, shows open into seasons and episodes.
-- **Search**: Jellyfin's normal search also looks in both online catalogs, so I can find a
+- **Music**: lossless FLAC at CD quality (16 bit, 44.1 kHz) from
+  [Monochrome](https://github.com/monochrome-music/monochrome)'s catalog. I search for an
+  artist, album or song. Albums open as real album pages with numbered tracks, artists
+  open into their top tracks, albums and singles, and **Recently played** remembers what I
+  listened to. The FLAC reaches the player as the catalog serves it, never transcoded.
+- **Search**: Jellyfin's normal search also looks in the online catalogs, so I can find a
   title I have never browsed. Found titles stay under each channel's Search results.
 - **Access**: only the users I tick in the settings see the channels. Adult titles are
   hidden by default, and so is Ecchi.
@@ -48,6 +54,7 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
 | AnimeGG | Title search | Burned in |
 | AnimeHeaven | Title search | Burned in |
 | FlixHQ (movies and TV) | Title and year | Usually a separate English track |
+| Monochrome (music) | Its own catalog IDs, with ISRCs | Not applicable |
 
 If a source fails or is missing an episode, I go back and pick another one.
 
@@ -67,15 +74,20 @@ Needs Jellyfin **12.3** or newer.
 
 The channels then show up on the home screen and in the sidebar, next to the libraries.
 If one is missing, check that your user is ticked and the TMDB key is saved, then reload
-the app. Updates come through the same repository like any other plugin.
+the app. Music needs no key. Under **Music catalog address** you can point it at another
+instance of the same catalog API. Updates come through the same repository like any other plugin.
 
-The web app's sidebar gives channels a generic icon. For the shuriken and the popcorn,
+The web app's sidebar gives channels a generic icon. For the shuriken, the popcorn and the note,
 make an API key under **Dashboard > API Keys** and run this from a clone of the repo:
 
 ```sh
 JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --channel Anime
 JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --channel "Movies & TV"
+JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --channel Music
 ```
+
+In the web app, found artists are under the Music channel's Search results rather than
+in the search page's Artists row, which only lists the local library.
 
 ## How it works
 
@@ -86,6 +98,12 @@ Jellyfin never sees that URL. It gets a loopback address into the plugin with a 
 ticket, and the plugin fetches the video from the site. MP4 is streamed as byte ranges, and
 the link is only looked up again if it expires. HLS gets its playlist rewritten so every
 segment points back at the relay, which means FFmpeg only ever talks to localhost.
+
+Music takes the short path through the same relay. The catalog serves each track as one
+FLAC file with byte ranges, so the plugin offers it for direct play. Jellyfin's own static
+stream fetches it through the relay and hands the bytes to the player unchanged, with
+seeking. A transcode would follow whatever the client asks for, which is usually AAC or
+MP3, so the plugin avoids one.
 
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
 every outgoing request has to land on a public address. Nothing from the sites is ever run.

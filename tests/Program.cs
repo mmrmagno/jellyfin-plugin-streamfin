@@ -208,6 +208,57 @@ Check(FlixSource.FindSubtitles("""tracks:[{file:"https://s.example/en.vtt",label
 Check(FlixSource.ParseSubtitleIndex("""[{"file":"https://s.example/es.srt","label":"Spanish"},{"src":"https://s.example/x.vtt","label":""}]""").Single().Language == "es", "subtitle index parsed");
 Check(FlixSource.Unbase("zz", 36) == 1295 && FlixSource.Unbase("Z", 62) == 61 && FlixSource.Unbase("!", 36) is null, "packer number bases");
 
+var musicSearch = MusicCatalog.ParseSearch("""
+{"tracks":[{"id":"155102871061270528","trackId":"155102871061270528","title":"One <b>More</b> Time","artistIds":["153542153123926016"],"artistNames":["Daft Punk"],
+  "releaseId":"155102851176075264","artwork":"https://tracks.monochrome.st/proxy/mi/155102851176075264-1A01.jpg","explicit":false,"playable":true,"duration":320357,"isrc":"GBDUW0000053"},
+ {"trackId":"155102871061270529","title":"Unplayable","releaseId":"155102851176075264","playable":false},
+ {"trackId":"../etc","title":"Bad id","releaseId":"155102851176075264"},
+ {"trackId":"155102871061270530","title":"Elsewhere art","releaseId":"155102851176075264","artwork":"https://evil.example/proxy/mi/x.jpg"}],
+ "releases":[{"releaseId":"155102851176075264","title":"Discovery","artistIds":["153542153123926016"],"artistNames":["Daft Punk"],"releaseDate":"2001-03-12T00:00:00.000Z","releaseType":"ALBUM","label":"Daft Life"}],
+ "artists":[{"artistId":"153542153123926016","name":"Daft Punk","avatar":"https://tracks.monochrome.st/proxy/c/media/153542153123926016-5A04.jpg"}],"users":[{"id":"x"}]}
+""");
+Check(musicSearch.Tracks.Count == 2 && musicSearch.Tracks[0].Title == "One bMore/b Time" && musicSearch.Tracks[0].Artists.Single().Name == "Daft Punk"
+    && musicSearch.Tracks[0].DurationMs == 320357 && musicSearch.Tracks[0].Isrc == "GBDUW0000053", "music search keeps playable tracks with flat artist lists");
+Check(musicSearch.Tracks[0].Artwork!.StartsWith("https://tracks.monochrome.st/proxy/", StringComparison.Ordinal) && musicSearch.Tracks[1].Artwork is null, "music artwork stays on the catalog host");
+Check(musicSearch.Releases.Single().Date == new DateTime(2001, 3, 12, 0, 0, 0, DateTimeKind.Utc) && musicSearch.Artists.Single().Image is not null, "music search releases and artists");
+var musicRelease = MusicCatalog.ParseRelease("""
+{"releaseId":"165730834890960896","title":"Box","releaseType":"compilation","artists":[{"artistId":"153542153123926016","name":"Daft Punk"}],
+ "tracks":[{"trackId":"165741335931187202","title":"B1","discNumber":2,"trackNumber":1},{"trackId":"165741335931187201","title":"A2","discNumber":1,"trackNumber":2},
+  {"trackId":"165741335931187200","title":"A1","discNumber":1,"trackNumber":1},{"trackId":"165741335931187200","title":"Duplicate","discNumber":1,"trackNumber":1}]}
+""");
+Check(musicRelease.Type == "COMPILATION" && musicRelease.Tracks.Select(t => t.Title).SequenceEqual(["A1", "A2", "B1"]) && musicRelease.Tracks.All(t => t.ReleaseId == "165730834890960896"),
+    "music release orders discs and tracks and inherits its ID");
+var musicArtist = MusicCatalog.ParseArtist("""
+{"artistId":"153542153123926016","name":"Daft Punk","bio":"Duo","topTracks":[{"trackId":"287206674229092352","title":"Get Lucky","releaseId":"287206661029617664"}],
+ "releases":[{"releaseId":"155102851176075264","title":"Discovery","releaseType":"ALBUM"}],"albums":[{"releaseId":"155102851176075264","title":"Discovery","releaseType":"ALBUM"}],
+ "singles":[{"releaseId":"287206661029617664","title":"Get Lucky","releaseType":"SINGLE"}]}
+""");
+Check(musicArtist.Releases.Count == 2 && musicArtist.TopTracks.Single().Title == "Get Lucky" && musicArtist.Bio == "Duo", "music artist merges release lists without duplicates");
+Reject(() => MusicCatalog.ParseRelease("[]"), "music release must be an object");
+Reject(() => MusicCatalog.ParseArtist("""{"artistId":"1","name":"x"}"""), "music artist with an invalid ID is rejected");
+foreach (var id in new[] { "../x", "1e9", "123", "https://evil.example/1", "155102871061270528/../1", "" }) Reject(() => MusicCatalog.ValidateId(id), "invalid music ID " + id);
+Check(MusicCatalog.ParseApi("")!.AbsoluteUri == MusicCatalog.DefaultApi && MusicCatalog.ParseApi(" https://Mirror.Example.org ")!.AbsoluteUri == "https://mirror.example.org/", "music API address default and normalisation");
+foreach (var api in new[] { "http://tracks.monochrome.st", "https://tracks.monochrome.st:8443", "https://user@tracks.monochrome.st", "https://1.1.1.1", "https://tracks.monochrome.st/api", "https://tracks.monochrome.st/?x=1", "https://localhost", "file:///etc/passwd" })
+    Check(MusicCatalog.ParseApi(api) is null, "unsafe music API address rejected " + api);
+Check(MusicCatalog.StreamUri("155102871061270528").AbsoluteUri == "https://tracks.monochrome.st/track/155102871061270528" && SafeHttp.Allowed(MusicCatalog.StreamUri("155102871061270528"), true), "music stream address is a known site");
+Check(!SafeHttp.Allowed(new Uri("http://tracks.monochrome.st/track/155102871061270528"), true) && !SafeHttp.Allowed(new Uri("https://tracks.monochrome.st.evil.example/track/1"), true), "music host match is exact and https only");
+Check(MusicChannel.ParseTrackId("track/in-search/155102851176075264/155102871061270528") == ("155102851176075264", "155102871061270528")
+    && MusicChannel.ParseTrackId("track/hit/155102851176075264/../x") is null && MusicChannel.ParseTrackId("album/search/155102851176075264") is null, "music track item IDs");
+var musicStoreRoot = Path.Combine(Path.GetTempPath(), "streamfin-music-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var listener = Guid.NewGuid();
+    var musicStore = new MusicLibraryStore(musicStoreRoot);
+    var played = musicSearch.Tracks[0];
+    for (var i = 0; i < MusicLibraryStore.PlayLimit + 20; i++) await musicStore.RecordPlayAsync(listener, played with { Id = (155102871061270528L + i % 3).ToString(System.Globalization.CultureInfo.InvariantCulture) }, "Discovery", default);
+    var reloaded = await new MusicLibraryStore(musicStoreRoot).ReadAsync(listener, default);
+    Check(reloaded.Plays.Count == MusicLibraryStore.PlayLimit && MusicLibraryStore.Recent(reloaded, 10).Count == 3 && musicStore.Version(listener) > 0, "music history persists, is capped and lists each track once");
+    File.WriteAllText(Path.Combine(musicStoreRoot, listener.ToString("N") + ".json"), "{not json");
+    Check((await new MusicLibraryStore(musicStoreRoot).ReadAsync(listener, default)).Plays.Count == 0, "damaged music history does not break music");
+    Check((await musicStore.ReadAsync(Guid.NewGuid(), default)).Plays.Count == 0, "music history is per user");
+}
+finally { if (Directory.Exists(musicStoreRoot)) Directory.Delete(musicStoreRoot, true); }
+
 if (args.Contains("--provider-live"))
 {
     using var http = new SafeHttp();
@@ -229,6 +280,16 @@ if (args.Contains("--provider-live"))
     Check(response.StatusCode == HttpStatusCode.PartialContent && response.Content.Headers.ContentType?.MediaType == "video/mp4", "live AnimeHeaven range request through SafeHttp");
     var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token);
     Check(bytes.Length == 1024, "live AnimeHeaven bounded video read");
+    using var music = new MusicCatalog(http);
+    var found = await music.SearchAsync("daft punk one more time", default);
+    var hit = found.Tracks.First(t => t.Title == "One More Time");
+    var album = await music.ReleaseAsync(hit.ReleaseId, default);
+    Check(album.Tracks.Any(t => t.Id == hit.Id) && album.Tracks.Count > 5, "live music search and release");
+    Check((await music.ArtistAsync(hit.Artists[0].Id, default)).Releases.Count > 5, "live music artist page");
+    using var flacTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    using var flac = await http.OpenAsync(MusicCatalog.StreamUri(hit.Id), true, flacTimeout.Token, range: "bytes=0-65535");
+    var head = await flac.Content.ReadAsByteArrayAsync(flacTimeout.Token);
+    Check(flac.StatusCode == HttpStatusCode.PartialContent && head.Length == 65536 && head[..4].SequenceEqual("fLaC"u8.ToArray()), "live music stream is FLAC with byte ranges");
 }
 if (args.Contains("--hls-live"))
 {

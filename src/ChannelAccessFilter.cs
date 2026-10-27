@@ -3,6 +3,7 @@ using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Querying;
@@ -19,11 +20,15 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     : IAsyncActionFilter, IAsyncResultFilter
 {
     private bool IsOurs(Guid id) => id != Guid.Empty && content.IsOurs(id);
-    private bool IsOurChannel(Guid id) => id == content.ChannelId || id == content.FilmChannelId;
+    private bool IsOurChannel(Guid id) => content.IsChannel(id);
     private Task<bool> Allowed(ActionContext context) => artwork.AllowsAsync(context.HttpContext);
     private void Countable(BaseItemDto dto)
     {
-        if (dto.Type != BaseItemKind.Season || dto.ChildCount > 0 || !IsOurs(dto.Id)) return;
+        // Jellyfin reports every channel folder except series and seasons as ChannelFolderItem, which
+        // clients file under no heading. Search and detail pages need the album or artist type.
+        if (dto.Type == BaseItemKind.ChannelFolderItem && IsOurs(dto.Id))
+            dto.Type = library.GetItemById(dto.Id) switch { MusicAlbum => BaseItemKind.MusicAlbum, MusicArtist => BaseItemKind.MusicArtist, _ => dto.Type };
+        if (dto.Type is not (BaseItemKind.Season or BaseItemKind.MusicAlbum or BaseItemKind.MusicArtist) || dto.ChildCount > 0 || !IsOurs(dto.Id)) return;
         dto.ChildCount = Math.Max(1, library.GetCount(new InternalItemsQuery { ParentId = dto.Id, Recursive = false }));
     }
     private static IEnumerable<Guid> Identifiers(object? value, int depth = 0)

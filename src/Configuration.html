@@ -17,6 +17,10 @@
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmEnabled"><span>Show the Movies &amp; TV channel</span></label>
       <div class="inputContainer"><label class="inputLabel" for="tmdbKey">TMDB API key</label><input is="emby-input" type="password" id="tmdbKey" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Make a free account on themoviedb.org, then go to Settings &gt; API. The short API key and the long read access token both work. The channel stays hidden until a key is set.</div></div>
+      <h3>Music</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicEnabled"><span>Show the Music channel</span></label>
+      <div class="inputContainer"><label class="inputLabel" for="musicApi">Music catalog address</label><input is="emby-input" type="url" id="musicApi" autocomplete="off" spellcheck="false" placeholder="https://tracks.monochrome.st">
+        <div class="fieldDescription">Leave empty for the default. Lossless FLAC at CD quality (16 bit, 44.1 kHz). Only a plain https address is accepted.</div></div>
       <h3>Content filters</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult titles</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide ecchi titles</span></label>
@@ -28,7 +32,7 @@
       <h3>Maintenance</h3>
       <button is="emby-button" type="button" id="streamfinRefresh" class="raised block" disabled><span>Refresh catalogs now</span></button>
       <button is="emby-button" type="button" id="streamfinClearSearch" class="raised block" disabled><span>Clear search results</span></button>
-      <p>Clearing removes found titles from both channels' Search results, for every user. Watched status and resume positions are kept.</p>
+      <p>Clearing removes found titles from every channel's Search results, for every user. Watched status and resume positions are kept.</p>
       <p id="streamfinClearStatus" role="status"></p>
     </form>
     <script>
@@ -50,6 +54,8 @@
             page.querySelector('#animeGgEnabled').checked = config.AnimeGgEnabled;
             page.querySelector('#filmEnabled').checked = config.FilmEnabled !== false;
             page.querySelector('#tmdbKey').value = config.TmdbApiKey || '';
+            page.querySelector('#musicEnabled').checked = config.MusicEnabled !== false;
+            page.querySelector('#musicApi').value = config.MusicApiUrl || '';
             page.querySelector('#animeHeavenEnabled').checked = config.AnimeHeavenEnabled !== false;
             page.querySelector('#hideAdult').checked = config.HideAdultContent !== false;
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
@@ -84,6 +90,8 @@
             config.AnimeGgEnabled = page.querySelector('#animeGgEnabled').checked;
             config.FilmEnabled = page.querySelector('#filmEnabled').checked;
             config.TmdbApiKey = page.querySelector('#tmdbKey').value.trim();
+            config.MusicEnabled = page.querySelector('#musicEnabled').checked;
+            config.MusicApiUrl = page.querySelector('#musicApi').value.trim();
             config.AnimeHeavenEnabled = page.querySelector('#animeHeavenEnabled').checked;
             config.HideAdultContent = page.querySelector('#hideAdult').checked;
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
