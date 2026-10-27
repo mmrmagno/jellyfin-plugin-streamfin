@@ -114,6 +114,17 @@ Check(zoko.Subtitles!.Select(x => x.Language).SequenceEqual(["en", "pt"]), "HiAn
 Reject(() => HiAnimeSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://hls.example.top/m.m3u8","subtitles":[{"lang":"pt","label":"Portuguese","src":"https://hls.example.top/pt.vtt"}]}""")}\";</script>"), "HiAnime without English subtitles is refused");
 Reject(() => HiAnimeSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://10.0.0.5/m.m3u8","subtitles":[]}""")}\";</script>"), "HiAnime stream on a private address is refused");
 Reject(() => HiAnimeSource.ParseEmbed("<html>episode missing</html>"), "HiAnime page without a player fails explicitly");
+string Failure(Action action) { try { action(); } catch (ProviderException ex) { return ex.Message; } return ""; }
+Check(Failure(() => HiAnimeSource.ParseEmbed("<div class=\"err\">// Error 404</div><p>We couldn't find anything to play here.</p>")).Contains("does not have this episode")
+    && Failure(() => HiAnimeSource.ParseEmbed("<html>episode missing</html>")).Contains("changed its player page"), "HiAnime tells a missing episode from a changed player page");
+var rotatedKey = "otaku-embed-v2"u8.ToArray();
+string BlobWith(byte[] key, string json) { var raw = System.Text.Encoding.UTF8.GetBytes(json); for (var i = 0; i < raw.Length; i++) raw[i] ^= key[i % key.Length]; return Convert.ToBase64String(raw); }
+var rotatedPage = $"<script>window.__P=\"{BlobWith(rotatedKey, """{"src":"https://hls.example.top/m.m3u8","subtitles":[{"lang":"en","label":"English","src":"https://hls.example.top/en.vtt"}]}""")}\";</script>";
+try { HiAnimeSource.ParseEmbed(rotatedPage); throw new Exception("FAIL: HiAnime with a new key decoded with the old one"); }
+catch (HiAnimeSource.KeyChangedException) { Check(true, "HiAnime reports a changed key as such"); }
+Check(HiAnimeSource.ParseKey("const OBF_KEY = 'otaku-embed-v2';\nfunction xor(s) {}") is { } read && read.SequenceEqual(rotatedKey)
+    && HiAnimeSource.ParseEmbed(rotatedPage, rotatedKey)[0].Url.Host == "hls.example.top", "HiAnime reads a new key from the player script and decodes with it");
+Check(HiAnimeSource.ParseKey("const OBF_KEY = \"x\";") is null && HiAnimeSource.ParseKey("const OBF_KEY = 'has space';") is null && HiAnimeSource.ParseKey("") is null, "HiAnime ignores a key that is too short or not plain");
 foreach (var bad in new[] { "0", "12a", "1/2", "../1", "123456789012" }) Reject(() => HiAnimeSource.ValidateId(bad), "HiAnime rejects identifier " + bad);
 Reject(() => HiAnimeSource.ValidateId("52991", episode: true), "HiAnime episode IDs need an episode number");
 var zokoSource = new HiAnimeSource(new SafeHttp());

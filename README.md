@@ -61,7 +61,8 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
 | FlixHQ (movies and TV) | Title and year | Usually a separate English track |
 | Monochrome (music) | Its own catalog IDs, with ISRCs | Not applicable |
 
-If a source fails or is missing an episode, go back and pick another one.
+If a source fails or is missing an episode, go back and pick another one. The message says
+which it was: HiAnime, for one, tells an episode it does not have apart from a change on its site.
 
 ## Install
 

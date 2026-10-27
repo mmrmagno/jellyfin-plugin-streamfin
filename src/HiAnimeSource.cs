@@ -7,13 +7,16 @@ namespace StreamFin;
 
 // HiAnime's own player, the one ani-cli uses. It is addressed by MyAnimeList ID and episode
 // number, which AniList already supplies, so no title search or fuzzy matching is involved.
-// The page carries its settings as base64 JSON XORed with a fixed key; decode data only.
+// The page carries its settings as base64 JSON XORed with a key; decode data only. The key is versioned
+// ("-v1") and published in the player's own script, so a new one is read from there instead of failing.
 public sealed class HiAnimeSource(SafeHttp http) : IDirectAnimeSource
 {
     public string Id => "zoko";
     public string Name => "HiAnime";
     public static readonly Uri Origin = new("https://zokoanime.video/");
-    private static readonly byte[] Key = "otaku-embed-v1"u8.ToArray();
+    public static readonly byte[] DefaultKey = "otaku-embed-v1"u8.ToArray();
+    private byte[] key = DefaultKey;
+    private DateTime keyChecked;
     private static readonly IReadOnlyDictionary<string, string> Headers = new Dictionary<string, string> { ["Referer"] = Origin.AbsoluteUri };
 
     public SourceTitle? Direct(Anime anime) => anime.MalId is > 0 ? new(anime.MalId.Value.ToString(CultureInfo.InvariantCulture), anime.Title, anime.Year) : null;
@@ -39,25 +42,47 @@ public sealed class HiAnimeSource(SafeHttp http) : IDirectAnimeSource
     {
         ValidateId(episodeId, episode: true);
         var (mal, number) = (episodeId[..episodeId.IndexOf('-')], episodeId[(episodeId.IndexOf('-') + 1)..]);
-        return ParseEmbed(await http.TextAsync(new Uri(Origin, $"stream/mal/{mal}/{number}/sub"), ct));
+        var html = await http.TextAsync(new Uri(Origin, $"stream/mal/{mal}/{number}/sub"), ct);
+        try { return ParseEmbed(html, key); }
+        catch (KeyChangedException) when (DateTime.UtcNow - keyChecked > TimeSpan.FromMinutes(10))
+        {
+            keyChecked = DateTime.UtcNow;
+            if (ParseKey(await http.TextAsync(new Uri(Origin, "core/obfuscate.js"), ct)) is not { } current || current.SequenceEqual(key)) throw;
+            key = current;
+            return ParseEmbed(html, key);
+        }
     }
 
-    public static string Decode(string blob)
+    public sealed class KeyChangedException() : ProviderException("HiAnime changed how its player page is encoded. Try another provider.");
+
+    public static byte[]? ParseKey(string script)
     {
+        var match = Regex.Match(script, @"OBF_KEY\s*=\s*(['""])([\x21-\x7e]{4,64}?)\1", RegexOptions.None, TimeSpan.FromSeconds(1));
+        return match.Success ? Encoding.ASCII.GetBytes(match.Groups[2].Value) : null;
+    }
+
+    public static string Decode(string blob, byte[]? key = null)
+    {
+        key ??= DefaultKey;
         byte[] raw;
         try { raw = Convert.FromBase64String(blob); }
-        catch (FormatException) { throw new ProviderException("HiAnime returned an unreadable player configuration."); }
-        for (var i = 0; i < raw.Length; i++) raw[i] ^= Key[i % Key.Length];
+        catch (FormatException) { throw new KeyChangedException(); }
+        for (var i = 0; i < raw.Length; i++) raw[i] ^= key[i % key.Length];
         return Encoding.UTF8.GetString(raw);
     }
 
-    public static IReadOnlyList<ResolvedVideo> ParseEmbed(string html)
+    // The player answers a title or episode it does not have with its own "Error 404" page, still HTTP 200.
+    public static bool IsMissing(string html) => Regex.IsMatch(html, @"Error 404|couldn['’]t find anything to play", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));
+
+    public static IReadOnlyList<ResolvedVideo> ParseEmbed(string html, byte[]? key = null)
     {
         var blob = Regex.Match(html, "window\\.__P\\s*=\\s*\"([A-Za-z0-9+/=]{16,})\"", RegexOptions.None, TimeSpan.FromSeconds(2));
-        if (!blob.Success) throw new ProviderException("HiAnime has no subtitled version of this episode. Try another provider.");
+        if (!blob.Success)
+            throw new ProviderException(IsMissing(html) ? "HiAnime does not have this episode. Try another provider."
+                : "HiAnime changed its player page. Try another provider; StreamFin needs an update for this source.");
         JsonElement root;
-        try { root = JsonDocument.Parse(Decode(blob.Groups[1].Value)).RootElement; }
-        catch (JsonException) { throw new ProviderException("HiAnime returned an unreadable player configuration."); }
+        try { root = JsonDocument.Parse(Decode(blob.Groups[1].Value, key)).RootElement; }
+        catch (JsonException) { throw new KeyChangedException(); }
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("src", out var src) || src.ValueKind != JsonValueKind.String
             || !Uri.TryCreate(src.GetString(), UriKind.Absolute, out var url) || url.Scheme != "https")
             throw new ProviderException("HiAnime did not return a playable video. The source adapter may need an update.");

@@ -199,6 +199,10 @@ static class Targets
             Expect(html.EndsWith(body, StringComparison.Ordinal), "response body is the tail of the response");
         });
         HiAnime(html);
+        Guard(() =>
+        {
+            if (HiAnimeSource.ParseKey(html) is { } key) Expect(key.Length is >= 4 and <= 64 && key.All(b => b is >= 0x21 and <= 0x7e), "HiAnime key is short printable ASCII");
+        });
     }
 
     public static void HiAnimeConfig(string json)
