@@ -25,6 +25,11 @@
         <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
         <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
+      <div class="inputContainer"><label class="inputLabel" for="musicFolder">Music library folder</label><input is="emby-input" type="text" id="musicFolder" autocomplete="off" spellcheck="false" placeholder="/media/music/StreamFin">
+        <div class="fieldDescription">Starred albums are saved here as tagged FLAC files, one folder per artist and album, so they play offline and in any music app. Use a folder that belongs to a Jellyfin music library and that Jellyfin can write to. Existing files are never replaced. Albums are saved slowly, one song every 20 seconds, to stay within the catalog's limits. Leave empty to save nothing.</div></div>
+      <button is="emby-button" type="button" id="musicSaveStarred" class="raised block" disabled><span>Save every starred album now</span></button>
+      <p id="musicSaveStatus" role="status"></p>
+      <ul id="musicSaves"></ul>
       <h3>Subsonic apps</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="subsonicEnabled"><span>Turn on the Subsonic API</span></label>
       <div class="fieldDescription checkboxFieldDescription">For Symfonium, Feishin, Tempo, play:Sub and other Subsonic apps. In the app, use the server address <code id="subsonicAddress"></code>, the Jellyfin username, and the app password below. The Jellyfin password does not work there. A new password replaces the old one.</div>
@@ -78,6 +83,7 @@
           page.querySelector('#streamfinSave').disabled = true;
           page.querySelector('#streamfinRefresh').disabled = true;
           page.querySelector('#streamfinClearSearch').disabled = true;
+          page.querySelector('#musicSaveStarred').disabled = true;
           page.querySelector('#streamfinStatus').textContent = 'Loading settings…';
           Dashboard.showLoadingMsg();
           try {
@@ -95,6 +101,7 @@
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
             page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
             page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
+            page.querySelector('#musicFolder').value = config.MusicLibraryFolder || '';
             page.querySelector('#subsonicEnabled').checked = config.SubsonicEnabled === true;
             page.querySelector('#subsonicLossless').checked = config.SubsonicPreferLossless !== false;
             page.querySelector('#subsonicAddress').textContent = ApiClient.serverAddress() + '/StreamFin';
@@ -115,6 +122,7 @@
             page.querySelector('#streamfinRefresh').disabled = false;
             page.querySelector('#streamfinClearSearch').disabled = false;
             page.querySelector('#streamfinStatus').textContent = '';
+            await renderSaves();
           } catch (error) {
             console.warn('StreamFin settings could not load:', error.message);
             page.querySelector('#streamfinStatus').textContent = 'Could not load settings. Reload this page before making changes.';
@@ -139,6 +147,7 @@
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
             config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
             config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
+            config.MusicLibraryFolder = page.querySelector('#musicFolder').value.trim();
             config.AllowedUserIds = Array.from(page.querySelectorAll('#streamfinUsers input:checked'), input => input.value);
             config.SubsonicEnabled = page.querySelector('#subsonicEnabled').checked;
             config.SubsonicPreferLossless = page.querySelector('#subsonicLossless').checked;
@@ -146,6 +155,38 @@
             config.CacheRevision++;
             Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
           } finally { Dashboard.hideLoadingMsg(); }
+        });
+        const states = {queued: 'waiting', saving: 'saving', saved: 'saved', failed: 'failed'};
+        async function renderSaves() {
+          const status = page.querySelector('#musicSaveStatus');
+          const list = page.querySelector('#musicSaves');
+          list.replaceChildren();
+          try {
+            const result = await ApiClient.ajax({type: 'GET', url: ApiClient.getUrl('StreamFin/MusicSaves'), dataType: 'json'});
+            page.querySelector('#musicSaveStarred').disabled = !result.Folder;
+            if (!result.Folder) { status.textContent = ''; return; }
+            status.textContent = result.Libraries.length ? 'Saved albums appear in: ' + result.Libraries.join(', ') + '.'
+              : 'This folder is not part of any Jellyfin library yet, so saved albums will not show up. Add it to a music library.';
+            result.Saves.forEach(save => {
+              const item = document.createElement('li');
+              item.textContent = `${save.Artist} - ${save.Album}: ${states[save.State] || save.State}` + (save.State === 'saving' ? ` (${save.Saved} of ${save.Total})` : '')
+                + (save.Note ? `. ${save.Note}` : '') + ` (starred by ${save.User})`;
+              list.append(item);
+            });
+          } catch {
+            status.textContent = 'Could not load the save queue.';
+          }
+        }
+        page.querySelector('#musicSaveStarred').addEventListener('click', async function () {
+          if (!loaded) return;
+          const button = page.querySelector('#musicSaveStarred');
+          button.disabled = true;
+          try {
+            const count = await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('StreamFin/MusicSaves/QueueStarred'), dataType: 'json'});
+            page.querySelector('#musicSaveStatus').textContent = count ? `Queued ${count} starred albums. Albums already saved are skipped.` : 'No starred albums to save. Save the folder setting first.';
+          } catch {
+            page.querySelector('#musicSaveStatus').textContent = 'Could not queue the starred albums. Please try again.';
+          } finally { button.disabled = false; }
         });
         page.querySelector('#streamfinRefresh').addEventListener('click', async function () {
           if (!loaded) return;

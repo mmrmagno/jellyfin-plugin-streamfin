@@ -18,7 +18,7 @@ namespace StreamFin;
 [ApiController]
 [Route("StreamFin/rest")]
 public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http, MusicCache songs,
-    IMediaEncoder encoder, ILogger<SubsonicController> logger) : ControllerBase
+    MusicSaver saver, IMediaEncoder encoder, ILogger<SubsonicController> logger) : ControllerBase
 {
     private const long FormLimit = 256 * 1024;
     // A song's FLAC header and size, kept from its first play so a later seek costs the catalog one request.
@@ -212,15 +212,13 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
 
     private static string Names(IEnumerable<MusicArtistRef> artists) => string.Join(", ", artists.Select(a => a.Name));
     private static string Kind(string type) => type switch { "SINGLE" => "Single", "EP" => "EP", "COMPILATION" => "Compilation", _ => "Album" };
-    private static string PathPart(string text) => Regex.Replace(text, @"[\\/:*?""<>|\x00-\x1f]", "_", RegexOptions.None, TimeSpan.FromSeconds(1)).Trim().TrimEnd('.') is { Length: > 0 } s
-        ? (s.Length > 80 ? s[..80] : s) : "_";
 
     private static SubsonicNode Song(string element, MusicTrack t, string album, Starred stars)
     {
         var node = new SubsonicNode(element).Set("id", TrackId(t)).Set("parent", "al-" + t.ReleaseId).Set("isDir", false).Set("title", t.Title)
             .Set("album", album).Set("artist", Names(t.Artists)).Set("track", t.Number).Set("discNumber", t.Disc).Set("coverArt", "al-" + t.ReleaseId)
             .Set("contentType", "audio/flac").Set("suffix", "flac").Set("duration", t.DurationMs is > 0 ? (int)Math.Round(t.DurationMs.Value / 1000.0) : null)
-            .Set("path", $"{PathPart(t.Artists.FirstOrDefault()?.Name ?? "Unknown")}/{PathPart(album)}/{t.Number ?? 0:00} {PathPart(t.Title)}.flac")
+            .Set("path", $"{MusicPaths.Part(t.Artists.FirstOrDefault()?.Name ?? "Unknown")}/{MusicPaths.Part(album)}/{t.Number ?? 0:00} {MusicPaths.Part(t.Title)}.flac")
             .Set("albumId", "al-" + t.ReleaseId).Set("artistId", t.Artists.Count > 0 ? "ar-" + t.Artists[0].Id : null).Set("type", "music")
             .Set("mediaType", "song").Set("isVideo", false).Set("displayArtist", Names(t.Artists))
             .Set("isrc", t.Isrc is null ? null : new[] { t.Isrc }).Set("explicitStatus", t.Explicit ? "explicit" : "clean")
@@ -523,6 +521,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             library.StarredAlbums.InsertRange(0, albums);
             library.StarredArtists.InsertRange(0, artists);
         }, Ct);
+        if (!star) await saver.CancelAsync(user.Id, albums.Select(a => a.Release.Id).ToArray(), Ct);
+        else foreach (var album in albums) await saver.QueueAsync(user.Id, album.Release, Ct);
         return Success();
     }
 
@@ -790,8 +790,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             // Header values must be ASCII; filename* carries the real title for "Beyoncé" and friends.
             if (download) Response.Headers.ContentDisposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
             {
-                FileName = "\"" + new string(PathPart(track.Title).Select(c => c is >= ' ' and <= '~' and not ('"' or '\\') ? c : '_').ToArray()) + ".flac\"",
-                FileNameStar = PathPart(track.Title) + ".flac"
+                FileName = "\"" + new string(MusicPaths.Part(track.Title).Select(c => c is >= ' ' and <= '~' and not ('"' or '\\') ? c : '_').ToArray()) + ".flac\"",
+                FileNameStar = MusicPaths.Part(track.Title) + ".flac"
             }.ToString();
             Response.Headers.Vary = "Origin";
             songs.Warm(upstream);

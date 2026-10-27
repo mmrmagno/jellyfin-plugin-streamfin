@@ -300,6 +300,21 @@ Check(MusicCache.Key(new Uri("https://tracks.monochrome.st/track/155102871061270
 var tagged = Flac("REPLAYGAIN_TRACK_GAIN=-2.5");
 Check(MusicGain.AudioStart([.. tagged, 0xFF, 0xF8]) == tagged.Length && MusicGain.AudioStart(tagged[..^1]) is null && MusicGain.AudioStart("ID3x0000"u8) is null,
     "FLAC audio starts after the last metadata block; cut short or not FLAC gives none");
+var single = new MusicRelease("155102851176075264", "Single", [new("155102851176075265", "Artist"), new("155102851176075266", "Guest")], "SINGLE", new DateTime(2023, 5, 1), null, null, 1,
+    [new MusicTrack("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 1000, null, false, 1, 1)]);
+var original = Flac("TITLE=Song (old)", "ARTIST=Artist", "ALBUM=Other Album", "ALBUMARTIST=Someone", "REPLAYGAIN_TRACK_GAIN=-5.6", "REPLAYGAIN_ALBUM_GAIN=-9.1", "REPLAYGAIN_ALBUM_PEAK=1.0");
+var retagged = MusicTags.Retag([.. original, 0xFF, 0xF8, 1, 2], MusicTags.For(single, single.Tracks[0]))!;
+var retaggedText = Encoding.UTF8.GetString(retagged);
+Check(MusicGain.AudioStart([.. retagged, 0xFF, 0xF8]) == retagged.Length && retagged.AsSpan(8, 34).SequenceEqual(original.AsSpan(8, 34))
+    && MusicGain.Parse(retagged) == new ReplayGain(-5.6, null, null, null), "a saved song keeps its stream info and track gain, and drops another album's gain");
+Check(retaggedText.Contains("ALBUM=Single") && retaggedText.Contains("ALBUMARTIST=Artist") && retaggedText.Contains("ALBUMARTIST=Guest")
+    && !retaggedText.Contains("Other Album") && !retaggedText.Contains("Someone") && retaggedText.Contains("ARTIST=Artist") && retaggedText.Contains("TRACKNUMBER=1")
+    && retaggedText.Contains("DATE=2023-05-01") && !retaggedText.Contains("(old)"), "a saved song is tagged with the release it was saved from");
+Check(MusicGain.Parse(MusicTags.Retag(Flac("ALBUM=single", "REPLAYGAIN_ALBUM_GAIN=-3"), MusicTags.For(single, single.Tracks[0]))!)?.AlbumGain == -3,
+    "the album gain stays when the song already belonged to that album");
+Check(MusicTags.Retag([.. "fLaC"u8, 0, 0, 0, 34, .. new byte[34], .. Enumerable.Range(0, 1200).SelectMany(_ => new byte[] { 1, 0, 0, 0 }), 0x81, 0, 0, 0], []) is null
+    && MusicTags.Retag("ID3x0000"u8, []) is null && MusicTags.Retag(original[..^2], []) is null
+    && MusicTags.Retag([.. "fLaC"u8, 0x84, 0, 0, 0], []) is null, "retagging refuses what is not a whole FLAC header");
 MusicGain.Remember(Flac("REPLAYGAIN_TRACK_GAIN=-2.5"), "155102871061270599", "155102871061270598");
 Check(MusicGain.For("155102871061270598")?.TrackGain == -2.5 && MusicGain.For("155102871061270597") is null, "ReplayGain is remembered for the clean and explicit ids");
 Check(SafeHttp.Allowed(new Uri("https://lrclib.net/api/get?track_name=x"), false) && !SafeHttp.Allowed(new Uri("https://lrclib.net.evil.example/api/get"), false), "lyrics host is a known site");
@@ -357,8 +372,34 @@ try
     File.WriteAllText(Path.Combine(musicStoreRoot, listener.ToString("N") + ".json"), "{not json");
     Check((await new MusicLibraryStore(musicStoreRoot).ReadAsync(listener, default)).Plays.Count == 0, "damaged music history does not break music");
     Check((await musicStore.ReadAsync(Guid.NewGuid(), default)).Plays.Count == 0, "music history is per user");
+    var saver = Guid.NewGuid();
+    await musicStore.UpdateAsync(saver, l =>
+    {
+        l.Saves.Add(new MusicSave("155102851176075264", new string('x', 500), "Artist", MusicSaver.Queued, 0, 10, null, DateTime.UtcNow));
+        l.Saves.Add(new MusicSave("155102851176075264", "Duplicate", "Artist", MusicSaver.Saved, 10, 10, null, DateTime.UtcNow));
+    }, default);
+    var saves = (await new MusicLibraryStore(musicStoreRoot).ReadAsync(saver, default)).Saves;
+    Check(saves.Count == 1 && saves[0].State == MusicSaver.Queued && saves[0].Title.Length == 200, "the save queue persists once per album with bounded text");
+    File.WriteAllText(Path.Combine(musicStoreRoot, saver.ToString("N") + ".json"),
+        """{"Saves":[{"ReleaseId":"../../etc","Title":"x","Artist":"y","State":"queued","Queued":"2026-10-27T00:00:00Z"},{"ReleaseId":"155102851176075264","Title":"x","Artist":"y","State":"run","Queued":"2026-10-27T00:00:00Z"},{"ReleaseId":"155102851176075264","Title":"x","Artist":"y","State":"saved","Queued":"2026-10-27T00:00:00Z"}]}""");
+    Check((await new MusicLibraryStore(musicStoreRoot).ReadAsync(saver, default)).Saves.Single().State == MusicSaver.Saved, "a stored save with a bad release ID or state is dropped");
 }
 finally { if (Directory.Exists(musicStoreRoot)) Directory.Delete(musicStoreRoot, true); }
+
+foreach (var (text, part) in new[] { (".. .", "_"), (". .", "_"), ("..", "_"), (".", "_"), ("  ", "_"), ("a/b\\c", "a_b_c"), ("../../etc", ".._.._etc"), ("Name.", "Name"), ("AC/DC", "AC_DC"), ("x\0y", "x_y") })
+    Check(MusicPaths.Part(text) == part, "music path part " + text.Replace("\0", "NUL"));
+Check(MusicPaths.Part(new string('é', 200)).Length == 80 && System.Text.Encoding.UTF8.GetByteCount(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))) <= 180
+    && !char.IsHighSurrogate(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))[^1]), "music path parts stay short in characters and bytes without splitting a character");
+Check(MusicPaths.Root("") is null && MusicPaths.Root("relative/music") is null && MusicPaths.Root("/srv/music/") == "/srv/music" && MusicPaths.Root("/srv/x/../music") == "/srv/music",
+    "the music library folder must be absolute and is normalised");
+var savedAlbum = new MusicRelease("155102851176075264", "OK Computer", [new("155102851176075265", "Radiohead")], "ALBUM", new DateTime(1997, 7, 1), null, null, 12, []);
+var albumFolder = MusicPaths.Album("/srv/music", savedAlbum);
+Check(albumFolder == "/srv/music/Radiohead/OK Computer (1997)", "saved albums go under artist and album with the year");
+Check(MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Artists = [new("155102851176075265", "..")] }) == "/srv/music/_/.. (1997)" && MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Date = null }) == "/srv/music/Radiohead/_"
+    && MusicPaths.Album("/srv/music", savedAlbum with { Date = null, Artists = [] }) == "/srv/music/Unknown artist/OK Computer", "album folders cannot climb out of the library folder");
+var savedTrack = musicSearch.Tracks[0] with { Title = "Paranoid Android", Number = 2, Disc = 1 };
+Check(MusicPaths.Track(albumFolder, savedTrack, false) == albumFolder + "/02 Paranoid Android.flac"
+    && MusicPaths.Track(albumFolder, savedTrack with { Disc = 2, Title = "../x" }, true) == albumFolder + "/2-02 .._x.flac", "saved songs are numbered, with the disc when there are several");
 
 if (args.Contains("--provider-live"))
 {

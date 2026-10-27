@@ -49,6 +49,12 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   also published as a clean edit, the edit is hidden and the original plays. Played songs
   are kept on the server (4 GB by default, **Song cache** in the settings, 0 turns it off),
   so skipping within a song and playing it again do not wait for the catalog.
+- **Save to library**: set a **Music library folder** in the settings and every album you star
+  (a heart in Jellyfin, a star in a music app) is saved there as FLAC with its cover, as
+  `Artist/Album (Year)/01 Title.flac`, tagged with that album even when the catalog's file names another. Add that folder to a Jellyfin music library and the
+  albums play offline and in any Jellyfin music app, Finamp included. Saving is slow on purpose,
+  one song every 20 seconds, so the catalog does not block the server. Existing files are never
+  replaced, and unstarring an album stops its save but keeps what was already saved.
 - **Search**: Jellyfin's normal search also looks in the online catalogs, so it finds
   titles nobody has browsed yet. Found titles stay under each channel's Search results.
 - **Access**: only the users ticked in the settings see the channels.

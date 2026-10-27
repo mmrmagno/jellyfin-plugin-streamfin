@@ -231,6 +231,14 @@ static class Targets
         Guard(() => Clean(AnimeGgSource.Clean(text), "cleaned text"));
         Guard(() => Expect(Regex.IsMatch(AnimeGgSource.Normalize(text), @"\A[\p{L}\p{N}]*\z"), "normalized title is letters and numbers"));
         Guard(() => Expect(LanguageCode.IsMatch(Languages.Code(text, text)) && LanguageCode.IsMatch(Languages.Code("", text)), "language code is two letters or und"));
+        Guard(() =>
+        {
+            var part = MusicPaths.Part(text);
+            Expect(part.Length is > 0 and <= 80 && Encoding.UTF8.GetByteCount(part) <= 180 && part is not ("." or "..")
+                && part.IndexOfAny(['/', '\\', '\0']) < 0 && part == part.Trim(), "music path part is one short segment");
+            Expect(MusicPaths.Album("/srv/music", new MusicRelease("155102851176075264", text, [new("155102851176075265", text)], "ALBUM", null, null, null, null, []))
+                .StartsWith("/srv/music/", StringComparison.Ordinal), "saved album stays inside the library folder");
+        });
     }
 
     public static void Tmdb(string json)
@@ -303,6 +311,7 @@ static class Targets
             "Subsonic XML parses and carries no control characters");
     }
 
+    private static readonly MusicRelease Album = new("155102851176075264", "Album", [new("155102851176075265", "Artist")], "ALBUM", new DateTime(2020, 1, 1), "Label", null, 1, []);
     private static readonly MusicTrack Song = new("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, true, 1, 1);
 
     // FLAC is binary; Latin-1 maps each char back to one byte.
@@ -312,6 +321,13 @@ static class Targets
         {
             var bytes = Encoding.Latin1.GetBytes(text);
             Expect(MusicGain.AudioStart(bytes) is not int audio || audio >= 8 && audio <= bytes.Length, "audio starts inside the bytes read");
+            if (MusicTags.Retag(bytes, MusicTags.For(Album, Song)) is { } header)
+            {
+                var info = 3 + ((bytes[5] << 16) | (bytes[6] << 8) | bytes[7]);
+                Expect(MusicGain.AudioStart(header) == header.Length && (header[4] & 0x7f) == 0 && header.AsSpan(5, info).SequenceEqual(bytes.AsSpan(5, info)),
+                    "a retagged header is a whole FLAC header that keeps the stream info first");
+                Expect(MusicGain.Parse(header) is not { AlbumGain: not null } || MusicGain.Parse(bytes) is { AlbumGain: not null }, "retagging never invents an album gain");
+            }
             if (MusicGain.Parse(bytes) is not { } gain) return;
             Expect(gain.TrackGain is not null || gain.AlbumGain is not null, "a gain result carries a gain");
             Expect(new[] { gain.TrackGain, gain.AlbumGain }.All(g => g is null or >= -64 and <= 64)

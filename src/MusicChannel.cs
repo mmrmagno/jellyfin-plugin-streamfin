@@ -109,7 +109,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicLibraryStore store, 
         if (id.EndsWith("/status", StringComparison.Ordinal)) return Result([]);
         if (id.Length == 0) return Result([
             Folder("search", "Search results", "Use Jellyfin's search (magnifying glass) to find artists, albums and songs online. What you find appears here."),
-            Folder("starred", "Starred", "Albums and songs you star in a Subsonic app."),
+            Folder("starred", "Starred", "Albums you mark as a favourite here, and albums and songs you star in a Subsonic app."),
             Folder("recent", "Recently played")]);
         if (id == "search")
         {

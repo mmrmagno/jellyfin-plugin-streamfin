@@ -24,6 +24,8 @@ public sealed class Configuration : BasePluginConfiguration
     public bool MusicPreferExplicit { get; set; } = true;
     // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.
     public int MusicCacheMb { get; set; } = 4096;
+    // Starred albums are saved here as FLAC files for a normal music library; empty turns it off.
+    public string MusicLibraryFolder { get; set; } = "";
     public bool SubsonicEnabled { get; set; }
     public bool SubsonicPreferLossless { get; set; } = true;
     public SubsonicPassword[] SubsonicPasswords { get; set; } = [];
