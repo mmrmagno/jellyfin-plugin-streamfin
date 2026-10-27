@@ -18,7 +18,7 @@ namespace StreamFin;
 [ApiController]
 [Route("StreamFin/rest")]
 public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http, MusicCache songs,
-    MusicSaver saver, IMediaEncoder encoder, ILogger<SubsonicController> logger) : ControllerBase
+    MusicSaver saver, MusicRadio radio, IMediaEncoder encoder, ILogger<SubsonicController> logger) : ControllerBase
 {
     private const long FormLimit = 256 * 1024;
     // A song's FLAC header and size, kept from its first play so a later seek costs the catalog one request.
@@ -356,8 +356,13 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     private async Task<SubsonicNode?> ArtistInfoAsync(string element)
     {
         var id = ParseId(One("id") ?? throw Missing("id"), "ar") ?? throw NotFound("Artist");
+        var count = Int("count", 20, 0, 50);
         var artist = await catalog.ArtistAsync(id, Ct);
-        return Success().One(new SubsonicNode(element).Set("biography", artist.Bio));
+        var (_, stars) = await LibraryAsync();
+        // Apps load this with the artist page: what is known in a few seconds now, the rest from the cache next time.
+        var similar = count == 0 ? [] : await radio.SimilarArtistsAsync(artist, Ct, DateTime.UtcNow.AddSeconds(4));
+        return Success().One(new SubsonicNode(element).Set("biography", artist.Bio)
+            .AddRange(similar.Take(count).Select(a => Artist("similarArtist", a, 0, stars))));
     }
 
     private async Task<SubsonicNode?> TopSongsAsync()
@@ -371,7 +376,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         return Success().One(new SubsonicNode("topSongs").AddRange(await SongsWithAlbumsAsync((await catalog.ExplicitTracksAsync(artist.TopTracks, Ct)).Take(count).ToArray(), stars, "song")));
     }
 
-    // A first version of radio: the artist's top tracks, shuffled.
+    // Radio: the artist's top tracks mixed with similar artists'. Without similarity data, the artist's own, shuffled.
     private async Task<SubsonicNode?> SimilarAsync(string element)
     {
         var id = One("id") ?? throw Missing("id");
@@ -381,8 +386,9 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         if (artistId is null && ParseTrack(id) is not null) artistId = (await TrackAsync(id)).Track.Artists.FirstOrDefault()?.Id;
         if (artistId is null) throw NotFound("Item");
         var (_, stars) = await LibraryAsync();
-        var top = (await catalog.ExplicitTracksAsync((await catalog.ArtistAsync(artistId, Ct)).TopTracks, Ct)).OrderBy(_ => Random.Shared.Next()).Take(count).ToArray();
-        return Success().One(new SubsonicNode(element).AddRange(await SongsWithAlbumsAsync(top, stars, "song")));
+        var mix = await radio.RadioAsync(artistId, count, Ct);
+        if (mix.Count == 0) mix = (await catalog.ExplicitTracksAsync((await catalog.ArtistAsync(artistId, Ct)).TopTracks, Ct)).OrderBy(_ => Random.Shared.Next()).Take(count).ToArray();
+        return Success().One(new SubsonicNode(element).AddRange(await SongsWithAlbumsAsync(mix, stars, "song")));
     }
 
     // Search hits and top tracks name their release but not its title. Titles come from the release cache, a

@@ -50,7 +50,8 @@ public sealed class SafeHttp : IDisposable
     // Sites and catalogs StreamFin talks to by name. Embed players and HLS CDNs rotate
     // hostnames weekly, so those use the open policy below instead of a list.
     public static bool IsKnownSite(string host) => host is "www.animegg.org" or "animegg.org" or "graphql.anilist.co" or "animeheaven.me"
-        or "zokoanime.video" or "api.themoviedb.org" or "flixhqz.net" or "flixhq.ws" or MusicLyrics.Host || host == MusicCatalog.ApiHost;
+        or "zokoanime.video" or "api.themoviedb.org" or "flixhqz.net" or "flixhq.ws" or MusicLyrics.Host
+        or MusicRadio.MusicBrainzHost or MusicRadio.ListenBrainzHost or MusicRadio.LastFmHost || host == MusicCatalog.ApiHost;
 
     private static string Host(Uri uri)
     {
@@ -106,6 +107,8 @@ public sealed class SafeHttp : IDisposable
                     // Gate cookies and API tokens belong to one website, never forward them to a redirect elsewhere.
                     if (pair.Key is not ("Cookie" or "Authorization") || uri.IdnHost == originalHost) request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
                 }
+            // MetaBrainz wants to know whom to contact; the default name stays for everything else.
+            if (uri.IdnHost is MusicRadio.MusicBrainzHost or MusicRadio.ListenBrainzHost) request.Headers.TryAddWithoutValidation("User-Agent", MusicRadio.ContactAgent);
             if (range is not null) request.Headers.Range = System.Net.Http.Headers.RangeHeaderValue.Parse(range);
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location)

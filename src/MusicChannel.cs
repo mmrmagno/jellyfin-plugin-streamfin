@@ -13,10 +13,10 @@ using Microsoft.Extensions.Logging;
 
 namespace StreamFin;
 
-// Item IDs: artist/<id>, top/<artist>, album/<scope>/<release>, track/<scope>/<release>/<track>.
+// Item IDs: artist/<id>, top/<artist>, radio/<artist>, album/<scope>/<release>, track/<scope>/<release>/<track>.
 // Jellyfin keys channel items by external ID, so the scope (where a listing found the item) keeps
 // an album shared by two artists, or a track both searched and played, from moving between folders.
-public sealed class MusicChannel(MusicCatalog catalog, MusicLibraryStore store, StreamRelay relay, IHttpContextAccessor contexts,
+public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLibraryStore store, StreamRelay relay, IHttpContextAccessor contexts,
     IAuthorizationContext authorization, ILibraryManager library, ILogger<MusicChannel> logger)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
@@ -138,6 +138,9 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicLibraryStore store, 
                 var top = Folder($"top/{artist.Id}", "Top tracks");
                 top.ImageUrl = artist.Image;
                 items.Add(top);
+                var mix = Folder($"radio/{artist.Id}", "Radio", $"{artist.Name} and similar artists, mixed.");
+                mix.ImageUrl = artist.Image;
+                items.Add(mix);
             }
             var releases = MusicCatalog.PreferExplicit ? await catalog.WithoutCleanCopiesAsync(artist.Releases, ct) : artist.Releases;
             items.AddRange(releases.OrderBy(r => System.Array.IndexOf(ReleaseOrder, r.Type)).ThenByDescending(r => r.Date).Select(r => Album(r, artist.Id)));
@@ -149,6 +152,18 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicLibraryStore store, 
             return Result((await catalog.ExplicitTracksAsync(artist.TopTracks, ct)).Select((track, index) =>
             {
                 var item = Track(track, "top-" + artist.Id);
+                item.IndexNumber = index + 1;
+                item.ParentIndexNumber = null;
+                return item;
+            }));
+        }
+        if (parts is ["radio", var radioId])
+        {
+            var mix = await radio.RadioAsync(radioId, 50, ct);
+            if (mix.Count == 0) return Result([Folder(id + "/status", "No similar artists are known for this artist yet.")]);
+            return Result(mix.Select((track, index) =>
+            {
+                var item = Track(track, "radio-" + radioId);
                 item.IndexNumber = index + 1;
                 item.ParentIndexNumber = null;
                 return item;

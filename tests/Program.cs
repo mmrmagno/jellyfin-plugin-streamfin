@@ -386,6 +386,23 @@ try
 }
 finally { if (Directory.Exists(musicStoreRoot)) Directory.Delete(musicStoreRoot, true); }
 
+Check(MusicRadio.NameKey("AC/DC") == MusicRadio.NameKey("acdc") && MusicRadio.NameKey("Simon & Garfunkel") == MusicRadio.NameKey("simon and garfunkel")
+    && MusicRadio.NameKey("Beyoncé") != MusicRadio.NameKey("Beyonce"), "artist names compare without punctuation or case");
+const string Mbid = "a74b1b7f-71a5-4011-9441-d0b5e4122711";
+string WithMbid(string json) => json.Replace("MBID", Mbid, StringComparison.Ordinal);
+Check(MusicRadio.ParseIsrc(WithMbid("""{"recordings":[{"artist-credit":[{"artist":{"id":"MBID","name":"Radiohead"}},{"artist":{"id":"0383dadf-2a4e-4d10-a46a-e9e041da8eb3","name":"Queen"}}]},{"artist-credit":[{"artist":{"id":"MBID","name":"Radiohead"}}]}]}"""), "radiohead") == Mbid,
+    "MusicBrainz ISRC lookup picks the credited artist with the catalog's name");
+Check(MusicRadio.ParseIsrc("""{"recordings":[{"artist-credit":[{"artist":{"id":"../../x","name":"Radiohead"}}]}]}""", "Radiohead") is null
+    && MusicRadio.ParseIsrc("{}", "Radiohead") is null && MusicRadio.ParseIsrc("[]", "Radiohead") is null, "MusicBrainz IDs must be UUIDs");
+Check(MusicRadio.ParseArtistSearch(WithMbid("""{"artists":[{"id":"0383dadf-2a4e-4d10-a46a-e9e041da8eb3","score":100,"name":"Radiohead Tribute"},{"id":"MBID","score":80,"name":"Radiohead"}]}"""), "Radiohead") is null
+    && MusicRadio.ParseArtistSearch(WithMbid("""{"artists":[{"id":"MBID","score":100,"name":"Radiohead"}]}"""), "Radiohead") == Mbid, "MusicBrainz name search needs a confident, same-name hit");
+var similarNames = MusicRadio.ParseSimilar(WithMbid("""[{"artist_mbid":"MBID","name":"Radiohead","score":99999},{"artist_mbid":"5b11f4ce-a62d-471e-81fc-a69a8278c7da","name":"Nirvana","score":10},{"artist_mbid":"9c9f1380-2516-4fc9-a3e6-f9f61941d090","name":"Muse <b>","score":20},{"artist_mbid":"bad","name":"Bad","score":30},{"artist_mbid":"9c9f1380-2516-4fc9-a3e6-f9f61941d090","name":"MUSE B","score":5}]"""), Mbid);
+Check(similarNames.Select(a => a.Name).SequenceEqual(["Muse b", "Nirvana"]), "ListenBrainz similar artists are ranked, cleaned, deduplicated and exclude the artist itself");
+Check(MusicRadio.ParseSimilar("""{"error":"x"}""").Count == 0, "a ListenBrainz error object means no similar artists");
+Check(MusicRadio.ParseLastFm("""{"similarartists":{"artist":[{"name":"Muse","match":"0.5"},{"name":"Nirvana","match":"1"},{"name":"Odd","match":"NaN"},{"name":"Big","match":"7"}]}}""")
+    .Select(a => a.Name).SequenceEqual(["Nirvana", "Muse"]), "Last.fm similar artists are ranked and bounded");
+foreach (var host in new[] { "musicbrainz.org", "labs.api.listenbrainz.org", "ws.audioscrobbler.com" }) SafeHttp.Validate(new Uri($"https://{host}/x"), false);
+Check(true, "radio services are known sites");
 foreach (var (text, part) in new[] { (".. .", "_"), (". .", "_"), ("..", "_"), (".", "_"), ("  ", "_"), ("a/b\\c", "a_b_c"), ("../../etc", ".._.._etc"), ("Name.", "Name"), ("AC/DC", "AC_DC"), ("x\0y", "x_y") })
     Check(MusicPaths.Part(text) == part, "music path part " + text.Replace("\0", "NUL"));
 Check(MusicPaths.Part(new string('é', 200)).Length == 80 && System.Text.Encoding.UTF8.GetByteCount(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))) <= 180
@@ -432,6 +449,11 @@ if (args.Contains("--provider-live"))
     using var flac = await http.OpenAsync(MusicCatalog.StreamUri(hit.Id), true, flacTimeout.Token, range: "bytes=0-65535");
     var head = await flac.Content.ReadAsByteArrayAsync(flacTimeout.Token);
     Check(flac.StatusCode == HttpStatusCode.PartialContent && head.Length == 65536 && head[..4].SequenceEqual("fLaC"u8.ToArray()), "live music stream is FLAC with byte ranges");
+    using var radio = new MusicRadio(http, music);
+    var daft = await music.ArtistAsync(hit.Artists[0].Id, default);
+    Check(await radio.MbidAsync(daft, default) == "056e4f3e-d505-4dad-8ec1-d04f521cbb56", "live MusicBrainz ID from an ISRC");
+    var mix = await radio.RadioAsync(daft.Id, 30, default);
+    Check(mix.Count >= 10 && mix.SelectMany(t => t.Artists.Take(1)).Select(a => a.Id).Distinct().Count() >= 3, "live radio mixes the artist with similar ones from the catalog");
 }
 if (args.Contains("--hls-live"))
 {

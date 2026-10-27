@@ -25,6 +25,8 @@
         <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
         <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
+      <div class="inputContainer"><label class="inputLabel" for="lastFmKey">Last.fm API key (optional)</label><input is="emby-input" type="password" id="lastFmKey" autocomplete="off" spellcheck="false">
+        <div class="fieldDescription">Radio mixes an artist with similar ones, as ListenBrainz knows them. For artists ListenBrainz has no data on, a free key from last.fm/api is used as well.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="musicFolder">Music library folder</label><input is="emby-input" type="text" id="musicFolder" autocomplete="off" spellcheck="false" placeholder="/media/music/StreamFin">
         <div class="fieldDescription">Starred albums are saved here as tagged FLAC files, one folder per artist and album, so they play offline and in any music app. Use a folder that belongs to a Jellyfin music library and that Jellyfin can write to. Existing files are never replaced. Albums are saved slowly, one song every 20 seconds, to stay within the catalog's limits. Leave empty to save nothing.</div></div>
       <button is="emby-button" type="button" id="musicSaveStarred" class="raised block" disabled><span>Save every starred album now</span></button>
@@ -102,6 +104,7 @@
             page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
             page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
             page.querySelector('#musicFolder').value = config.MusicLibraryFolder || '';
+            page.querySelector('#lastFmKey').value = config.LastFmApiKey || '';
             page.querySelector('#subsonicEnabled').checked = config.SubsonicEnabled === true;
             page.querySelector('#subsonicLossless').checked = config.SubsonicPreferLossless !== false;
             page.querySelector('#subsonicAddress').textContent = ApiClient.serverAddress() + '/StreamFin';
@@ -148,6 +151,7 @@
             config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
             config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
             config.MusicLibraryFolder = page.querySelector('#musicFolder').value.trim();
+            config.LastFmApiKey = page.querySelector('#lastFmKey').value.trim();
             config.AllowedUserIds = Array.from(page.querySelectorAll('#streamfinUsers input:checked'), input => input.value);
             config.SubsonicEnabled = page.querySelector('#subsonicEnabled').checked;
             config.SubsonicPreferLossless = page.querySelector('#subsonicLossless').checked;

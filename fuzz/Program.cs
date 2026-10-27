@@ -19,6 +19,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["lyrics"] = Targets.Lyrics,
     ["subsonic"] = Targets.Subsonic,
     ["gain"] = Targets.Gain,
+    ["radio"] = Targets.Radio,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -333,6 +334,23 @@ static class Targets
             Expect(new[] { gain.TrackGain, gain.AlbumGain }.All(g => g is null or >= -64 and <= 64)
                 && new[] { gain.TrackPeak, gain.AlbumPeak }.All(g => g is null or >= 0 and <= 16), "gains and peaks are in range");
         });
+    }
+
+    private static readonly Regex Uuid = new(@"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z");
+
+    // MusicBrainz, ListenBrainz and Last.fm answers; names reach channel listings and Subsonic responses.
+    public static void Radio(string json)
+    {
+        Guard(() => Expect(MusicRadio.ParseIsrc(json, "Radiohead") is not { } id || Uuid.IsMatch(id), "ISRC lookup yields a UUID"));
+        Guard(() => Expect(MusicRadio.ParseArtistSearch(json, "Radiohead") is not { } id || Uuid.IsMatch(id), "artist search yields a UUID"));
+        foreach (var parse in new Func<string, IReadOnlyList<SimilarArtist>>[] { j => MusicRadio.ParseSimilar(j), MusicRadio.ParseLastFm })
+            Guard(() =>
+            {
+                var artists = parse(json);
+                Expect(artists.Count <= 50 && artists.All(a => a.Name.Length is > 0 and <= 300 && double.IsFinite(a.Score) && a.Score >= 0), "similar artists are bounded");
+                foreach (var a in artists) Clean(a.Name, "similar artist name");
+                Expect(artists.Zip(artists.Skip(1)).All(p => p.First.Score >= p.Second.Score), "similar artists are best first");
+            });
     }
 
     public static void Lyrics(string json)
