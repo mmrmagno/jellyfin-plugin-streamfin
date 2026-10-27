@@ -200,7 +200,8 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                         if (entry.Written + read > entry.Size) return;
                         await file.WriteAsync(buffer.AsMemory(0, read), ct);
                         await file.FlushAsync(ct);
-                        Interlocked.Add(ref entry.Written, read);
+                        // Players read the song from this file, so its tags never pass the Subsonic stream; read them here.
+                        if (Interlocked.Add(ref entry.Written, read) is var written && written >= MusicGain.HeadBytes && written - read < MusicGain.HeadBytes) Learn(id, part);
                     }
                 }
                 // The catalog sometimes drops a long download partway; pick it up where it stopped.
