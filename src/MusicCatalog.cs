@@ -49,6 +49,10 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
     public Task<MusicRelease> ReleaseAsync(string id, CancellationToken ct) => CachedAsync("release/" + ValidateId(id), Lifetime,
         async () => ParseRelease(await QueryAsync("releases/" + id, ct)));
 
+    // Whether a lookup would be answered without asking the catalog.
+    public bool HasRelease(string id) => IsId(id) && cache.TryGetValue($"{Revision}/release/{id}", out _);
+    public bool HasArtist(string id) => IsId(id) && cache.TryGetValue($"{Revision}/artist/{id}", out _);
+
     public Task<MusicArtistPage> ArtistAsync(string id, CancellationToken ct) => CachedAsync("artist/" + ValidateId(id), Lifetime,
         async () => ParseArtist(await QueryAsync("artists/" + id, ct)));
 

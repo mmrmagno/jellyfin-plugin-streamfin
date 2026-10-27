@@ -19,7 +19,11 @@ namespace StreamFin;
 public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http,
     IMediaEncoder encoder, ILogger<SubsonicController> logger) : ControllerBase
 {
+    private const long FormLimit = 256 * 1024;
     private static readonly SemaphoreSlim Transcodes = new(4, 4);
+    // So one user (or one slow client) cannot hold every slot.
+    private const int UserTranscodeLimit = 2;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> UserTranscodes = new();
     private SubsonicUser user = null!;
     private Dictionary<string, string[]> parameters = [];
 
@@ -33,16 +37,26 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     public static string? ParseId(string? id, string prefix) => id is not null && id.StartsWith(prefix + "-", StringComparison.Ordinal) && MusicCatalog.IsId(id[(prefix.Length + 1)..]) ? id[(prefix.Length + 1)..] : null;
     public static Guid? ParsePlaylist(string? id) => id is not null && id.StartsWith("pl-", StringComparison.Ordinal) && Guid.TryParseExact(id[3..], "N", out var g) ? g : null;
 
-    [AllowAnonymous, HttpGet("{method}"), HttpPost("{method}"), HttpHead("{method}")]
+    // ASP.NET stops at 1024 form values by default; a 2000 song playlist has more. Model binding would read
+    // the form before Handle runs, so it is switched off and Handle reads it after its own checks.
+    [AllowAnonymous, HttpGet("{method}"), HttpPost("{method}"), HttpHead("{method}"), NoFormBinding]
+    [RequestFormLimits(ValueCountLimit = 5000, ValueLengthLimit = 16 * 1024, KeyLengthLimit = 256, MultipartBodyLengthLimit = FormLimit)]
     public async Task Handle(string method)
     {
         var name = method.EndsWith(".view", StringComparison.Ordinal) ? method[..^5] : method;
         parameters = Request.Query.ToDictionary(q => q.Key, q => q.Value.OfType<string>().ToArray(), StringComparer.Ordinal);
-        if (Request.HasFormContentType)
-            foreach (var (key, value) in await Request.ReadFormAsync(HttpContext.RequestAborted))
-                parameters[key] = [.. All(key), .. value.OfType<string>()];
         if (!SubsonicAuth.Enabled) { await SendAsync(SubsonicResponse.Error(50, "The Subsonic API is turned off in the StreamFin settings.")); return; }
-        var (found, code, message) = auth.Check(HttpContext.Connection.RemoteIpAddress, One("u"), One("t"), One("s"), One("p"), One("apiKey"));
+        if (Request.HasFormContentType)
+        {
+            // Read before sign-in, so the size is checked first. A playlist of 2000 songs fits in well under this.
+            if (Request.ContentLength is not (>= 0 and <= FormLimit)) { await SendAsync(SubsonicResponse.Error(0, "The request is too large.")); return; }
+            IFormCollection form;
+            try { form = await Request.ReadFormAsync(HttpContext.RequestAborted); }
+            catch (InvalidDataException) { await SendAsync(SubsonicResponse.Error(0, "The request is too large.")); return; }
+            foreach (var (key, value) in form)
+                parameters[key] = [.. All(key), .. value.OfType<string>()];
+        }
+        var (found, code, message) = await auth.CheckAsync(HttpContext.Connection.RemoteIpAddress, One("u"), One("t"), One("s"), One("p"), One("apiKey"), HttpContext.RequestAborted);
         if (found is null) { await SendAsync(SubsonicResponse.Error(code, message)); return; }
         user = found;
         try
@@ -56,6 +70,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             logger.LogWarning("StreamFin Subsonic {Method} failed ({ErrorType})", name, ex.GetType().Name);
             if (!Response.HasStarted) await SendAsync(SubsonicResponse.Error(0, ex is ProviderException ? ex.Message : "The music catalog is temporarily unavailable."));
         }
+        // The catalog dropping a song mid-transfer: the client sees a cut stream, nothing more can be said.
+        catch (IOException ex) when (Response.HasStarted) { logger.LogWarning("StreamFin Subsonic {Method} stopped ({ErrorType})", name, ex.GetType().Name); }
     }
 
     private sealed class SubsonicError(int code, string message) : Exception(message) { public int Code { get; } = code; }
@@ -181,6 +197,9 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             .Set("mediaType", "song").Set("isVideo", false).Set("displayArtist", Names(t.Artists))
             .Set("isrc", t.Isrc is null ? null : new[] { t.Isrc }).Set("explicitStatus", t.Explicit ? "explicit" : "clean")
             .Set("starred", stars.Tracks.TryGetValue(t.Id, out var at) ? at : null);
+        if (MusicGain.For(t.Id) is { } gain)
+            node.One(new SubsonicNode("replayGain").Set("trackGain", gain.TrackGain).Set("albumGain", gain.AlbumGain)
+                .Set("trackPeak", gain.TrackPeak).Set("albumPeak", gain.AlbumPeak));
         return node.AddRange(t.Artists.Select(a => new SubsonicNode("artists").Set("id", "ar-" + a.Id).Set("name", a.Name)));
     }
 
@@ -207,9 +226,17 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         return (library, Stars(library));
     }
 
+    // The catalog budget is shared by everyone, so one request (a big playlist, a mass star) may only send
+    // so many lookups to the catalog. What is already cached costs nothing.
+    private const int FetchLimit = 40;
+    private int fetches;
+    private bool Fetch(bool cached) => cached || ++fetches <= FetchLimit
+        ? true : throw new SubsonicError(0, "Too many albums at once for the music catalog. Try again in a minute: the ones already fetched stay cached.");
+
     private async Task<(MusicTrack Track, MusicRelease Release)> TrackAsync(string? id)
     {
         if (ParseTrack(id ?? throw Missing("id")) is not var (releaseId, trackId)) throw NotFound("Song");
+        Fetch(catalog.HasRelease(releaseId));
         var release = await catalog.ReleaseAsync(releaseId, Ct);
         var track = release.Tracks.FirstOrDefault(t => t.Id == trackId) ?? throw NotFound("Song");
         return (track with { Artwork = track.Artwork ?? release.Artwork }, release);
@@ -444,8 +471,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                 var (track, release) = await TrackAsync(id);
                 tracks.Add(new MusicPlay(track, release.Title, now));
             }
-            else if (ParseId(id, "al") is { } releaseId) albums.Add(new MusicStarredAlbum((await catalog.ReleaseAsync(releaseId, Ct)) with { Tracks = [] }, now));
-            else if (ParseId(id, "ar") is { } artistId)
+            else if (ParseId(id, "al") is { } releaseId && Fetch(catalog.HasRelease(releaseId))) albums.Add(new MusicStarredAlbum((await catalog.ReleaseAsync(releaseId, Ct)) with { Tracks = [] }, now));
+            else if (ParseId(id, "ar") is { } artistId && Fetch(catalog.HasArtist(artistId)))
             {
                 var artist = await catalog.ArtistAsync(artistId, Ct);
                 artists.Add(new MusicStarredArtist(new MusicArtistRef(artist.Id, artist.Name), now));
@@ -520,41 +547,52 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         var existing = One("playlistId") is { } given ? ParsePlaylist(given) ?? throw NotFound("Playlist") : (Guid?)null;
         var name = One("name");
         if (existing is null && string.IsNullOrWhiteSpace(name)) throw Missing("name");
+        if (All("songId").Length > MusicLibraryStore.PlaylistEntryLimit) throw TooMany();
         var entries = await EntriesAsync(All("songId"));
         var now = DateTime.UtcNow;
         var id = existing ?? Guid.NewGuid();
-        var missing = false;
+        bool missing = false, full = false;
         await store.UpdateAsync(user.Id, library =>
         {
             var old = library.Playlists.FirstOrDefault(p => p.Id == id);
             if (existing is not null && old is null) { missing = true; return; }
+            if (Full(library, id, entries.Count)) { full = true; return; }
             library.Playlists.RemoveAll(p => p.Id == id);
             library.Playlists.Insert(0, new MusicPlaylist(id, name ?? old!.Name, old?.Comment ?? "", old?.Created ?? now, now, entries));
         }, Ct);
         if (missing) throw NotFound("Playlist");
+        if (full) throw TooMany();
         var (library, stars) = await LibraryAsync();
         return Success().One(Playlist(library.Playlists.First(p => p.Id == id), stars, true));
     }
+
+    private static bool Full(MusicLibrary library, Guid id, int count) => count > MusicLibraryStore.PlaylistEntryLimit
+        || library.Playlists.All(p => p.Id != id) && library.Playlists.Count >= MusicLibraryStore.PlaylistLimit
+        || library.Playlists.Where(p => p.Id != id).Sum(p => p.Entries.Count) + count > MusicLibraryStore.PlaylistTotalLimit;
+    private static SubsonicError TooMany() => new(0, $"Up to {MusicLibraryStore.PlaylistLimit} playlists, {MusicLibraryStore.PlaylistEntryLimit} songs each and {MusicLibraryStore.PlaylistTotalLimit} in all.");
 
     private async Task<SubsonicNode?> UpdatePlaylistAsync()
     {
         var id = ParsePlaylist(One("playlistId") ?? throw Missing("playlistId")) ?? throw NotFound("Playlist");
         var added = await EntriesAsync(All("songIdToAdd"));
         var removed = All("songIndexToRemove").Select(v => int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : -1).Where(n => n >= 0).ToHashSet();
-        var missing = false;
+        bool missing = false, full = false;
         await store.UpdateAsync(user.Id, library =>
         {
             var index = library.Playlists.FindIndex(p => p.Id == id);
             if (index < 0) { missing = true; return; }
             var p = library.Playlists[index];
+            var kept = p.Entries.Where((_, i) => !removed.Contains(i)).Concat(added).ToArray();
+            if (Full(library, id, kept.Length)) { full = true; return; }
             library.Playlists[index] = p with
             {
                 Name = One("name") is { Length: > 0 } name ? name : p.Name,
                 Comment = One("comment") ?? p.Comment,
                 Changed = DateTime.UtcNow,
-                Entries = p.Entries.Where((_, i) => !removed.Contains(i)).Concat(added).ToArray()
+                Entries = kept
             };
         }, Ct);
+        if (full) throw TooMany();
         return missing ? throw NotFound("Playlist") : Success();
     }
 
@@ -634,21 +672,34 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         return null;
     }
 
-    private async Task CopyAsync(Stream input, Stream output, long limit, CancellationToken ct)
+    // head, when given, receives the first bytes of the stream once (for MusicGain).
+    private async Task CopyAsync(Stream input, Stream output, long limit, CancellationToken ct, Action<byte[]>? head = null)
     {
         var buffer = new byte[65536];
         long total = 0;
-        while (true)
+        var start = head is null ? null : new MemoryStream();
+        try
         {
-            using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            idle.CancelAfter(TimeSpan.FromSeconds(45));
-            var read = await input.ReadAsync(buffer, idle.Token);
-            if (read == 0) return;
-            total += read;
-            // Access is checked again as the bytes flow, so turning a user off stops a stream already running.
-            if (total > limit || !Plugin.Allows(user.Id) || !SubsonicAuth.Enabled) return;
-            await output.WriteAsync(buffer.AsMemory(0, read), ct);
+            while (true)
+            {
+                using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                idle.CancelAfter(TimeSpan.FromSeconds(45));
+                var read = await input.ReadAsync(buffer, idle.Token);
+                start?.Write(buffer, 0, (int)Math.Min(read, MusicGain.HeadBytes - start.Length));
+                if (start is { Length: >= MusicGain.HeadBytes })
+                {
+                    head!(start.ToArray());
+                    start = null;
+                }
+                if (read == 0) return;
+                total += read;
+                // Access is checked again as the bytes flow, so turning a user off stops a stream already running.
+                if (total > limit || !Plugin.Allows(user.Id) || !SubsonicAuth.Enabled) return;
+                await output.WriteAsync(buffer.AsMemory(0, read), ct);
+            }
         }
+        // A player that hangs up early, or a short range, still taught us whatever tags it covered.
+        finally { if (start is { Length: > 0 }) head!(start.ToArray()); }
     }
 
     public enum AudioFormat { Raw, Mp3, Opus }
@@ -659,7 +710,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         var max = int.TryParse(maxBitRate, NumberStyles.Integer, CultureInfo.InvariantCulture, out var m) && m > 0 ? m : 0;
         var kind = (format ?? "").ToLowerInvariant() switch
         {
-            "" or "raw" or "flac" => max is > 0 and < 1000 ? AudioFormat.Mp3 : AudioFormat.Raw,
+            "raw" => AudioFormat.Raw,
+            "" or "flac" => max is > 0 and < 1000 ? AudioFormat.Mp3 : AudioFormat.Raw,
             "opus" or "ogg" or "oga" => AudioFormat.Opus,
             _ => AudioFormat.Mp3
         };
@@ -694,20 +746,32 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             Response.Headers.Vary = "Origin";
             if (response.Content.Headers.ContentLength is long length) Response.ContentLength = length;
             if (response.Content.Headers.ContentRange is { } contentRange) Response.Headers.ContentRange = contentRange.ToString();
-            if (download) Response.Headers.ContentDisposition = "attachment; filename=\"" + PathPart(track.Title).Replace("\"", "", StringComparison.Ordinal) + ".flac\"";
+            // Header values must be ASCII; filename* carries the real title for "Beyoncé" and friends.
+            if (download) Response.Headers.ContentDisposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
+            {
+                FileName = "\"" + new string(PathPart(track.Title).Select(c => c is >= ' ' and <= '~' and not ('"' or '\\') ? c : '_').ToArray()) + ".flac\"",
+                FileNameStar = PathPart(track.Title) + ".flac"
+            }.ToString();
             if (HttpMethods.IsHead(Request.Method)) return null;
             await using var input = await response.Content.ReadAsStreamAsync(Ct);
-            try { await CopyAsync(input, Response.Body, long.MaxValue, Ct); }
+            var fromStart = response.StatusCode == System.Net.HttpStatusCode.OK || response.Content.Headers.ContentRange is { From: 0 };
+            try { await CopyAsync(input, Response.Body, long.MaxValue, Ct, fromStart ? bytes => MusicGain.Remember(bytes, track.Id, recording.Id) : null); }
             catch (Exception ex) when (ex is IOException or OperationCanceledException && Ct.IsCancellationRequested) { }
             return null;
         }
-        await TranscodeAsync(upstream, format, kbps, recording.DurationMs);
+        if (UserTranscodes.AddOrUpdate(user.Id, 1, (_, n) => n + 1) > UserTranscodeLimit)
+        {
+            UserTranscodes.AddOrUpdate(user.Id, 0, (_, n) => n - 1);
+            throw new SubsonicError(0, "You are already converting two songs. Try again when one finishes.");
+        }
+        try { await TranscodeAsync(upstream, format, kbps, recording.DurationMs, [track.Id, recording.Id]); }
+        finally { UserTranscodes.AddOrUpdate(user.Id, 0, (_, n) => n - 1); }
         return null;
     }
 
     // FFmpeg reads the FLAC from a pipe that this method fills through SafeHttp, so FFmpeg never opens a
     // network connection of its own. Its output is a pipe as well.
-    private async Task TranscodeAsync(Uri upstream, AudioFormat format, int kbps, int? durationMs)
+    private async Task TranscodeAsync(Uri upstream, AudioFormat format, int kbps, int? durationMs, string[] ids)
     {
         var offset = Int("timeOffset", 0, 0, 24 * 3600);
         if (!await Transcodes.WaitAsync(TimeSpan.FromSeconds(10), Ct)) throw new SubsonicError(0, "The server is busy converting other songs. Try again shortly.");
@@ -726,18 +790,21 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                          ? new[] { "-c:a", "libopus", "-b:a", kbps + "k", "-f", "ogg", "pipe:1" }
                          : new[] { "-c:a", "libmp3lame", "-b:a", kbps + "k", "-f", "mp3", "pipe:1" })
                 start.ArgumentList.Add(arg);
-            using var process = Process.Start(start) ?? throw new SubsonicError(0, "FFmpeg could not be started.");
+            Process? started;
+            try { started = Process.Start(start); }
+            catch (System.ComponentModel.Win32Exception) { started = null; }
+            using var process = started ?? throw new SubsonicError(0, "FFmpeg could not be started.");
             using var abort = CancellationTokenSource.CreateLinkedTokenSource(Ct);
             Response.ContentType = format == AudioFormat.Opus ? "audio/ogg" : "audio/mpeg";
-            if (One("estimateContentLength") == "true" && durationMs is > 0)
-                Response.ContentLength = (long)Math.Max(0, (durationMs.Value / 1000.0 - offset) * kbps * 125);
+            long? promised = One("estimateContentLength") == "true" && durationMs is > 0 ? (long)Math.Max(0, (durationMs.Value / 1000.0 - offset) * kbps * 125) : null;
+            Response.ContentLength = promised;
             var errors = process.StandardError.ReadToEndAsync(abort.Token);
             var feed = Task.Run(async () =>
             {
                 try
                 {
                     await using var input = await response.Content.ReadAsStreamAsync(abort.Token);
-                    await CopyAsync(input, process.StandardInput.BaseStream, 2L * 1024 * 1024 * 1024, abort.Token);
+                    await CopyAsync(input, process.StandardInput.BaseStream, 2L * 1024 * 1024 * 1024, abort.Token, bytes => MusicGain.Remember(bytes, ids));
                 }
                 catch (Exception ex) when (ex is IOException or OperationCanceledException or HttpRequestException) { }
                 finally { try { process.StandardInput.Close(); } catch (IOException) { } }
@@ -746,10 +813,21 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             {
                 var buffer = new byte[32768];
                 int read;
+                long sent = 0;
                 while ((read = await process.StandardOutput.BaseStream.ReadAsync(buffer, abort.Token)) > 0)
                 {
                     if (!Plugin.Allows(user.Id) || !SubsonicAuth.Enabled) break;
+                    // An estimated length is a promise Kestrel enforces: the last few bytes past it are dropped.
+                    if (promised is long cap) read = (int)Math.Min(read, cap - sent);
+                    if (read <= 0) break;
                     await Response.Body.WriteAsync(buffer.AsMemory(0, read), abort.Token);
+                    sent += read;
+                }
+                // Short of the estimate: decoders skip zero bytes while looking for the next frame.
+                if (read == 0 && promised is long owed && sent > owed / 2)
+                {
+                    Array.Clear(buffer);
+                    for (; sent < owed; sent += buffer.Length) await Response.Body.WriteAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, owed - sent)), abort.Token);
                 }
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException) { }
@@ -764,6 +842,19 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         }
         finally { Transcodes.Release(); }
     }
+}
+
+public sealed class NoFormBindingAttribute : Attribute, Microsoft.AspNetCore.Mvc.Filters.IResourceFilter
+{
+    public void OnResourceExecuting(Microsoft.AspNetCore.Mvc.Filters.ResourceExecutingContext context)
+    {
+        var factories = context.ValueProviderFactories;
+        for (var i = factories.Count - 1; i >= 0; i--)
+            if (factories[i] is Microsoft.AspNetCore.Mvc.ModelBinding.FormValueProviderFactory or Microsoft.AspNetCore.Mvc.ModelBinding.FormFileValueProviderFactory
+                or Microsoft.AspNetCore.Mvc.ModelBinding.JQueryFormValueProviderFactory) factories.RemoveAt(i);
+    }
+
+    public void OnResourceExecuted(Microsoft.AspNetCore.Mvc.Filters.ResourceExecutedContext context) { }
 }
 
 // People open the Subsonic address in a browser to check it; a bare 404 reads as "broken".

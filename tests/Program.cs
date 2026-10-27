@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text;
 using System.Text.RegularExpressions;
 using StreamFin;
 
@@ -268,6 +269,19 @@ Check(plainLyrics.Metadata.IsSynced == false && plainLyrics.Lyrics.Select(l => l
     "lyrics: plain text keeps verse breaks, trims padding and drops markup");
 Check(MusicLyrics.Parse("""{"duration":200,"instrumental":true}""", song, "Album") is null && MusicLyrics.Parse("[]", song, "Album") is null
     && MusicLyrics.Parse("""{"duration":250,"plainLyrics":"x"}""", song, "Album") is null, "lyrics: instrumentals, empty results and other lengths give none");
+static byte[] Flac(params string[] tags)
+{
+    static byte[] Field(string text) => [.. BitConverter.GetBytes(Encoding.UTF8.GetByteCount(text)), .. Encoding.UTF8.GetBytes(text)];
+    byte[] comments = [.. Field("vendor"), .. BitConverter.GetBytes(tags.Length), .. tags.SelectMany(Field)];
+    return [.. "fLaC"u8, 0, 0, 0, 34, .. new byte[34], 0x84, (byte)(comments.Length >> 16), (byte)(comments.Length >> 8), (byte)comments.Length, .. comments];
+}
+var gain = MusicGain.Parse(Flac("TITLE=Song", "REPLAYGAIN_TRACK_GAIN=-5.83 dB", "replaygain_album_gain=-6.83", "REPLAYGAIN_TRACK_PEAK=0.979767", "REPLAYGAIN_ALBUM_PEAK=1.0"));
+Check(gain == new ReplayGain(-5.83, -6.83, 0.979767, 1.0), "ReplayGain tags are read from the FLAC Vorbis comment");
+var truncated = Flac("REPLAYGAIN_TRACK_GAIN=-5.83 dB");
+Check(MusicGain.Parse(Flac("TITLE=Song")) is null && MusicGain.Parse(truncated[..^4]) is null && MusicGain.Parse(Flac("REPLAYGAIN_TRACK_GAIN=999 dB")) is null
+    && MusicGain.Parse("ID3x"u8) is null, "ReplayGain: untagged, cut short, absurd values and non-FLAC give none");
+MusicGain.Remember(Flac("REPLAYGAIN_TRACK_GAIN=-2.5"), "155102871061270599", "155102871061270598");
+Check(MusicGain.For("155102871061270598")?.TrackGain == -2.5 && MusicGain.For("155102871061270597") is null, "ReplayGain is remembered for the clean and explicit ids");
 Check(SafeHttp.Allowed(new Uri("https://lrclib.net/api/get?track_name=x"), false) && !SafeHttp.Allowed(new Uri("https://lrclib.net.evil.example/api/get"), false), "lyrics host is a known site");
 Check(SubsonicAuth.Verify("sesame", "26719a1196d2a940705a59634eb18eab", "c19b2d", null) && SubsonicAuth.Verify("sesame", "26719A1196D2A940705A59634EB18EAB", "c19b2d", null)
     && !SubsonicAuth.Verify("sesame", "26719a1196d2a940705a59634eb18eab", "c19b2e", null) && !SubsonicAuth.Verify("sesame", "26719a1196d2a940705a59634eb18eab", "short", null),
@@ -279,7 +293,8 @@ Check(SubsonicController.ParseTrack("tr-155102851176075264-155102871061270528") 
     && SubsonicController.ParseId("al-155102851176075264", "al") == "155102851176075264" && SubsonicController.ParseId("al-../x", "al") is null
     && SubsonicController.ParseId("ar-155102851176075264", "al") is null && SubsonicController.ParsePlaylist("pl-" + Guid.Empty.ToString("N")) == Guid.Empty
     && SubsonicController.ParsePlaylist("pl-x") is null, "Subsonic IDs");
-Check(SubsonicController.Choose(null, null) == (SubsonicController.AudioFormat.Raw, 0) && SubsonicController.Choose("raw", "128") == (SubsonicController.AudioFormat.Mp3, 128)
+Check(SubsonicController.Choose(null, null) == (SubsonicController.AudioFormat.Raw, 0) && SubsonicController.Choose("raw", "128") == (SubsonicController.AudioFormat.Raw, 0)
+    && SubsonicController.Choose(null, "128") == (SubsonicController.AudioFormat.Mp3, 128)
     && SubsonicController.Choose("opus", null) == (SubsonicController.AudioFormat.Opus, 160) && SubsonicController.Choose("mp3", "9999") == (SubsonicController.AudioFormat.Mp3, 320)
     && SubsonicController.Choose("flac", "0") == (SubsonicController.AudioFormat.Raw, 0), "Subsonic keeps FLAC unless a lossy format or a low bit rate is asked for");
 var subsonicNode = SubsonicResponse.Root(true).One(new SubsonicNode("album").Set("id", "al-1").Set("songCount", 2).Set("year", null)

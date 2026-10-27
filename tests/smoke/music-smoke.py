@@ -96,3 +96,17 @@ assert status in (401, 403, 404), status
 recent = next(f for f in ok('/Items?ParentId=' + channel['Id'] + '&UserId=' + viewer['id'], viewer['token'])['Items'] if f['Name'] == 'Recently played')
 assert any(t['Name'] == 'One More Time' for t in ok('/Items?ParentId=' + recent['Id'] + '&UserId=' + viewer['id'], viewer['token'])['Items'])
 print('PASS: other user cannot stream, and the play appears in Recently played', flush=True)
+
+# History is per user: with access of their own, the other user still sees none of the viewer's plays,
+# not in their Recently played, not by opening the viewer's folder directly, and not through search.
+allowed = ok(config_path, admin)
+ok(config_path, admin, {**allowed, 'AllowedUserIds': [viewer['id'], other['id']], 'CacheRevision': allowed.get('CacheRevision', 0) + 1})
+try:
+    theirs = next(f for f in ok('/Items?ParentId=' + channel['Id'] + '&UserId=' + other['id'], other['token'])['Items'] if f['Name'] == 'Recently played')
+    for folder in {theirs['Id'], recent['Id']}:
+        assert not ok('/Items?ParentId=' + folder + '&UserId=' + other['id'], other['token'])['Items'], folder
+    found = ok('/Items?Recursive=true&SearchTerm=One%20More%20Time&IncludeItemTypes=Audio&UserId=' + other['id'], other['token'])['Items']
+    assert not any(i.get('ParentId') == recent['Id'] for i in found), found
+    print('PASS: Recently played is private to each user', flush=True)
+finally:
+    ok(config_path, admin, {**allowed, 'CacheRevision': allowed.get('CacheRevision', 0) + 2})

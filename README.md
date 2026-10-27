@@ -103,8 +103,14 @@ Subsonic or OpenSubsonic and enter:
 - **Username**: the Jellyfin username
 - **Password**: the app password from the settings, not the Jellyfin one
 
+Subsonic apps put their credentials in the address of every request, as Jellyfin's own
+apps do with their tokens, so they can show up in Jellyfin's log and in reverse proxy logs.
+Keep those logs private. If an app password may have leaked, press **New password** to
+revoke it.
+
 Songs stream as the FLAC itself. When an app asks for MP3 or Opus, say on mobile data,
-the server converts them on the fly. Stars, plays and playlists are kept per user. An
+the server converts them on the fly. Once a song has played, apps that level volume get
+its ReplayGain values from the file's own tags. Stars, plays and playlists are kept per user. An
 app's library view fills with what you have played and starred; search finds everything.
 
 ## How it works

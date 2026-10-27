@@ -24,6 +24,8 @@ public sealed class MusicLibraryStore
     public const int StarLimit = 5000;
     public const int PlaylistLimit = 200;
     public const int PlaylistEntryLimit = 2000;
+    // Across all of a user's playlists, so the file stays a few megabytes at most.
+    public const int PlaylistTotalLimit = 20_000;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> gates = new();
     private readonly ConcurrentDictionary<Guid, MusicLibrary> loaded = new();
     private readonly ConcurrentDictionary<Guid, long> versions = new();
@@ -55,8 +57,13 @@ public sealed class MusicLibraryStore
             library.StarredTracks = library.StarredTracks.DistinctBy(s => s.Track.Id).Take(StarLimit).ToList();
             library.StarredAlbums = library.StarredAlbums.DistinctBy(s => s.Release.Id).Take(StarLimit).ToList();
             library.StarredArtists = library.StarredArtists.DistinctBy(s => s.Artist.Id).Take(StarLimit).ToList();
-            library.Playlists = library.Playlists.DistinctBy(p => p.Id).Take(PlaylistLimit)
-                .Select(p => p with { Name = Bounded(p.Name), Comment = Bounded(p.Comment), Entries = p.Entries.Take(PlaylistEntryLimit).ToArray() }).ToList();
+            var room = PlaylistTotalLimit;
+            library.Playlists = library.Playlists.DistinctBy(p => p.Id).Take(PlaylistLimit).Select(p =>
+            {
+                var entries = p.Entries.Take(Math.Min(PlaylistEntryLimit, room)).ToArray();
+                room -= entries.Length;
+                return p with { Name = Bounded(p.Name), Comment = Bounded(p.Comment), Entries = entries };
+            }).ToList();
             if (File(user) is { } path)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);

@@ -18,6 +18,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["music"] = Targets.Music,
     ["lyrics"] = Targets.Lyrics,
     ["subsonic"] = Targets.Subsonic,
+    ["gain"] = Targets.Gain,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -299,6 +300,18 @@ static class Targets
     }
 
     private static readonly MusicTrack Song = new("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, true, 1, 1);
+
+    // FLAC is binary; Latin-1 maps each char back to one byte.
+    public static void Gain(string text)
+    {
+        Guard(() =>
+        {
+            if (MusicGain.Parse(Encoding.Latin1.GetBytes(text)) is not { } gain) return;
+            Expect(gain.TrackGain is not null || gain.AlbumGain is not null, "a gain result carries a gain");
+            Expect(new[] { gain.TrackGain, gain.AlbumGain }.All(g => g is null or >= -64 and <= 64)
+                && new[] { gain.TrackPeak, gain.AlbumPeak }.All(g => g is null or >= 0 and <= 16), "gains and peaks are in range");
+        });
+    }
 
     public static void Lyrics(string json)
     {
