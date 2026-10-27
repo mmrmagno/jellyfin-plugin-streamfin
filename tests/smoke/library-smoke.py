@@ -4,7 +4,6 @@
 # FLAC into a real music library. The save downloads one whole song from the catalog, so run this sparingly.
 # The server needs a writable folder at --music (a volume, for example `-v <dir>:/music`).
 import argparse
-import hashlib
 import json
 import pathlib
 import secrets
@@ -33,8 +32,8 @@ def jellyfin(path, token, data=None, method=None):
 
 
 def call(method, **params):
-    salt = secrets.token_hex(8)
-    auth = {'u': viewer_name, 't': hashlib.md5((password + salt).encode()).hexdigest(), 's': salt, 'v': '1.16.1', 'c': 'smoke', 'f': 'json'}
+    # OpenSubsonic API key: the app password itself, no MD5 token (subsonic-smoke.py covers token sign-in).
+    auth = {'apiKey': password, 'v': '1.16.1', 'c': 'smoke', 'f': 'json'}
     with urllib.request.urlopen(REST + method + '.view?' + urllib.parse.urlencode({**auth, **params}, doseq=True), timeout=120) as res:
         return json.loads(res.read())['subsonic-response']
 
@@ -54,7 +53,6 @@ def items(parent, token, user):
 
 admin = state['admin']
 viewer = state['users']['viewer']
-viewer_name = jellyfin('/Users/' + viewer['id'], admin)['Name']
 password = secrets.token_hex(12)
 config = jellyfin(config_path, admin)
 original = dict(config)
