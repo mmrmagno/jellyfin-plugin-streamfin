@@ -38,11 +38,13 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   an episode. Japanese audio with English subtitles only, never a dub.
 - **Movies & TV**: Popular movies, Popular TV and Trending, from TMDB. Movies play
   directly, shows open into seasons and episodes.
-- **Music**: lossless FLAC at CD quality (16 bit, 44.1 kHz) from
+- **Music**: lossless FLAC, CD quality (16 bit, 44.1 kHz) and on some albums 24 bit hi-res, from
   [Monochrome](https://github.com/monochrome-music/monochrome)'s catalog. I search for an
   artist, album or song. Albums open as real album pages with numbered tracks, artists
   open into their top tracks, albums and singles, and **Recently played** remembers what I
   listened to. The FLAC reaches the player as the catalog serves it, never transcoded.
+  Lyrics, synced where they exist, come from [LRCLIB](https://lrclib.net). When a song is
+  also published as a clean edit, the edit is hidden and the original plays.
 - **Search**: Jellyfin's normal search also looks in the online catalogs, so I can find a
   title I have never browsed. Found titles stay under each channel's Search results.
 - **Access**: only the users I tick in the settings see the channels. Adult titles are

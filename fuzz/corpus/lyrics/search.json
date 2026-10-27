@@ -1,0 +1,32 @@
+[
+ {
+  "id": 2,
+  "trackName": "Song (Live)",
+  "artistName": "Artist",
+  "albumName": "Live",
+  "duration": 260.0,
+  "instrumental": false,
+  "plainLyrics": "Other words",
+  "syncedLyrics": null
+ },
+ {
+  "id": 1,
+  "trackName": "Song",
+  "artistName": "Artist",
+  "albumName": "Album",
+  "duration": 200.0,
+  "instrumental": false,
+  "plainLyrics": "First line here\n\nSecond verse line\nThird line",
+  "syncedLyrics": "[ar:Artist]\n[00:01.50] First line here\n[00:04.00]\n[00:05.25][01:05.25] Second verse line\n[1:10.3] Third line"
+ },
+ {
+  "id": 3,
+  "trackName": "Song",
+  "artistName": "Artist",
+  "albumName": "Album",
+  "duration": 200.0,
+  "instrumental": true,
+  "plainLyrics": null,
+  "syncedLyrics": null
+ }
+]

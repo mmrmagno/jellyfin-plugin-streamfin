@@ -19,8 +19,10 @@
         <div class="fieldDescription">Make a free account on themoviedb.org, then go to Settings &gt; API. The short API key and the long read access token both work. The channel stays hidden until a key is set.</div></div>
       <h3>Music</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicEnabled"><span>Show the Music channel</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicExplicit"><span>Prefer explicit versions</span></label>
+      <div class="fieldDescription checkboxFieldDescription">When a song or album also exists as a clean edit, hide the edit and play the original.</div>
       <div class="inputContainer"><label class="inputLabel" for="musicApi">Music catalog address</label><input is="emby-input" type="url" id="musicApi" autocomplete="off" spellcheck="false" placeholder="https://tracks.monochrome.st">
-        <div class="fieldDescription">Leave empty for the default. Lossless FLAC at CD quality (16 bit, 44.1 kHz). Only a plain https address is accepted.</div></div>
+        <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
       <h3>Content filters</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult titles</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide ecchi titles</span></label>
@@ -56,6 +58,7 @@
             page.querySelector('#tmdbKey').value = config.TmdbApiKey || '';
             page.querySelector('#musicEnabled').checked = config.MusicEnabled !== false;
             page.querySelector('#musicApi').value = config.MusicApiUrl || '';
+            page.querySelector('#musicExplicit').checked = config.MusicPreferExplicit !== false;
             page.querySelector('#animeHeavenEnabled').checked = config.AnimeHeavenEnabled !== false;
             page.querySelector('#hideAdult').checked = config.HideAdultContent !== false;
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
@@ -92,6 +95,7 @@
             config.TmdbApiKey = page.querySelector('#tmdbKey').value.trim();
             config.MusicEnabled = page.querySelector('#musicEnabled').checked;
             config.MusicApiUrl = page.querySelector('#musicApi').value.trim();
+            config.MusicPreferExplicit = page.querySelector('#musicExplicit').checked;
             config.AnimeHeavenEnabled = page.querySelector('#animeHeavenEnabled').checked;
             config.HideAdultContent = page.querySelector('#hideAdult').checked;
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;

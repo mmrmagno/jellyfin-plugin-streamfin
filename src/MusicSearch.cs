@@ -39,6 +39,13 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(12));
             var results = await catalog.SearchAsync(query.SearchTerm, timeout.Token);
+            if (MusicCatalog.PreferExplicit)
+                results = results with
+                {
+                    Tracks = MusicCatalog.WithoutCleanCopies(results.Tracks),
+                    // Telling album copies apart costs a release lookup each, so only when albums are wanted.
+                    Releases = Wants(query, BaseItemKind.MusicAlbum) ? await catalog.WithoutCleanCopiesAsync(results.Releases, timeout.Token) : results.Releases
+                };
             await ChannelNavigation.Gate.WaitAsync(timeout.Token);
             try
             {

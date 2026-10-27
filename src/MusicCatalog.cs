@@ -14,7 +14,7 @@ public sealed record MusicArtistPage(string Id, string Name, string? Image, stri
 public sealed record MusicResults(IReadOnlyList<MusicTrack> Tracks, IReadOnlyList<MusicRelease> Releases, IReadOnlyList<MusicArtistPage> Artists);
 
 // Lossless catalog: Monochrome's tracks API. Search and release JSON, and GET /track/<id> answers
-// with the FLAC itself (16/44.1, byte ranges, immutable), so a stream needs no resolving step.
+// with the FLAC itself (16/44.1, some masters 24 bit; byte ranges, immutable), so a stream needs no resolving step.
 public sealed class MusicCatalog(SafeHttp http) : IDisposable
 {
     public const string DefaultApi = "https://tracks.monochrome.st/";
@@ -55,6 +55,45 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
     public async Task<MusicTrack> TrackAsync(string releaseId, string trackId, CancellationToken ct)
         => (await ReleaseAsync(releaseId, ct)).Tracks.FirstOrDefault(t => t.Id == ValidateId(trackId)) ?? throw new ProviderException("This track is unavailable.");
 
+    // Labels publish an edited copy next to the explicit one: same title, artists and length, its own ISRC.
+    // Only tracks carry the flag (every release says explicit: false), so albums are judged by their tracks.
+    public static bool PreferExplicit => Plugin.Instance?.Configuration.MusicPreferExplicit ?? true;
+    private static string Song(string title) => Regex.Replace(title.ToLowerInvariant(), @"\s*[(\[-]\s*(?:clean|edited|radio edit)(?: version)?\s*[)\]]?\s*\z", "",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)).Trim();
+    private static string Credits(IReadOnlyList<MusicArtistRef> artists) => string.Join(",", artists.Select(a => a.Id).Order(StringComparer.Ordinal));
+    public static bool SameSong(MusicTrack a, MusicTrack b) => a.Id != b.Id && a.Artists.Count > 0 && Song(a.Title) == Song(b.Title)
+        && Credits(a.Artists) == Credits(b.Artists) && a.DurationMs is int x && b.DurationMs is int y && Math.Abs(x - y) <= 2000;
+    // The same recording also turns up once per release it is on; its ISRC tells.
+    public static IReadOnlyList<MusicTrack> WithoutCleanCopies(IReadOnlyList<MusicTrack> tracks)
+        => tracks.Where(t => t.Explicit || !tracks.Any(e => e.Explicit && SameSong(e, t))).DistinctBy(t => t.Isrc ?? t.Id).ToArray();
+
+    // A clean track reached through a list that had no twin (top tracks, an edited album, history) plays the explicit recording.
+    public async Task<MusicTrack> ExplicitAsync(MusicTrack track, CancellationToken ct)
+    {
+        if (track.Explicit || track.Artists.Count == 0) return track;
+        try { return (await SearchAsync(track.Title + " " + track.Artists[0].Name, ct)).Tracks.FirstOrDefault(t => t.Explicit && SameSong(t, track)) ?? track; }
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException
+            or TaskCanceledException && !ct.IsCancellationRequested) { return track; }
+    }
+
+    // Same title, artists, type and length: load the copies (a few, cached) and drop the ones with no explicit track.
+    public async Task<IReadOnlyList<MusicRelease>> WithoutCleanCopiesAsync(IReadOnlyList<MusicRelease> releases, CancellationToken ct)
+    {
+        var clean = new HashSet<string>();
+        foreach (var group in releases.GroupBy(r => (Song(r.Title), Credits(r.Artists), r.Type, r.TrackCount)).Where(g => g.Count() > 1).Take(5))
+        {
+            var loaded = new List<(string Id, bool Explicit)>();
+            foreach (var release in group.Take(4))
+            {
+                try { loaded.Add((release.Id, (release.Tracks.Count > 0 ? release : await ReleaseAsync(release.Id, ct)).Tracks.Any(t => t.Explicit))); }
+                catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException
+                    or TaskCanceledException && !ct.IsCancellationRequested) { loaded.Clear(); break; }
+            }
+            if (loaded.Any(r => r.Explicit)) clean.UnionWith(loaded.Where(r => !r.Explicit).Select(r => r.Id));
+        }
+        return clean.Count == 0 ? releases : releases.Where(r => !clean.Contains(r.Id)).ToArray();
+    }
+
     private async Task<T> CachedAsync<T>(string key, TimeSpan lifetime, Func<Task<T>> load)
     {
         if (cache.TryGetValue<T>($"{Revision}/{key}", out var found)) return found!;
@@ -85,10 +124,12 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
     private static string? Id(JsonElement e, params string[] keys) => keys.Select(key => Text(e, key)).FirstOrDefault(IsId);
     private static IEnumerable<JsonElement> Array(JsonElement e, string key) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(key, out var value)
         && value.ValueKind == JsonValueKind.Array ? value.EnumerateArray() : [];
-    // Artwork is fetched by Jellyfin and by Subsonic clients, so it must stay on the catalog host.
+    // Artwork is fetched by Jellyfin and by Subsonic clients, so it must stay on the catalog host. The address
+    // is rebuilt from the checked parts: an empty "https://@host" passes as no user info but survives in AbsoluteUri.
     private static string? Artwork(JsonElement e, string key) => Text(e, key) is { } text && Uri.TryCreate(text, UriKind.Absolute, out var uri)
         && uri.Scheme == "https" && uri.IsDefaultPort && uri.UserInfo.Length == 0 && uri.IdnHost == ApiHost && uri.Query.Length == 0
-        && Regex.IsMatch(uri.AbsolutePath, @"\A/proxy/[A-Za-z0-9/_.-]{1,200}\.(?:jpg|png|webp)\z", RegexOptions.None, TimeSpan.FromSeconds(1)) ? uri.AbsoluteUri : null;
+        && Regex.IsMatch(uri.AbsolutePath, @"\A/proxy/[A-Za-z0-9/_.-]{1,200}\.(?:jpg|png|webp)\z", RegexOptions.None, TimeSpan.FromSeconds(1))
+        ? "https://" + ApiHost + uri.AbsolutePath : null;
 
     // Search hits carry artistIds/artistNames; releases and artist pages nest artist objects.
     private static IReadOnlyList<MusicArtistRef> Artists(JsonElement e)
@@ -101,11 +142,12 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
         return nested.Concat(flat).DistinctBy(a => a.Id).Take(20).ToArray();
     }
 
+    // Inside a release the release's own ID wins: a track is later looked up in the release its ID names.
     public static MusicTrack? ParseTrack(JsonElement e, string? releaseId = null)
     {
         if (Id(e, "trackId", "id") is not { } id || Text(e, "title") is not { } title) return null;
         if (e.TryGetProperty("playable", out var playable) && playable.ValueKind == JsonValueKind.False) return null;
-        if ((Id(e, "releaseId") ?? (IsId(releaseId) ? releaseId : null)) is not { } release) return null;
+        if ((IsId(releaseId) ? releaseId : Id(e, "releaseId")) is not { } release) return null;
         var isrc = Text(e, "isrc") is { } code && Regex.IsMatch(code, @"\A[A-Z0-9]{12}\z", RegexOptions.None, TimeSpan.FromSeconds(1)) ? code : null;
         return new MusicTrack(id, title, Artists(e), release, Artwork(e, "artwork"), Number(e, "duration"), isrc,
             e.TryGetProperty("explicit", out var explicitFlag) && explicitFlag.ValueKind == JsonValueKind.True,

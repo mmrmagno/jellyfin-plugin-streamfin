@@ -78,8 +78,8 @@ profile = {'MaxStreamingBitrate': 140000000, 'DirectPlayProfiles': [{'Container'
 info = ok('/Items/' + tracks[0]['Id'] + '/PlaybackInfo?UserId=' + viewer['id'], viewer['token'], {'DeviceProfile': profile, 'UserId': viewer['id']})
 source = info['MediaSources'][0]
 audio = [s for s in source['MediaStreams'] if s['Type'] == 'Audio']
-assert source['SupportsDirectPlay'] and source['Container'] == 'flac' and audio[0]['Codec'] == 'flac' and audio[0]['SampleRate'] == 44100, source
-print('PASS: playback offers direct play of 16/44.1 FLAC', flush=True)
+assert source['SupportsDirectPlay'] and source['Container'] == 'flac' and audio[0]['Codec'] == 'flac' and audio[0]['SampleRate'] >= 44100, source
+print('PASS: playback offers direct play of lossless FLAC', flush=True)
 
 stream = '/Audio/' + tracks[0]['Id'] + '/stream?static=true&mediaSourceId=' + source['Id']
 status, headers, body = request(stream, viewer['token'], headers={'Range': 'bytes=0-65535'}, raw=True)

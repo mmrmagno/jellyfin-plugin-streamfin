@@ -16,6 +16,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["text"] = Targets.Text,
     ["tmdb"] = Targets.Tmdb,
     ["music"] = Targets.Music,
+    ["lyrics"] = Targets.Lyrics,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -266,6 +267,9 @@ static class Targets
         {
             var results = MusicCatalog.ParseSearch(json);
             foreach (var track in results.Tracks) Track(track);
+            var kept = MusicCatalog.WithoutCleanCopies(results.Tracks);
+            Expect(kept.All(results.Tracks.Contains) && results.Tracks.Where(t => t.Explicit).All(t => kept.Any(k => (k.Isrc ?? k.Id) == (t.Isrc ?? t.Id))),
+                "only clean copies and repeats of a recording are dropped");
             foreach (var release in results.Releases) Release(release);
         });
         Guard(() => Release(MusicCatalog.ParseRelease(json)));
@@ -276,6 +280,23 @@ static class Targets
             Clean(artist.Bio, "music artist biography");
             foreach (var track in artist.TopTracks) Track(track);
             foreach (var release in artist.Releases) Release(release);
+        });
+    }
+
+    private static readonly MusicTrack Song = new("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, true, 1, 1);
+
+    public static void Lyrics(string json)
+    {
+        Guard(() =>
+        {
+            foreach (var duration in new int?[] { 200000, null })
+            {
+                if (MusicLyrics.Parse(json, Song with { DurationMs = duration }, "Album") is not { } lyrics) continue;
+                Expect(lyrics.Lyrics.Count is > 0 and <= 2000, "lyrics have a bounded number of lines");
+                Expect(lyrics.Lyrics.All(l => l.Text.Length <= 500 && !l.Text.Contains('<') && !l.Text.Contains('>')), "lyric lines are short plain text");
+                Expect(lyrics.Metadata.IsSynced == true ? lyrics.Lyrics.All(l => l.Start >= 0) && lyrics.Lyrics.Zip(lyrics.Lyrics.Skip(1)).All(p => p.First.Start <= p.Second.Start)
+                    : lyrics.Lyrics.All(l => l.Start is null), "synced lyrics are timed in order, plain lyrics are untimed");
+            }
         });
     }
 }

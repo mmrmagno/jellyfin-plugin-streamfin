@@ -21,6 +21,7 @@ public sealed class Configuration : BasePluginConfiguration
     public bool MusicEnabled { get; set; } = true;
     // Empty means MusicCatalog.DefaultApi.
     public string MusicApiUrl { get; set; } = "";
+    public bool MusicPreferExplicit { get; set; } = true;
     // Incrementing this invalidates Jellyfin's own channel cache as well as ours.
     public int CacheRevision { get; set; }
 }

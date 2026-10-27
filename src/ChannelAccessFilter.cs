@@ -8,6 +8,7 @@ using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Filters;
 using MediaBrowser.Model.Search;
 using MediaBrowser.Model.Entities;
@@ -16,7 +17,8 @@ namespace StreamFin;
 
 // IChannel.IsEnabledFor hides the channel, but cached descendants can also be requested
 // via Jellyfin's generic item/playback endpoints. Protect those routes and their results.
-public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationContext authorization, IChannelManager channels, ArtworkAccess artwork, ContentAccess content)
+public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationContext authorization, IChannelManager channels, ArtworkAccess artwork, ContentAccess content,
+    MusicLyrics lyrics)
     : IAsyncActionFilter, IAsyncResultFilter
 {
     private bool IsOurs(Guid id) => id != Guid.Empty && content.IsOurs(id);
@@ -28,6 +30,8 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
         // clients file under no heading. Search and detail pages need the album or artist type.
         if (dto.Type == BaseItemKind.ChannelFolderItem && IsOurs(dto.Id))
             dto.Type = library.GetItemById(dto.Id) switch { MusicAlbum => BaseItemKind.MusicAlbum, MusicArtist => BaseItemKind.MusicArtist, _ => dto.Type };
+        // Players only offer lyrics when this is set; the lyrics route below finds them on demand.
+        if (dto.Type == BaseItemKind.Audio && MusicChannel.IsAvailable && IsOurs(dto.Id)) dto.HasLyrics = true;
         if (dto.Type is not (BaseItemKind.Season or BaseItemKind.MusicAlbum or BaseItemKind.MusicArtist) || dto.ChildCount > 0 || !IsOurs(dto.Id)) return;
         dto.ChildCount = Math.Max(1, library.GetCount(new InternalItemsQuery { ParentId = dto.Id, Recursive = false }));
     }
@@ -64,6 +68,13 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
             var image = ArtworkAccess.IsImage(context.HttpContext);
             foreach (var id in ids.Where(IsOurs))
                 if (!await content.AllowsAsync(id, context.HttpContext.RequestAborted, cachedOnly: image)) { context.Result = new NotFoundResult(); return; }
+            if (context.ActionDescriptor is ControllerActionDescriptor { ControllerName: "Lyrics", ActionName: "GetLyrics" }
+                && context.ActionArguments.TryGetValue("itemId", out var lyricItem) && lyricItem is Guid lyricId && IsOurs(lyricId))
+            {
+                context.Result = library.GetItemById(lyricId) is Audio audio && await lyrics.ForItemAsync(audio, context.HttpContext.RequestAborted) is { } found
+                    ? new OkObjectResult(found) : new NotFoundResult();
+                return;
+            }
             // Native series/season screens use the Shows API instead of Channel/Items.
             // Populate those children lazily before Jellyfin answers the normal request.
             var path = context.HttpContext.Request.Path.Value ?? "";

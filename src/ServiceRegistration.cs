@@ -16,6 +16,7 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<TmdbCatalog>();
         services.AddSingleton<FlixSource>();
         services.AddSingleton<MusicCatalog>();
+        services.AddSingleton<MusicLyrics>();
         services.AddSingleton(_ => new MusicLibraryStore());
         services.AddSingleton<IAnimeSource, HiAnimeSource>();
         services.AddSingleton<IAnimeSource, AnimeGgSource>();

@@ -222,14 +222,16 @@ var musicSearch = MusicCatalog.ParseSearch("""
 Check(musicSearch.Tracks.Count == 2 && musicSearch.Tracks[0].Title == "One bMore/b Time" && musicSearch.Tracks[0].Artists.Single().Name == "Daft Punk"
     && musicSearch.Tracks[0].DurationMs == 320357 && musicSearch.Tracks[0].Isrc == "GBDUW0000053", "music search keeps playable tracks with flat artist lists");
 Check(musicSearch.Tracks[0].Artwork!.StartsWith("https://tracks.monochrome.st/proxy/", StringComparison.Ordinal) && musicSearch.Tracks[1].Artwork is null, "music artwork stays on the catalog host");
+Check(MusicCatalog.ParseRelease("""{"releaseId":"155102851176075264","title":"x","artwork":"https://@tracks.monochrome.st/proxy/mi/1.jpg"}""").Artwork == "https://tracks.monochrome.st/proxy/mi/1.jpg",
+    "music artwork address is rebuilt without an empty user info");
 Check(musicSearch.Releases.Single().Date == new DateTime(2001, 3, 12, 0, 0, 0, DateTimeKind.Utc) && musicSearch.Artists.Single().Image is not null, "music search releases and artists");
 var musicRelease = MusicCatalog.ParseRelease("""
 {"releaseId":"165730834890960896","title":"Box","releaseType":"compilation","artists":[{"artistId":"153542153123926016","name":"Daft Punk"}],
  "tracks":[{"trackId":"165741335931187202","title":"B1","discNumber":2,"trackNumber":1},{"trackId":"165741335931187201","title":"A2","discNumber":1,"trackNumber":2},
-  {"trackId":"165741335931187200","title":"A1","discNumber":1,"trackNumber":1},{"trackId":"165741335931187200","title":"Duplicate","discNumber":1,"trackNumber":1}]}
+  {"trackId":"165741335931187200","title":"A1","discNumber":1,"trackNumber":1,"releaseId":"155102851176075264"},{"trackId":"165741335931187200","title":"Duplicate","discNumber":1,"trackNumber":1}]}
 """);
 Check(musicRelease.Type == "COMPILATION" && musicRelease.Tracks.Select(t => t.Title).SequenceEqual(["A1", "A2", "B1"]) && musicRelease.Tracks.All(t => t.ReleaseId == "165730834890960896"),
-    "music release orders discs and tracks and inherits its ID");
+    "music release orders discs and tracks, and its ID overrides a track's own");
 var musicArtist = MusicCatalog.ParseArtist("""
 {"artistId":"153542153123926016","name":"Daft Punk","bio":"Duo","topTracks":[{"trackId":"287206674229092352","title":"Get Lucky","releaseId":"287206661029617664"}],
  "releases":[{"releaseId":"155102851176075264","title":"Discovery","releaseType":"ALBUM"}],"albums":[{"releaseId":"155102851176075264","title":"Discovery","releaseType":"ALBUM"}],
@@ -246,7 +248,28 @@ Check(MusicCatalog.StreamUri("155102871061270528").AbsoluteUri == "https://track
 Check(!SafeHttp.Allowed(new Uri("http://tracks.monochrome.st/track/155102871061270528"), true) && !SafeHttp.Allowed(new Uri("https://tracks.monochrome.st.evil.example/track/1"), true), "music host match is exact and https only");
 Check(MusicChannel.ParseTrackId("track/in-search/155102851176075264/155102871061270528") == ("155102851176075264", "155102871061270528")
     && MusicChannel.ParseTrackId("track/hit/155102851176075264/../x") is null && MusicChannel.ParseTrackId("album/search/155102851176075264") is null, "music track item IDs");
-var musicStoreRoot = Path.Combine(Path.GetTempPath(), "streamfin-music-" + Guid.NewGuid().ToString("N"));
+var explicitTrack = new MusicTrack("154008128176787456", "Not Like Us", [new("153540612384100352", "Kendrick Lamar")], "154007968545771520", null, 274192, "USUG12400910", true, 1, 1);
+var cleanTrack = explicitTrack with { Id = "154008124628406272", ReleaseId = "154007968143118336", Isrc = "USUG12408506", Explicit = false };
+var otherClean = cleanTrack with { Id = "154008124628406273", Title = "luther", DurationMs = 177598 };
+Check(MusicCatalog.WithoutCleanCopies([cleanTrack, explicitTrack, otherClean]).Select(t => t.Id).SequenceEqual([explicitTrack.Id, otherClean.Id]),
+    "clean copies give way to the explicit recording, clean-only songs stay");
+Check(MusicCatalog.WithoutCleanCopies([explicitTrack, explicitTrack with { Id = "154008128176787457", ReleaseId = "154007968545771521" }]).Count == 1, "a recording on two releases is listed once");
+Check(MusicCatalog.SameSong(explicitTrack, cleanTrack with { Title = "Not Like Us (Clean)", DurationMs = 275000 })
+    && !MusicCatalog.SameSong(explicitTrack, cleanTrack with { DurationMs = 280000 })
+    && !MusicCatalog.SameSong(explicitTrack, cleanTrack with { Artists = [new("153540612384100353", "Someone Else")] }), "explicit twins match on title, artists and length");
+var song = new MusicTrack("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, true, 1, 1);
+var syncedLyrics = MusicLyrics.Parse("""
+    [{"id": 2, "trackName": "Song (Live)", "artistName": "Artist", "albumName": "Live", "duration": 260.0, "instrumental": false, "plainLyrics": "Other words", "syncedLyrics": null}, {"id": 1, "trackName": "Song", "artistName": "Artist", "albumName": "Album", "duration": 200.0, "instrumental": false, "plainLyrics": "First line here\n\nSecond verse line\nThird line", "syncedLyrics": "[ar:Artist]\n[00:01.50] First line here\n[00:04.00]\n[00:05.25][01:05.25] Second verse line\n[1:10.3] Third line"}, {"id": 3, "trackName": "Song", "artistName": "Artist", "albumName": "Album", "duration": 200.0, "instrumental": true, "plainLyrics": null, "syncedLyrics": null}]
+    """, song, "Album")!;
+Check(syncedLyrics.Metadata.IsSynced == true && syncedLyrics.Lyrics.Select(l => (l.Text, l.Start)).SequenceEqual(new (string, long?)[] {
+        ("First line here", 15_000_000), ("", 40_000_000), ("Second verse line", 52_500_000), ("Second verse line", 652_500_000), ("Third line", 703_000_000) }), "lyrics: synced LRC with repeated stamps, tags skipped, a live cut of another length ignored");
+var plainLyrics = MusicLyrics.Parse("""{"duration":201,"plainLyrics":"\n<b>One</b>\n\nTwo\n\n","syncedLyrics":null}""", song, "Album")!;
+Check(plainLyrics.Metadata.IsSynced == false && plainLyrics.Lyrics.Select(l => l.Text).SequenceEqual(["bOne/b", "", "Two"]) && plainLyrics.Lyrics.All(l => l.Start is null),
+    "lyrics: plain text keeps verse breaks, trims padding and drops markup");
+Check(MusicLyrics.Parse("""{"duration":200,"instrumental":true}""", song, "Album") is null && MusicLyrics.Parse("[]", song, "Album") is null
+    && MusicLyrics.Parse("""{"duration":250,"plainLyrics":"x"}""", song, "Album") is null, "lyrics: instrumentals, empty results and other lengths give none");
+Check(SafeHttp.Allowed(new Uri("https://lrclib.net/api/get?track_name=x"), false) && !SafeHttp.Allowed(new Uri("https://lrclib.net.evil.example/api/get"), false), "lyrics host is a known site");
+var musicStoreRoot =Path.Combine(Path.GetTempPath(), "streamfin-music-" + Guid.NewGuid().ToString("N"));
 try
 {
     var listener = Guid.NewGuid();
