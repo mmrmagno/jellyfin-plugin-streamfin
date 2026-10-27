@@ -18,10 +18,12 @@ public static class MusicPaths
     // in bytes for any file system (a name of 80 four-byte characters would pass 255).
     public static string Part(string text)
     {
-        var s = Regex.Replace(text, @"[\\/:*?""<>|\x00-\x1f\x7f]", "_", RegexOptions.None, TimeSpan.FromSeconds(1)).Trim().TrimEnd('.').Trim();
-        if (s.Length > 80) s = s[..80].TrimEnd();
+        var s = Regex.Replace(text, @"[\\/:*?""<>|\x00-\x1f\x7f]", "_", RegexOptions.None, TimeSpan.FromSeconds(1)).Trim();
+        if (s.Length > 80) s = s[..80];
         while (Encoding.UTF8.GetByteCount(s) > 180) s = s[..^1];
         if (s.Length > 0 && char.IsHighSurrogate(s[^1])) s = s[..^1];
+        // Trimmed after shortening, which can leave a space or a dot at the end.
+        s = s.TrimEnd().TrimEnd('.').TrimEnd();
         return s is "" or "." or ".." ? "_" : s;
     }
 

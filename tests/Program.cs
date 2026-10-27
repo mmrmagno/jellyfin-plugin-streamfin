@@ -403,6 +403,8 @@ Check(MusicRadio.ParseLastFm("""{"similarartists":{"artist":[{"name":"Muse","mat
     .Select(a => a.Name).SequenceEqual(["Nirvana", "Muse"]), "Last.fm similar artists are ranked and bounded");
 foreach (var host in new[] { "musicbrainz.org", "labs.api.listenbrainz.org", "ws.audioscrobbler.com" }) SafeHttp.Validate(new Uri($"https://{host}/x"), false);
 Check(true, "radio services are known sites");
+Check(MusicPaths.Part(new string('a', 79) + " b") == new string('a', 79) && MusicPaths.Part(new string('\uFFFD', 59) + "a é") == new string('\uFFFD', 59) + "a"
+    && MusicPaths.Part(new string('a', 79) + ".b") == new string('a', 79), "a shortened path part never ends in a space or a dot");
 foreach (var (text, part) in new[] { (".. .", "_"), (". .", "_"), ("..", "_"), (".", "_"), ("  ", "_"), ("a/b\\c", "a_b_c"), ("../../etc", ".._.._etc"), ("Name.", "Name"), ("AC/DC", "AC_DC"), ("x\0y", "x_y") })
     Check(MusicPaths.Part(text) == part, "music path part " + text.Replace("\0", "NUL"));
 Check(MusicPaths.Part(new string('é', 200)).Length == 80 && System.Text.Encoding.UTF8.GetByteCount(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))) <= 180
