@@ -269,7 +269,32 @@ Check(plainLyrics.Metadata.IsSynced == false && plainLyrics.Lyrics.Select(l => l
 Check(MusicLyrics.Parse("""{"duration":200,"instrumental":true}""", song, "Album") is null && MusicLyrics.Parse("[]", song, "Album") is null
     && MusicLyrics.Parse("""{"duration":250,"plainLyrics":"x"}""", song, "Album") is null, "lyrics: instrumentals, empty results and other lengths give none");
 Check(SafeHttp.Allowed(new Uri("https://lrclib.net/api/get?track_name=x"), false) && !SafeHttp.Allowed(new Uri("https://lrclib.net.evil.example/api/get"), false), "lyrics host is a known site");
-var musicStoreRoot =Path.Combine(Path.GetTempPath(), "streamfin-music-" + Guid.NewGuid().ToString("N"));
+Check(SubsonicAuth.Verify("sesame", "26719a1196d2a940705a59634eb18eab", "c19b2d", null) && SubsonicAuth.Verify("sesame", "26719A1196D2A940705A59634EB18EAB", "c19b2d", null)
+    && !SubsonicAuth.Verify("sesame", "26719a1196d2a940705a59634eb18eab", "c19b2e", null) && !SubsonicAuth.Verify("sesame", "26719a1196d2a940705a59634eb18eab", "short", null),
+    "Subsonic token auth matches the documented vector and needs a real salt");
+Check(SubsonicAuth.Verify("sesame", null, null, "sesame") && SubsonicAuth.Verify("sesame", null, null, "enc:736573616d65") && !SubsonicAuth.Verify("sesame", null, null, "enc:zz")
+    && !SubsonicAuth.Verify("sesame", null, null, null), "Subsonic plain and hex passwords");
+Check(SubsonicController.ParseTrack("tr-155102851176075264-155102871061270528") == ("155102851176075264", "155102871061270528")
+    && SubsonicController.ParseTrack("tr-1-2") is null && SubsonicController.ParseTrack("tr-155102851176075264-155102871061270528-x") is null
+    && SubsonicController.ParseId("al-155102851176075264", "al") == "155102851176075264" && SubsonicController.ParseId("al-../x", "al") is null
+    && SubsonicController.ParseId("ar-155102851176075264", "al") is null && SubsonicController.ParsePlaylist("pl-" + Guid.Empty.ToString("N")) == Guid.Empty
+    && SubsonicController.ParsePlaylist("pl-x") is null, "Subsonic IDs");
+Check(SubsonicController.Choose(null, null) == (SubsonicController.AudioFormat.Raw, 0) && SubsonicController.Choose("raw", "128") == (SubsonicController.AudioFormat.Mp3, 128)
+    && SubsonicController.Choose("opus", null) == (SubsonicController.AudioFormat.Opus, 160) && SubsonicController.Choose("mp3", "9999") == (SubsonicController.AudioFormat.Mp3, 320)
+    && SubsonicController.Choose("flac", "0") == (SubsonicController.AudioFormat.Raw, 0), "Subsonic keeps FLAC unless a lossy format or a low bit rate is asked for");
+var subsonicNode = SubsonicResponse.Root(true).One(new SubsonicNode("album").Set("id", "al-1").Set("songCount", 2).Set("year", null)
+    .Add(new SubsonicNode("song").Set("title", "A <\"b\"> & c\u0001").Set("isrc", new[] { "GBDUW0000053" })).Add(new SubsonicNode("song").Set("title", "B")));
+var subsonicJson = JsonDocument.Parse(SubsonicResponse.Json(subsonicNode)).RootElement.GetProperty("subsonic-response");
+Check(subsonicJson.GetProperty("status").GetString() == "ok" && subsonicJson.GetProperty("openSubsonic").GetBoolean()
+    && subsonicJson.GetProperty("album").GetProperty("songCount").GetInt32() == 2 && !subsonicJson.GetProperty("album").TryGetProperty("year", out _)
+    && subsonicJson.GetProperty("album").GetProperty("song").GetArrayLength() == 2
+    && subsonicJson.GetProperty("album").GetProperty("song")[0].GetProperty("isrc")[0].GetString() == "GBDUW0000053", "Subsonic JSON: fields, arrays for repeated elements, nulls left out");
+var subsonicXml = System.Xml.Linq.XDocument.Parse(System.Text.Encoding.UTF8.GetString(SubsonicResponse.Xml(subsonicNode)));
+var subsonicNs = System.Xml.Linq.XNamespace.Get("http://subsonic.org/restapi");
+Check(subsonicXml.Root!.Name == subsonicNs + "subsonic-response" && subsonicXml.Root.Element(subsonicNs + "album")!.Elements(subsonicNs + "song").Count() == 2
+    && subsonicXml.Root.Element(subsonicNs + "album")!.Element(subsonicNs + "song")!.Attribute("title")!.Value == "A <\"b\"> & c",
+    "Subsonic XML: attributes escaped, control characters dropped");
+var musicStoreRoot = Path.Combine(Path.GetTempPath(), "streamfin-music-" + Guid.NewGuid().ToString("N"));
 try
 {
     var listener = Guid.NewGuid();

@@ -17,6 +17,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["tmdb"] = Targets.Tmdb,
     ["music"] = Targets.Music,
     ["lyrics"] = Targets.Lyrics,
+    ["subsonic"] = Targets.Subsonic,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -281,6 +282,20 @@ static class Targets
             foreach (var track in artist.TopTracks) Track(track);
             foreach (var release in artist.Releases) Release(release);
         });
+    }
+
+    // Catalog text ends up in Subsonic responses; whatever it holds, both encodings must stay well formed.
+    public static void Subsonic(string text)
+    {
+        var node = SubsonicResponse.Root(true).One(new SubsonicNode("album").Set("name", text).Set("isrc", new[] { text, "x" })
+            .Add(new SubsonicNode("song").Set("title", text)).Add(new SubsonicNode("line") { Text = text }));
+        var json = JsonDocument.Parse(SubsonicResponse.Json(node)).RootElement.GetProperty("subsonic-response").GetProperty("album");
+        // Empty values are left out of both encodings.
+        Expect(text.Length == 0 ? !json.TryGetProperty("name", out _) : json.GetProperty("name").GetString() == text, "Subsonic JSON keeps text exactly");
+        var xml = System.Xml.Linq.XDocument.Parse(Encoding.UTF8.GetString(SubsonicResponse.Xml(node)));
+        var name = xml.Root?.Elements().Single().Attribute("name")?.Value;
+        Expect((text.Length == 0 || name is not null) && !(name ?? "").Any(c => c < 0x20 && c is not ('\t' or '\n' or '\r')),
+            "Subsonic XML parses and carries no control characters");
     }
 
     private static readonly MusicTrack Song = new("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, true, 1, 1);

@@ -91,6 +91,22 @@ JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --c
 In the web app, found artists are under the Music channel's Search results rather than
 in the search page's Artists row, which only lists the local library.
 
+### Music apps (Subsonic)
+
+Music also speaks OpenSubsonic, so apps like Symfonium, Feishin, Tempo or play:Sub get
+gapless playback, queues, offline downloads and synced lyrics. Under **Subsonic apps** in
+the settings, turn on the API and press **New password** next to a user. In the app, pick
+Subsonic or OpenSubsonic and enter:
+
+- **Server**: your Jellyfin address followed by `/StreamFin`, for example
+  `https://your.jellyfin/StreamFin`
+- **Username**: the Jellyfin username
+- **Password**: the app password from the settings, not the Jellyfin one
+
+Songs stream as the FLAC itself. When an app asks for MP3 or Opus, say on mobile data,
+the server converts them on the fly. Stars, plays and playlists are kept per user. An
+app's library view fills with what you have played and starred; search finds everything.
+
 ## How it works
 
 The catalogs and the video are separate. AniList and TMDB give me titles, posters and

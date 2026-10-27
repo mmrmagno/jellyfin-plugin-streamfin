@@ -138,7 +138,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicLibraryStore store, 
         if (parts is ["top", var topId])
         {
             var artist = await catalog.ArtistAsync(topId, ct);
-            return Result(artist.TopTracks.Select((track, index) =>
+            return Result((await catalog.ExplicitTracksAsync(artist.TopTracks, ct)).Select((track, index) =>
             {
                 var item = Track(track, "top-" + artist.Id);
                 item.IndexNumber = index + 1;

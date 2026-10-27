@@ -42,7 +42,7 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
             if (MusicCatalog.PreferExplicit)
                 results = results with
                 {
-                    Tracks = MusicCatalog.WithoutCleanCopies(results.Tracks),
+                    Tracks = Wants(query, BaseItemKind.Audio) ? await catalog.ExplicitTracksAsync(results.Tracks, timeout.Token) : results.Tracks,
                     // Telling album copies apart costs a release lookup each, so only when albums are wanted.
                     Releases = Wants(query, BaseItemKind.MusicAlbum) ? await catalog.WithoutCleanCopiesAsync(results.Releases, timeout.Token) : results.Releases
                 };

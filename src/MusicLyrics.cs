@@ -22,8 +22,15 @@ public sealed class MusicLyrics(SafeHttp http, MusicCatalog catalog) : IDisposab
         try
         {
             var release = await catalog.ReleaseAsync(releaseId, ct);
-            return release.Tracks.FirstOrDefault(t => t.Id == trackId) is { } track ? await GetAsync(track, release.Title, ct) : null;
+            return release.Tracks.FirstOrDefault(t => t.Id == trackId) is { } track ? await TrackAsync(track, release.Title, ct) : null;
         }
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException
+            or TaskCanceledException && !ct.IsCancellationRequested) { return null; }
+    }
+
+    public async Task<LyricDto?> TrackAsync(MusicTrack track, string album, CancellationToken ct)
+    {
+        try { return await GetAsync(track, album, ct); }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException
             or TaskCanceledException && !ct.IsCancellationRequested) { return null; }
     }

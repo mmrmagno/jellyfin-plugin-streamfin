@@ -76,6 +76,21 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
             or TaskCanceledException && !ct.IsCancellationRequested) { return track; }
     }
 
+    // A list can hold a clean edit whose explicit twin it does not contain (a search that matched only the
+    // edit, an artist's top tracks). The first few are looked up, so lists show what will actually play.
+    public async Task<IReadOnlyList<MusicTrack>> ExplicitTracksAsync(IReadOnlyList<MusicTrack> tracks, CancellationToken ct, int lookups = 5)
+    {
+        if (!PreferExplicit) return tracks;
+        var kept = WithoutCleanCopies(tracks).ToArray();
+        for (var i = 0; i < kept.Length && lookups > 0; i++)
+        {
+            if (kept[i].Explicit || kept[i].Artists.Count == 0) continue;
+            lookups--;
+            kept[i] = await ExplicitAsync(kept[i], ct);
+        }
+        return kept.DistinctBy(t => t.Isrc ?? t.Id).ToArray();
+    }
+
     // Same title, artists, type and length: load the copies (a few, cached) and drop the ones with no explicit track.
     public async Task<IReadOnlyList<MusicRelease>> WithoutCleanCopiesAsync(IReadOnlyList<MusicRelease> releases, CancellationToken ct)
     {

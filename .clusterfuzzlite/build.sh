@@ -1,5 +1,5 @@
 #!/bin/bash -eu
-targets=(hls_media hls_master hls_text flix_player flix_pages anime_pages hianime_config text tmdb music lyrics)
+targets=(hls_media hls_master hls_text flix_player flix_pages anime_pages hianime_config text tmdb music lyrics subsonic)
 dotnet publish fuzz/StreamFin.Fuzz.csproj -c Release -r linux-x64 --self-contained \
   -p:JellyfinReferencePath=/opt/jellyfin -o "$OUT/streamfin-fuzz"
 DOTNET_ROLL_FORWARD=Major sharpfuzz "$OUT/streamfin-fuzz/Jellyfin.Plugin.StreamFin.dll"
