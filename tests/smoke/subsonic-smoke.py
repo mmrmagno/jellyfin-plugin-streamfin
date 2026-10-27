@@ -85,6 +85,8 @@ try:
     songs = call('search3', me, query='daft punk one more time', artistCount=0, albumCount=0)['searchResult3']['song']
     song = next(s for s in songs if s['title'] == 'One More Time')
     assert song['suffix'] == 'flac' and song['album'] and song['duration'] > 300 and song['id'].startswith('tr-'), song
+    # Amperfy lists only songs with a size.
+    assert song['size'] > song['duration'] * 50_000, song
     album = call('getAlbum', me, id=song['albumId'])['album']
     assert album['songCount'] == len(album['song']) and any(s['id'] == song['id'] for s in album['song'])
     assert len(call('getArtist', me, id=song['artistId'])['artist']['album']) > 3
@@ -101,9 +103,17 @@ try:
     assert -30 < gain['trackGain'] < 10 and 0 < gain['trackPeak'] <= 2, gain
     status, headers, body = call('stream', me, raw=True, id=song['id'], format='raw', maxBitRate='128', headers={'Range': 'bytes=0-3'})
     assert headers.get_content_type() == 'audio/flac' and body == b'fLaC', 'format=raw must not be converted'
+    status, headers, body = call('stream', me, raw=True, id=song['id'], format='mp3', headers={'Range': 'bytes=0-3'})
+    assert headers.get_content_type() == 'audio/flac' and body == b'fLaC', 'MP3 without a bit rate limit gets the lossless original'
     status, headers, body = call('stream', me, raw=True, limit=32768, id=song['id'], format='mp3', maxBitRate='128')
     assert headers.get_content_type() == 'audio/mpeg' and len(body) == 32768
-    print('PASS: stream is the catalog FLAC byte for byte and teaches the song its ReplayGain; mp3 is converted on request', flush=True)
+    # Apple's player needs ranges and a length, or iOS apps silently refuse a converted song.
+    status, headers, body = call('stream', me, raw=True, id=song['id'], format='mp3', maxBitRate='128', headers={'Range': 'bytes=0-1'})
+    total = int(headers['Content-Range'].rsplit('/', 1)[1])
+    assert status == 206 and body == b'\xff\xfb' and abs(total - song['duration'] * 128 * 125) < 128 * 125, (status, headers['Content-Range'])
+    status, headers, body = call('stream', me, raw=True, limit=16384, id=song['id'], format='mp3', maxBitRate='128', headers={'Range': f'bytes={total // 2}-'})
+    assert status == 206 and headers['Content-Range'] == f'bytes {total // 2}-{total - 1}/{total}' and b'\xff\xfb' in body[:2048]
+    print('PASS: stream is the catalog FLAC byte for byte and teaches the song its ReplayGain; mp3 is converted on request, with ranges for iOS', flush=True)
 
     lyrics = call('getLyricsBySongId', me, id=song['id'])['lyricsList']['structuredLyrics'][0]
     assert lyrics['synced'] and lyrics['line'] and 'start' in lyrics['line'][-1]
@@ -120,6 +130,11 @@ try:
         assert call('star', me, **{key: song[key]})['status'] == 'ok'
     starred = call('getStarred2', me)['starred2']
     assert starred['song'][0]['id'] == song['id'] and starred['album'] and starred['artist']
+    # Stars from an app show up in the Jellyfin Music channel too.
+    music = next(c for c in jellyfin('/Channels?UserId=' + viewer['id'], viewer['token'])['Items'] if c['Name'] == 'Music')
+    folder = next(f for f in jellyfin('/Items?ParentId=' + music['Id'] + '&UserId=' + viewer['id'], viewer['token'])['Items'] if f['Name'] == 'Starred')
+    names = [i['Name'] for i in jellyfin('/Items?ParentId=' + folder['Id'] + '&UserId=' + viewer['id'], viewer['token'])['Items']]
+    assert song['title'] in names and song['album'] in names, names
     assert call('scrobble', me, id=song['id'])['status'] == 'ok'
     assert any(a['id'] == song['albumId'] for a in call('getAlbumList2', me, type='recent')['albumList2']['album'])
     created = call('createPlaylist', me, name='Smoke', songId=[song['id'], song['id']])['playlist']
@@ -136,7 +151,7 @@ try:
         assert 'error' in json.loads(res.read())['subsonic-response']
     assert not any(p['name'] == 'Smoke too long' for p in call('getPlaylists', me)['playlists'].get('playlist', []))
     assert call('unstar', me, id=song['id'])['status'] == 'ok'
-    print('PASS: stars, scrobbles, recent albums and playlists, including a long one sent as a form', flush=True)
+    print('PASS: stars (also in the channel\'s Starred folder), scrobbles, recent albums and playlists, including a long one sent as a form', flush=True)
 
     # The other user has their own library, even with access.
     config['AllowedUserIds'] = [viewer['id'], other['id']]

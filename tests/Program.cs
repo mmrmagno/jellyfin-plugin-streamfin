@@ -280,6 +280,15 @@ Check(gain == new ReplayGain(-5.83, -6.83, 0.979767, 1.0), "ReplayGain tags are 
 var truncated = Flac("REPLAYGAIN_TRACK_GAIN=-5.83 dB");
 Check(MusicGain.Parse(Flac("TITLE=Song")) is null && MusicGain.Parse(truncated[..^4]) is null && MusicGain.Parse(Flac("REPLAYGAIN_TRACK_GAIN=999 dB")) is null
     && MusicGain.Parse("ID3x"u8) is null, "ReplayGain: untagged, cut short, absurd values and non-FLAC give none");
+Check(MusicCache.Key(new Uri("https://tracks.monochrome.st/track/155102871061270528")) == "155102871061270528"
+    && MusicCache.Key(new Uri("http://tracks.monochrome.st/track/155102871061270528")) is null
+    && MusicCache.Key(new Uri("https://evil.example/track/155102871061270528")) is null
+    && MusicCache.Key(new Uri("https://tracks.monochrome.st/track/../../etc/passwd")) is null
+    && MusicCache.Key(new Uri("https://tracks.monochrome.st/track/155102871061270528/x")) is null
+    && MusicCache.Key(new Uri("https://tracks.monochrome.st/releases/155102871061270528")) is null, "the song cache only keeps catalog tracks, named by a valid id");
+var tagged = Flac("REPLAYGAIN_TRACK_GAIN=-2.5");
+Check(MusicGain.AudioStart([.. tagged, 0xFF, 0xF8]) == tagged.Length && MusicGain.AudioStart(tagged[..^1]) is null && MusicGain.AudioStart("ID3x0000"u8) is null,
+    "FLAC audio starts after the last metadata block; cut short or not FLAC gives none");
 MusicGain.Remember(Flac("REPLAYGAIN_TRACK_GAIN=-2.5"), "155102871061270599", "155102871061270598");
 Check(MusicGain.For("155102871061270598")?.TrackGain == -2.5 && MusicGain.For("155102871061270597") is null, "ReplayGain is remembered for the clean and explicit ids");
 Check(SafeHttp.Allowed(new Uri("https://lrclib.net/api/get?track_name=x"), false) && !SafeHttp.Allowed(new Uri("https://lrclib.net.evil.example/api/get"), false), "lyrics host is a known site");
@@ -293,10 +302,17 @@ Check(SubsonicController.ParseTrack("tr-155102851176075264-155102871061270528") 
     && SubsonicController.ParseId("al-155102851176075264", "al") == "155102851176075264" && SubsonicController.ParseId("al-../x", "al") is null
     && SubsonicController.ParseId("ar-155102851176075264", "al") is null && SubsonicController.ParsePlaylist("pl-" + Guid.Empty.ToString("N")) == Guid.Empty
     && SubsonicController.ParsePlaylist("pl-x") is null, "Subsonic IDs");
+Check(SubsonicController.ParseRange("bytes=0-1", 1000) == (0, 1) && SubsonicController.ParseRange("bytes=500-", 1000) == (500, 999)
+    && SubsonicController.ParseRange("bytes=900-5000", 1000) == (900, 999) && SubsonicController.ParseRange("bytes=-100", 1000) == (900, 999)
+    && SubsonicController.ParseRange("bytes=0-1,5-9", 1000) is null && SubsonicController.ParseRange("items=0-1", 1000) is null
+    && SubsonicController.ParseRange("bytes=1000-", 1000) is (1000, 999), "converted MP3 ranges: open, clamped, suffix; lists and other units refused, past the end detectable");
 Check(SubsonicController.Choose(null, null) == (SubsonicController.AudioFormat.Raw, 0) && SubsonicController.Choose("raw", "128") == (SubsonicController.AudioFormat.Raw, 0)
     && SubsonicController.Choose(null, "128") == (SubsonicController.AudioFormat.Mp3, 128)
     && SubsonicController.Choose("opus", null) == (SubsonicController.AudioFormat.Opus, 160) && SubsonicController.Choose("mp3", "9999") == (SubsonicController.AudioFormat.Mp3, 320)
     && SubsonicController.Choose("flac", "0") == (SubsonicController.AudioFormat.Raw, 0), "Subsonic keeps FLAC unless a lossy format or a low bit rate is asked for");
+Check(SubsonicController.Choose("mp3", null, true) == (SubsonicController.AudioFormat.Raw, 0) && SubsonicController.Choose("opus", "1411", true) == (SubsonicController.AudioFormat.Raw, 0)
+    && SubsonicController.Choose("mp3", "320", true) == (SubsonicController.AudioFormat.Mp3, 320) && SubsonicController.Choose(null, "128", true) == (SubsonicController.AudioFormat.Mp3, 128),
+    "preferring lossless, MP3 without a real bit rate limit gets FLAC; a data saving limit still converts");
 var subsonicNode = SubsonicResponse.Root(true).One(new SubsonicNode("album").Set("id", "al-1").Set("songCount", 2).Set("year", null)
     .Add(new SubsonicNode("song").Set("title", "A <\"b\"> & c\u0001").Set("isrc", new[] { "GBDUW0000053" })).Add(new SubsonicNode("song").Set("title", "B")));
 var subsonicJson = JsonDocument.Parse(SubsonicResponse.Json(subsonicNode)).RootElement.GetProperty("subsonic-response");

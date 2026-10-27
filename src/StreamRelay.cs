@@ -19,7 +19,7 @@ namespace StreamFin;
 
 public sealed record Playback(string Id, string Url, string Secret, IReadOnlyList<string> Subtitles);
 
-public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMediaEncoder encoder)
+public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMediaEncoder encoder, MusicCache songs)
 {
     // Jellyfin forwards User-Agent to both FFprobe and FFmpeg; arbitrary headers are not forwarded by FFprobe.
     // FFmpeg's HLS reader repeats it on every playlist and segment request.
@@ -164,6 +164,12 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         // Keep the probed file. Jellyfin holds the stable loopback URL, so when the CDN link expires
         // (403/404/410) the episode is resolved again, once, and only another MP4 is accepted.
         var video = ticket.Video!;
+        if (video.Audio)
+        {
+            songs.Warm(video.Url);
+            context.Response.Headers.CacheControl = "no-store";
+            if (await songs.ServeAsync(context, video.Url, range, () => Plugin.Allows(ticket.UserId) && ticket.Live())) return;
+        }
         // Reviewed anime hosts keep their strict rules; film players live on rotating hosts.
         if (await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true, audio: video.Audio)) return;
         await ticket.Gate.WaitAsync(timeout.Token);

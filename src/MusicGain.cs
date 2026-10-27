@@ -23,6 +23,20 @@ public static class MusicGain
             Known.Set(id, gain, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(30) });
     }
 
+    // Where the audio frames begin, after the last metadata block; null when this is not FLAC or the blocks run on.
+    public static int? AudioStart(ReadOnlySpan<byte> flac)
+    {
+        if (flac.Length < 8 || !flac[..4].SequenceEqual("fLaC"u8)) return null;
+        var at = 4;
+        while (at + 4 <= flac.Length)
+        {
+            var header = flac[at];
+            at += 4 + ((flac[at + 1] << 16) | (flac[at + 2] << 8) | flac[at + 3]);
+            if ((header & 0x80) != 0) return at <= flac.Length ? at : null;
+        }
+        return null;
+    }
+
     public static ReplayGain? Parse(ReadOnlySpan<byte> flac)
     {
         if (flac.Length < 8 || !flac[..4].SequenceEqual("fLaC"u8)) return null;

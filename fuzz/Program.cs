@@ -306,7 +306,9 @@ static class Targets
     {
         Guard(() =>
         {
-            if (MusicGain.Parse(Encoding.Latin1.GetBytes(text)) is not { } gain) return;
+            var bytes = Encoding.Latin1.GetBytes(text);
+            Expect(MusicGain.AudioStart(bytes) is not int audio || audio >= 8 && audio <= bytes.Length, "audio starts inside the bytes read");
+            if (MusicGain.Parse(bytes) is not { } gain) return;
             Expect(gain.TrackGain is not null || gain.AlbumGain is not null, "a gain result carries a gain");
             Expect(new[] { gain.TrackGain, gain.AlbumGain }.All(g => g is null or >= -64 and <= 64)
                 && new[] { gain.TrackPeak, gain.AlbumPeak }.All(g => g is null or >= 0 and <= 16), "gains and peaks are in range");

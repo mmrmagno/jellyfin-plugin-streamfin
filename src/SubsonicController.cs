@@ -6,6 +6,7 @@ using MediaBrowser.Controller.MediaEncoding;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 namespace StreamFin;
@@ -16,13 +17,28 @@ namespace StreamFin;
 // catalog only describes tracks inside releases.
 [ApiController]
 [Route("StreamFin/rest")]
-public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http,
+public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http, MusicCache songs,
     IMediaEncoder encoder, ILogger<SubsonicController> logger) : ControllerBase
 {
     private const long FormLimit = 256 * 1024;
-    private static readonly SemaphoreSlim Transcodes = new(4, 4);
-    // So one user (or one slow client) cannot hold every slot.
-    private const int UserTranscodeLimit = 2;
+    // A song's FLAC header and size, kept from its first play so a later seek costs the catalog one request.
+    private sealed record FlacHead(byte[] Header, long Size);
+    private static readonly MemoryCache FlacHeads = new(new MemoryCacheOptions { SizeLimit = 16 * 1024 * 1024 });
+
+    // The first bytes of a song from its start: its ReplayGain, and the header a seek will need.
+    private static void KeepHead(Uri upstream, byte[] bytes, long? size, string[] ids)
+    {
+        MusicGain.Remember(bytes, ids);
+        if (size is > 0 && MusicGain.AudioStart(bytes) is int audio && audio < bytes.Length)
+            FlacHeads.Set(upstream.AbsoluteUri, new FlacHead(bytes[..audio], size.Value), new MemoryCacheEntryOptions
+            {
+                Size = audio, SlidingExpiration = TimeSpan.FromHours(6)
+            });
+    }
+    private static readonly SemaphoreSlim Transcodes = new(8, 8);
+    // So one user (or one slow client) cannot hold every slot. iOS players open several ranges of the song that
+    // is playing and preload the next one, so a single listener needs a few at once.
+    private const int UserTranscodeLimit = 4;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> UserTranscodes = new();
     private SubsonicUser user = null!;
     private Dictionary<string, string[]> parameters = [];
@@ -63,12 +79,22 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         {
             if (await DispatchAsync(name) is { } node) await SendAsync(node);
         }
-        catch (SubsonicError error) { await SendAsync(SubsonicResponse.Error(error.Code, error.Message)); }
+        catch (SubsonicError error) when (!Response.HasStarted)
+        {
+            // A stream may have set its status, length and range already; the error replaces all of that.
+            Response.Clear();
+            await SendAsync(SubsonicResponse.Error(error.Code, error.Message));
+        }
+        catch (SubsonicError error) { logger.LogWarning("StreamFin Subsonic {Method} stopped: {Message}", name, error.Message); }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException or UriFormatException
             or TaskCanceledException && !HttpContext.RequestAborted.IsCancellationRequested)
         {
             logger.LogWarning("StreamFin Subsonic {Method} failed ({ErrorType})", name, ex.GetType().Name);
-            if (!Response.HasStarted) await SendAsync(SubsonicResponse.Error(0, ex is ProviderException ? ex.Message : "The music catalog is temporarily unavailable."));
+            if (!Response.HasStarted)
+            {
+                Response.Clear();
+                await SendAsync(SubsonicResponse.Error(0, ex is ProviderException ? ex.Message : "The music catalog is temporarily unavailable."));
+            }
         }
         // The catalog dropping a song mid-transfer: the client sees a cut stream, nothing more can be said.
         catch (IOException ex) when (Response.HasStarted) { logger.LogWarning("StreamFin Subsonic {Method} stopped ({ErrorType})", name, ex.GetType().Name); }
@@ -197,6 +223,12 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             .Set("mediaType", "song").Set("isVideo", false).Set("displayArtist", Names(t.Artists))
             .Set("isrc", t.Isrc is null ? null : new[] { t.Isrc }).Set("explicitStatus", t.Explicit ? "explicit" : "clean")
             .Set("starred", stars.Tracks.TryGetValue(t.Id, out var at) ? at : null);
+        // Amperfy hides a song whose size is unknown, and the catalog JSON has none: the real one once the song
+        // has played here, otherwise an estimate from the length (lossless averages about 70% of CD rate).
+        var duration = t.DurationMs is > 0 ? t.DurationMs.Value / 1000.0 : 0;
+        var known = MusicCache.Size(t.Id) ?? (FlacHeads.TryGetValue<FlacHead>(MusicCatalog.StreamUri(t.Id).AbsoluteUri, out var head) ? head?.Size : null);
+        node.Set("size", known ?? (duration > 0 ? (long)(duration * 1411 * 125 * 0.7) : null))
+            .Set("bitRate", known is long bytes && duration > 0 ? (int)Math.Round(bytes * 8 / duration / 1000) : null);
         if (MusicGain.For(t.Id) is { } gain)
             node.One(new SubsonicNode("replayGain").Set("trackGain", gain.TrackGain).Set("albumGain", gain.AlbumGain)
                 .Set("trackPeak", gain.TrackPeak).Set("albumPeak", gain.AlbumPeak));
@@ -363,7 +395,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         var lookups = 0;
         foreach (var releaseId in tracks.Select(t => t.ReleaseId).Distinct().Where(r => !titles.ContainsKey(r)))
         {
-            if (lookups++ >= 8) break;
+            if (lookups++ >= 8 || !catalog.Spare && !catalog.HasRelease(releaseId)) break;
             try { titles[releaseId] = (await catalog.ReleaseAsync(releaseId, Ct)).Title; }
             catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException) { break; }
         }
@@ -672,9 +704,12 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         return null;
     }
 
-    // head, when given, receives the first bytes of the stream once (for MusicGain).
-    private async Task CopyAsync(Stream input, Stream output, long limit, CancellationToken ct, Action<byte[]>? head = null)
+    // head, when given, receives the first bytes of the stream once (for MusicGain). reopen, when given, picks
+    // the copy up again after the source drops: the catalog sometimes cuts a long download partway through.
+    private async Task CopyAsync(Stream input, Stream output, long limit, CancellationToken ct, Action<byte[]>? head = null,
+        Func<long, Task<Stream?>>? reopen = null)
     {
+        var resumes = 0;
         var buffer = new byte[65536];
         long total = 0;
         var start = head is null ? null : new MemoryStream();
@@ -684,7 +719,16 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             {
                 using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 idle.CancelAfter(TimeSpan.FromSeconds(45));
-                var read = await input.ReadAsync(buffer, idle.Token);
+                int read;
+                try { read = await input.ReadAsync(buffer, idle.Token); }
+                catch (Exception ex) when (ex is IOException or HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested
+                    && reopen is not null && resumes < 3)
+                {
+                    resumes++;
+                    logger.LogInformation("StreamFin Subsonic: the catalog dropped a song after {Bytes} bytes, resuming", total);
+                    input = await reopen(total) ?? throw new IOException("The catalog could not resume the song.", ex);
+                    continue;
+                }
                 start?.Write(buffer, 0, (int)Math.Min(read, MusicGain.HeadBytes - start.Length));
                 if (start is { Length: >= MusicGain.HeadBytes })
                 {
@@ -705,9 +749,12 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     public enum AudioFormat { Raw, Mp3, Opus }
 
     // FLAC goes out untouched unless the client asks for a lossy format or a bit rate a FLAC cannot meet.
-    public static (AudioFormat Format, int Kbps) Choose(string? format, string? maxBitRate)
+    // With preferLossless, a lossy format only counts when it comes with a real bit rate limit: apps such as
+    // Amperfy ask for MP3 by default, which costs quality and makes every seek a fresh conversion.
+    public static (AudioFormat Format, int Kbps) Choose(string? format, string? maxBitRate, bool preferLossless = false)
     {
         var max = int.TryParse(maxBitRate, NumberStyles.Integer, CultureInfo.InvariantCulture, out var m) && m > 0 ? m : 0;
+        if (preferLossless && max is 0 or >= 1000) return (AudioFormat.Raw, 0);
         var kind = (format ?? "").ToLowerInvariant() switch
         {
             "raw" => AudioFormat.Raw,
@@ -729,7 +776,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         // A clean edit reached from a list or a playlist plays the explicit recording when there is one.
         var recording = MusicCatalog.PreferExplicit ? await catalog.ExplicitAsync(track, Ct) : track;
         var upstream = MusicCatalog.StreamUri(recording.Id);
-        var (format, kbps) = download ? (AudioFormat.Raw, 0) : Choose(One("format"), One("maxBitRate"));
+        var (format, kbps) = download ? (AudioFormat.Raw, 0) : Choose(One("format"), One("maxBitRate"), Plugin.Instance?.Configuration.SubsonicPreferLossless != false);
         if (format == AudioFormat.Raw)
         {
             var range = Request.Headers.Range.ToString();
@@ -738,6 +785,15 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                 Response.StatusCode = 416;
                 return null;
             }
+            // Header values must be ASCII; filename* carries the real title for "Beyoncé" and friends.
+            if (download) Response.Headers.ContentDisposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
+            {
+                FileName = "\"" + new string(PathPart(track.Title).Select(c => c is >= ' ' and <= '~' and not ('"' or '\\') ? c : '_').ToArray()) + ".flac\"",
+                FileNameStar = PathPart(track.Title) + ".flac"
+            }.ToString();
+            Response.Headers.Vary = "Origin";
+            songs.Warm(upstream);
+            if (await songs.ServeAsync(HttpContext, upstream, range, () => Plugin.Allows(user.Id) && SubsonicAuth.Enabled)) return null;
             using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, Ct, range.Length == 0 ? null : range, head: HttpMethods.IsHead(Request.Method)), Ct);
             if ((int)response.StatusCode is not (200 or 206 or 416)) throw new SubsonicError(0, "The music catalog could not stream this song.");
             Response.StatusCode = (int)response.StatusCode;
@@ -746,23 +802,31 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             Response.Headers.Vary = "Origin";
             if (response.Content.Headers.ContentLength is long length) Response.ContentLength = length;
             if (response.Content.Headers.ContentRange is { } contentRange) Response.Headers.ContentRange = contentRange.ToString();
-            // Header values must be ASCII; filename* carries the real title for "Beyoncé" and friends.
-            if (download) Response.Headers.ContentDisposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
-            {
-                FileName = "\"" + new string(PathPart(track.Title).Select(c => c is >= ' ' and <= '~' and not ('"' or '\\') ? c : '_').ToArray()) + ".flac\"",
-                FileNameStar = PathPart(track.Title) + ".flac"
-            }.ToString();
             if (HttpMethods.IsHead(Request.Method)) return null;
             await using var input = await response.Content.ReadAsStreamAsync(Ct);
             var fromStart = response.StatusCode == System.Net.HttpStatusCode.OK || response.Content.Headers.ContentRange is { From: 0 };
-            try { await CopyAsync(input, Response.Body, long.MaxValue, Ct, fromStart ? bytes => MusicGain.Remember(bytes, track.Id, recording.Id) : null); }
+            var size = response.Content.Headers.ContentRange?.Length ?? (response.StatusCode == System.Net.HttpStatusCode.OK ? response.Content.Headers.ContentLength : null);
+            var firstByte = response.Content.Headers.ContentRange?.From ?? 0;
+            var lastByte = response.Content.Headers.ContentRange?.To ?? (size is long whole ? whole - 1 : (long?)null);
+            var resumed = new List<HttpResponseMessage>();
+            async Task<Stream?> Reopen(long done)
+            {
+                if (lastByte is null || firstByte + done > lastByte) return null;
+                var again = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, Ct, $"bytes={firstByte + done}-{lastByte}"), Ct);
+                resumed.Add(again);
+                return again.StatusCode == System.Net.HttpStatusCode.PartialContent ? await again.Content.ReadAsStreamAsync(Ct) : null;
+            }
+            try { await CopyAsync(input, Response.Body, long.MaxValue, Ct, fromStart ? bytes => KeepHead(upstream, bytes, size, [track.Id, recording.Id]) : null, Reopen); }
             catch (Exception ex) when (ex is IOException or OperationCanceledException && Ct.IsCancellationRequested) { }
+            finally { foreach (var again in resumed) again.Dispose(); }
             return null;
         }
-        if (UserTranscodes.AddOrUpdate(user.Id, 1, (_, n) => n + 1) > UserTranscodeLimit)
+        // A player that hangs up on one range usually opens the next at once, so wait a little for its slot.
+        for (var waited = 0; UserTranscodes.AddOrUpdate(user.Id, 1, (_, n) => n + 1) > UserTranscodeLimit; waited++)
         {
             UserTranscodes.AddOrUpdate(user.Id, 0, (_, n) => n - 1);
-            throw new SubsonicError(0, "You are already converting two songs. Try again when one finishes.");
+            if (waited >= 20) throw new SubsonicError(0, "Too many songs are being converted for you at once. Try again in a moment.");
+            await Task.Delay(500, Ct);
         }
         try { await TranscodeAsync(upstream, format, kbps, recording.DurationMs, [track.Id, recording.Id]); }
         finally { UserTranscodes.AddOrUpdate(user.Id, 0, (_, n) => n - 1); }
@@ -771,40 +835,133 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
 
     // FFmpeg reads the FLAC from a pipe that this method fills through SafeHttp, so FFmpeg never opens a
     // network connection of its own. Its output is a pipe as well.
+    // A single byte range against a file of the given size: (first, last), or null when the header is not one.
+    public static (long First, long Last)? ParseRange(string header, long size)
+    {
+        if (!System.Net.Http.Headers.RangeHeaderValue.TryParse(header, out var range) || range.Unit != "bytes" || range.Ranges.Count != 1) return null;
+        var (from, to) = (range.Ranges.First().From, range.Ranges.First().To);
+        if (from is null) return to is > 0 ? (Math.Max(0, size - to.Value), size - 1) : null;
+        return (from.Value, Math.Min(to ?? size - 1, size - 1));
+    }
+
+    // MP3 at a constant bit rate is exactly kbps * 125 bytes a second, so its size is known before it exists and
+    // a byte offset maps to a time. That lets it answer ranges, which Apple's player insists on: without them
+    // iOS apps such as Amperfy silently refuse to play a converted song.
     private async Task TranscodeAsync(Uri upstream, AudioFormat format, int kbps, int? durationMs, string[] ids)
     {
         var offset = Int("timeOffset", 0, 0, 24 * 3600);
+        songs.Warm(upstream);
+        long? size = format == AudioFormat.Mp3 && durationMs is > 0 && offset == 0 ? (long)(durationMs.Value / 1000.0 * kbps * 125) : null;
+        long first = 0;
+        long? promised = One("estimateContentLength") == "true" && durationMs is > 0 ? (long)Math.Max(0, (durationMs.Value / 1000.0 - offset) * kbps * 125) : null;
+        Response.ContentType = format == AudioFormat.Opus ? "audio/ogg" : "audio/mpeg";
+        if (size is long total)
+        {
+            Response.Headers.AcceptRanges = "bytes";
+            promised = total;
+            if (Request.Headers.Range.ToString() is { Length: > 0 } header)
+            {
+                if (ParseRange(header, total) is not var (from, to) || from >= total || to < from)
+                {
+                    Response.StatusCode = 416;
+                    Response.Headers.ContentRange = $"bytes */{total}";
+                    return;
+                }
+                (first, promised) = (from, to - from + 1);
+                Response.StatusCode = 206;
+                Response.Headers.ContentRange = $"bytes {from}-{to}/{total}";
+            }
+        }
+        Response.ContentLength = promised;
+        if (HttpMethods.IsHead(Request.Method)) return;
+        // Apple's player first asks for bytes 0-1. Every MP3 this makes starts with the same frame sync
+        // (MPEG-1 layer III, no CRC, no ID3 or Xing header), so the probe needs neither the catalog nor FFmpeg.
+        if (size is not null && first == 0 && promised is <= 2)
+        {
+            await Response.Body.WriteAsync(new byte[] { 0xFF, 0xFB }.AsMemory(0, (int)promised.Value), Ct);
+            return;
+        }
+        var seek = offset + first / (kbps * 125.0);
         if (!await Transcodes.WaitAsync(TimeSpan.FromSeconds(10), Ct)) throw new SubsonicError(0, "The server is busy converting other songs. Try again shortly.");
         try
         {
-            using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, Ct), Ct);
-            if (!response.IsSuccessStatusCode) throw new SubsonicError(0, "The music catalog could not stream this song.");
+            // A seek reads the FLAC header, then only the audio from a little before the wanted moment: FLAC frames
+            // stand alone and carry their own position, so FFmpeg picks up at the next frame. Reading from the
+            // start instead would fetch half of a 100 MB hi-res file to seek to its middle.
+            byte[]? header = null;
+            string? from = null;
+            // A song already on disk feeds FFmpeg from the file: no catalog request at all.
+            await using var local = songs.OpenComplete(upstream);
+            if (local is not null)
+            {
+                if (seek > 0 && durationMs is > 0)
+                {
+                    var bytes = new byte[MusicGain.HeadBytes];
+                    var have = await local.ReadAtLeastAsync(bytes, bytes.Length, throwOnEndOfStream: false, Ct);
+                    if (MusicGain.AudioStart(bytes.AsSpan(0, have)) is int audio && audio < have)
+                    {
+                        header = bytes[..audio];
+                        local.Position = audio + (long)((local.Length - audio) * Math.Max(0, seek - 10) / (durationMs.Value / 1000.0) * 0.9);
+                    }
+                    else local.Position = 0;
+                }
+            }
+            else if (seek > 0 && durationMs is > 0 && FlacHeads.TryGetValue<FlacHead>(upstream.AbsoluteUri, out var known) && known is not null)
+            {
+                header = known.Header;
+                from = $"bytes={header.Length + (long)((known.Size - header.Length) * Math.Max(0, seek - 10) / (durationMs.Value / 1000.0) * 0.9)}-";
+            }
+            else if (seek > 0 && durationMs is > 0)
+            {
+                using var head = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, Ct, "bytes=0-65535"), Ct);
+                if (head.StatusCode == System.Net.HttpStatusCode.PartialContent && head.Content.Headers.ContentRange?.Length is long flacSize)
+                {
+                    await using var headStream = await head.Content.ReadAsStreamAsync(Ct);
+                    var bytes = new byte[MusicGain.HeadBytes];
+                    var have = 0;
+                    for (int got; have < bytes.Length && (got = await headStream.ReadAsync(bytes.AsMemory(have), Ct)) > 0;) have += got;
+                    if (MusicGain.AudioStart(bytes.AsSpan(0, have)) is int audio && audio < have)
+                    {
+                        KeepHead(upstream, bytes[..have], flacSize, ids);
+                        header = bytes[..audio];
+                        // Bit rates vary along a song, so start early; the trim below finds the exact moment.
+                        var fraction = Math.Max(0, seek - 10) / (durationMs.Value / 1000.0) * 0.9;
+                        from = $"bytes={audio + (long)((flacSize - audio) * fraction)}-";
+                    }
+                }
+            }
+            using var response = local is not null ? null : await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, Ct, from), Ct);
+            if (response is { IsSuccessStatusCode: false }) throw new SubsonicError(0, "The music catalog could not stream this song.");
             var start = new ProcessStartInfo(encoder.EncoderPath)
             {
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true
             };
-            foreach (var arg in new[] { "-hide_banner", "-loglevel", "error", "-f", "flac" }) start.ArgumentList.Add(arg);
-            if (offset > 0) { start.ArgumentList.Add("-ss"); start.ArgumentList.Add(offset.ToString(CultureInfo.InvariantCulture)); }
-            foreach (var arg in new[] { "-i", "pipe:0", "-map", "0:a:0", "-map_metadata", "-1", "-vn" }) start.ArgumentList.Add(arg);
+            // -copyts keeps the song's own timestamps, so the trim cuts at the real moment wherever the bytes began.
+            foreach (var arg in new[] { "-hide_banner", "-loglevel", "error", "-copyts", "-f", "flac", "-i", "pipe:0", "-map", "0:a:0", "-map_metadata", "-1", "-vn" })
+                start.ArgumentList.Add(arg);
+            if (seek > 0) { start.ArgumentList.Add("-af"); start.ArgumentList.Add($"atrim=start={seek.ToString("0.###", CultureInfo.InvariantCulture)},asetpts=PTS-STARTPTS"); }
             foreach (var arg in format == AudioFormat.Opus
                          ? new[] { "-c:a", "libopus", "-b:a", kbps + "k", "-f", "ogg", "pipe:1" }
-                         : new[] { "-c:a", "libmp3lame", "-b:a", kbps + "k", "-f", "mp3", "pipe:1" })
+                         : new[] { "-c:a", "libmp3lame", "-b:a", kbps + "k", "-ar", "44100", "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1" })
                 start.ArgumentList.Add(arg);
             Process? started;
             try { started = Process.Start(start); }
             catch (System.ComponentModel.Win32Exception) { started = null; }
             using var process = started ?? throw new SubsonicError(0, "FFmpeg could not be started.");
             using var abort = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-            Response.ContentType = format == AudioFormat.Opus ? "audio/ogg" : "audio/mpeg";
-            long? promised = One("estimateContentLength") == "true" && durationMs is > 0 ? (long)Math.Max(0, (durationMs.Value / 1000.0 - offset) * kbps * 125) : null;
-            Response.ContentLength = promised;
             var errors = process.StandardError.ReadToEndAsync(abort.Token);
             var feed = Task.Run(async () =>
             {
                 try
                 {
-                    await using var input = await response.Content.ReadAsStreamAsync(abort.Token);
-                    await CopyAsync(input, process.StandardInput.BaseStream, 2L * 1024 * 1024 * 1024, abort.Token, bytes => MusicGain.Remember(bytes, ids));
+                    if (header is not null) await process.StandardInput.BaseStream.WriteAsync(header, abort.Token);
+                    if (response is null) await CopyAsync(local!, process.StandardInput.BaseStream, 2L * 1024 * 1024 * 1024, abort.Token);
+                    else
+                    {
+                        await using var input = await response.Content.ReadAsStreamAsync(abort.Token);
+                        var size = response.StatusCode == System.Net.HttpStatusCode.OK ? response.Content.Headers.ContentLength : null;
+                        await CopyAsync(input, process.StandardInput.BaseStream, 2L * 1024 * 1024 * 1024, abort.Token, header is null ? bytes => KeepHead(upstream, bytes, size, ids) : null);
+                    }
                 }
                 catch (Exception ex) when (ex is IOException or OperationCanceledException or HttpRequestException) { }
                 finally { try { process.StandardInput.Close(); } catch (IOException) { } }
@@ -823,8 +980,9 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                     await Response.Body.WriteAsync(buffer.AsMemory(0, read), abort.Token);
                     sent += read;
                 }
-                // Short of the estimate: decoders skip zero bytes while looking for the next frame.
-                if (read == 0 && promised is long owed && sent > owed / 2)
+                if (sent == 0 && !Response.HasStarted) throw new SubsonicError(0, "This song could not be converted.");
+                // Short of the promise: decoders skip zero bytes while looking for the next frame.
+                if (read == 0 && promised is long owed && (sent > owed / 2 || first > 0 && sent > 0))
                 {
                     Array.Clear(buffer);
                     for (; sent < owed; sent += buffer.Length) await Response.Body.WriteAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, owed - sent)), abort.Token);

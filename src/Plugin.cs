@@ -22,7 +22,10 @@ public sealed class Configuration : BasePluginConfiguration
     // Empty means MusicCatalog.DefaultApi.
     public string MusicApiUrl { get; set; } = "";
     public bool MusicPreferExplicit { get; set; } = true;
+    // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.
+    public int MusicCacheMb { get; set; } = 4096;
     public bool SubsonicEnabled { get; set; }
+    public bool SubsonicPreferLossless { get; set; } = true;
     public SubsonicPassword[] SubsonicPasswords { get; set; } = [];
     // Incrementing this invalidates Jellyfin's own channel cache as well as ours.
     public int CacheRevision { get; set; }

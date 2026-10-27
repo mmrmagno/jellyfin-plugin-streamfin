@@ -19,7 +19,9 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
 {
     public const string DefaultApi = "https://tracks.monochrome.st/";
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 4000 });
-    private readonly RateWindow budget = new(20, TimeSpan.FromSeconds(10));
+    private const int Budget = 20;
+    private readonly RateWindow budget = new(Budget, TimeSpan.FromSeconds(10));
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<object?>> loading = new();
     private int Revision => Plugin.Instance?.Configuration.CacheRevision ?? 0;
     private TimeSpan Lifetime => TimeSpan.FromMinutes(Math.Clamp(Plugin.Instance?.Configuration.MetadataCacheMinutes ?? 60, 1, 1440));
 
@@ -43,18 +45,22 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
         var text = query.Trim();
         if (text.Length is < 2 or > 100) return Task.FromResult(new MusicResults([], [], []));
         return CachedAsync("search/" + text.ToLowerInvariant(), TimeSpan.FromMinutes(30),
-            async () => ParseSearch(await QueryAsync("search?q=" + Uri.EscapeDataString(text), ct)));
+            async () => ParseSearch(await QueryAsync("search?q=" + Uri.EscapeDataString(text), ct)), ct);
     }
 
     public Task<MusicRelease> ReleaseAsync(string id, CancellationToken ct) => CachedAsync("release/" + ValidateId(id), Lifetime,
-        async () => ParseRelease(await QueryAsync("releases/" + id, ct)));
+        async () => ParseRelease(await QueryAsync("releases/" + id, ct)), ct);
 
     // Whether a lookup would be answered without asking the catalog.
     public bool HasRelease(string id) => IsId(id) && cache.TryGetValue($"{Revision}/release/{id}", out _);
     public bool HasArtist(string id) => IsId(id) && cache.TryGetValue($"{Revision}/artist/{id}", out _);
+    private bool HasSearch(string text) => cache.TryGetValue($"{Revision}/search/{text.Trim().ToLowerInvariant()}", out _);
+    // Extras (explicit twins in a list, album names on search hits) only spend the catalog budget while at
+    // least half of it is free. Apps that search as you type would otherwise starve opening an album or playing.
+    public bool Spare => budget.Free(DateTime.UtcNow) > Budget / 2;
 
     public Task<MusicArtistPage> ArtistAsync(string id, CancellationToken ct) => CachedAsync("artist/" + ValidateId(id), Lifetime,
-        async () => ParseArtist(await QueryAsync("artists/" + id, ct)));
+        async () => ParseArtist(await QueryAsync("artists/" + id, ct)), ct);
 
     public async Task<MusicTrack> TrackAsync(string releaseId, string trackId, CancellationToken ct)
         => (await ReleaseAsync(releaseId, ct)).Tracks.FirstOrDefault(t => t.Id == ValidateId(trackId)) ?? throw new ProviderException("This track is unavailable.");
@@ -89,6 +95,7 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
         for (var i = 0; i < kept.Length && lookups > 0; i++)
         {
             if (kept[i].Explicit || kept[i].Artists.Count == 0) continue;
+            if (!Spare && !HasSearch(kept[i].Title + " " + kept[i].Artists[0].Name)) break;
             lookups--;
             kept[i] = await ExplicitAsync(kept[i], ct);
         }
@@ -104,6 +111,7 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
             var loaded = new List<(string Id, bool Explicit)>();
             foreach (var release in group.Take(4))
             {
+                if (release.Tracks.Count == 0 && !HasRelease(release.Id) && !Spare) { loaded.Clear(); break; }
                 try { loaded.Add((release.Id, (release.Tracks.Count > 0 ? release : await ReleaseAsync(release.Id, ct)).Tracks.Any(t => t.Explicit))); }
                 catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException
                     or TaskCanceledException && !ct.IsCancellationRequested) { loaded.Clear(); break; }
@@ -113,12 +121,23 @@ public sealed class MusicCatalog(SafeHttp http) : IDisposable
         return clean.Count == 0 ? releases : releases.Where(r => !clean.Contains(r.Id)).ToArray();
     }
 
-    private async Task<T> CachedAsync<T>(string key, TimeSpan lifetime, Func<Task<T>> load)
+    private async Task<T> CachedAsync<T>(string key, TimeSpan lifetime, Func<Task<T>> load, CancellationToken ct)
     {
         if (cache.TryGetValue<T>($"{Revision}/{key}", out var found)) return found!;
         try
         {
-            var value = await load();
+            // Requests that arrive together for the same thing share one catalog call.
+            var slot = $"{Revision}/{key}";
+            var shared = loading.GetOrAdd(slot, name =>
+            {
+                var call = Task.Run(async () => (object?)await load());
+                _ = call.ContinueWith(done => loading.TryRemove(new KeyValuePair<string, Task<object?>>(name, done)), TaskScheduler.Default);
+                return call;
+            });
+            T value;
+            // The call runs on the first caller's token; if that caller gave up, the rest load for themselves.
+            try { value = (T)(await shared.WaitAsync(ct))!; }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { value = await load(); }
             cache.Set($"{Revision}/{key}", value, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = lifetime });
             cache.Set("stale/" + key, value, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(24) });
             return value;

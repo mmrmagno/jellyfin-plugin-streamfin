@@ -109,11 +109,19 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicLibraryStore store, 
         if (id.EndsWith("/status", StringComparison.Ordinal)) return Result([]);
         if (id.Length == 0) return Result([
             Folder("search", "Search results", "Use Jellyfin's search (magnifying glass) to find artists, albums and songs online. What you find appears here."),
+            Folder("starred", "Starred", "Albums and songs you star in a Subsonic app."),
             Folder("recent", "Recently played")]);
         if (id == "search")
         {
             var parent = library.GetNewItemId(MusicSearch.FolderKey, typeof(Folder));
             return Result(library.GetItemList(new InternalItemsQuery { ParentId = parent, Recursive = false }).Select(Restore).OfType<ChannelItemInfo>());
+        }
+        if (id == "starred")
+        {
+            if (user == Guid.Empty) return Result([]);
+            var starred = await store.ReadAsync(user, ct);
+            return Result(starred.StarredAlbums.OrderByDescending(a => a.At).Select(a => Album(a.Release, "starred"))
+                .Concat(starred.StarredTracks.OrderByDescending(t => t.At).Select(t => Track(t.Track, "starred"))));
         }
         if (id == "recent")
         {
