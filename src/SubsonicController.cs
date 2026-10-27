@@ -60,6 +60,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     public async Task Handle(string method)
     {
         var name = method.EndsWith(".view", StringComparison.Ordinal) ? method[..^5] : method;
+        // The method comes from the address; line breaks in it could fake extra log entries.
+        var logged = (name.Length > 40 ? name[..40] : name).Replace("\r", "", StringComparison.Ordinal).Replace("\n", "", StringComparison.Ordinal);
         parameters = Request.Query.ToDictionary(q => q.Key, q => q.Value.OfType<string>().ToArray(), StringComparer.Ordinal);
         if (!SubsonicAuth.Enabled) { await SendAsync(SubsonicResponse.Error(50, "The Subsonic API is turned off in the StreamFin settings.")); return; }
         if (Request.HasFormContentType)
@@ -85,11 +87,11 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             Response.Clear();
             await SendAsync(SubsonicResponse.Error(error.Code, error.Message));
         }
-        catch (SubsonicError error) { logger.LogWarning("StreamFin Subsonic {Method} stopped: {Message}", name, error.Message); }
+        catch (SubsonicError error) { logger.LogWarning("StreamFin Subsonic {Method} stopped: {Message}", logged, error.Message); }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException or UriFormatException
             or TaskCanceledException && !HttpContext.RequestAborted.IsCancellationRequested)
         {
-            logger.LogWarning("StreamFin Subsonic {Method} failed ({ErrorType})", name, ex.GetType().Name);
+            logger.LogWarning("StreamFin Subsonic {Method} failed ({ErrorType})", logged, ex.GetType().Name);
             if (!Response.HasStarted)
             {
                 Response.Clear();
@@ -97,7 +99,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             }
         }
         // The catalog dropping a song mid-transfer: the client sees a cut stream, nothing more can be said.
-        catch (IOException ex) when (Response.HasStarted) { logger.LogWarning("StreamFin Subsonic {Method} stopped ({ErrorType})", name, ex.GetType().Name); }
+        catch (IOException ex) when (Response.HasStarted) { logger.LogWarning("StreamFin Subsonic {Method} stopped ({ErrorType})", logged, ex.GetType().Name); }
     }
 
     private sealed class SubsonicError(int code, string message) : Exception(message) { public int Code { get; } = code; }
