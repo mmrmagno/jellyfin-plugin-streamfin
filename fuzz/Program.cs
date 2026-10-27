@@ -15,6 +15,10 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["hianime_config"] = Targets.HiAnimeConfig,
     ["text"] = Targets.Text,
     ["tmdb"] = Targets.Tmdb,
+    ["music"] = Targets.Music,
+    ["lyrics"] = Targets.Lyrics,
+    ["subsonic"] = Targets.Subsonic,
+    ["gain"] = Targets.Gain,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -238,6 +242,90 @@ static class Targets
                 Clean(film.Overview, "TMDB overview");
                 Expect(film.Title.Length > 0, "TMDB title is not empty");
                 Expect(film.Image is null || film.Image.StartsWith("https://image.tmdb.org/t/p/w500/", StringComparison.Ordinal), "TMDB poster stays on the TMDB image host");
+            }
+        });
+    }
+
+    private static void Track(MusicTrack track)
+    {
+        Clean(track.Title, "music title");
+        Expect(MusicCatalog.IsId(track.Id) && MusicCatalog.IsId(track.ReleaseId), "music track IDs are numeric");
+        Expect(track.Artists.All(a => MusicCatalog.IsId(a.Id) && !a.Name.Contains('<') && !a.Name.Contains('>')), "music artists are clean");
+        Expect(track.Artwork is null || track.Artwork.StartsWith("https://tracks.monochrome.st/proxy/", StringComparison.Ordinal), "music artwork stays on the catalog host");
+        Expect(MusicCatalog.StreamUri(track.Id).IdnHost == "tracks.monochrome.st", "music stream stays on the catalog host");
+    }
+
+    private static void Release(MusicRelease release)
+    {
+        Clean(release.Title, "music release title");
+        Expect(MusicCatalog.IsId(release.Id), "music release ID is numeric");
+        Expect(release.Tracks.All(t => t.ReleaseId == release.Id) || release.Tracks.Count == 0, "release tracks belong to the release");
+        foreach (var track in release.Tracks) Track(track);
+    }
+
+    public static void Music(string json)
+    {
+        Guard(() =>
+        {
+            var results = MusicCatalog.ParseSearch(json);
+            foreach (var track in results.Tracks) Track(track);
+            var kept = MusicCatalog.WithoutCleanCopies(results.Tracks);
+            Expect(kept.All(results.Tracks.Contains) && results.Tracks.Where(t => t.Explicit).All(t => kept.Any(k => (k.Isrc ?? k.Id) == (t.Isrc ?? t.Id))),
+                "only clean copies and repeats of a recording are dropped");
+            foreach (var release in results.Releases) Release(release);
+        });
+        Guard(() => Release(MusicCatalog.ParseRelease(json)));
+        Guard(() =>
+        {
+            var artist = MusicCatalog.ParseArtist(json);
+            Clean(artist.Name, "music artist name");
+            Clean(artist.Bio, "music artist biography");
+            foreach (var track in artist.TopTracks) Track(track);
+            foreach (var release in artist.Releases) Release(release);
+        });
+    }
+
+    // Catalog text ends up in Subsonic responses; whatever it holds, both encodings must stay well formed.
+    public static void Subsonic(string text)
+    {
+        var node = SubsonicResponse.Root(true).One(new SubsonicNode("album").Set("name", text).Set("isrc", new[] { text, "x" })
+            .Add(new SubsonicNode("song").Set("title", text)).Add(new SubsonicNode("line") { Text = text }));
+        var json = JsonDocument.Parse(SubsonicResponse.Json(node)).RootElement.GetProperty("subsonic-response").GetProperty("album");
+        // Empty values are left out of both encodings.
+        Expect(text.Length == 0 ? !json.TryGetProperty("name", out _) : json.GetProperty("name").GetString() == text, "Subsonic JSON keeps text exactly");
+        var xml = System.Xml.Linq.XDocument.Parse(Encoding.UTF8.GetString(SubsonicResponse.Xml(node)));
+        var name = xml.Root?.Elements().Single().Attribute("name")?.Value;
+        Expect((text.Length == 0 || name is not null) && !(name ?? "").Any(c => c < 0x20 && c is not ('\t' or '\n' or '\r')),
+            "Subsonic XML parses and carries no control characters");
+    }
+
+    private static readonly MusicTrack Song = new("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, true, 1, 1);
+
+    // FLAC is binary; Latin-1 maps each char back to one byte.
+    public static void Gain(string text)
+    {
+        Guard(() =>
+        {
+            var bytes = Encoding.Latin1.GetBytes(text);
+            Expect(MusicGain.AudioStart(bytes) is not int audio || audio >= 8 && audio <= bytes.Length, "audio starts inside the bytes read");
+            if (MusicGain.Parse(bytes) is not { } gain) return;
+            Expect(gain.TrackGain is not null || gain.AlbumGain is not null, "a gain result carries a gain");
+            Expect(new[] { gain.TrackGain, gain.AlbumGain }.All(g => g is null or >= -64 and <= 64)
+                && new[] { gain.TrackPeak, gain.AlbumPeak }.All(g => g is null or >= 0 and <= 16), "gains and peaks are in range");
+        });
+    }
+
+    public static void Lyrics(string json)
+    {
+        Guard(() =>
+        {
+            foreach (var duration in new int?[] { 200000, null })
+            {
+                if (MusicLyrics.Parse(json, Song with { DurationMs = duration }, "Album") is not { } lyrics) continue;
+                Expect(lyrics.Lyrics.Count is > 0 and <= 2000, "lyrics have a bounded number of lines");
+                Expect(lyrics.Lyrics.All(l => l.Text.Length <= 500 && !l.Text.Contains('<') && !l.Text.Contains('>')), "lyric lines are short plain text");
+                Expect(lyrics.Metadata.IsSynced == true ? lyrics.Lyrics.All(l => l.Start >= 0) && lyrics.Lyrics.Zip(lyrics.Lyrics.Skip(1)).All(p => p.First.Start <= p.Second.Start)
+                    : lyrics.Lyrics.All(l => l.Start is null), "synced lyrics are timed in order, plain lyrics are untimed");
             }
         });
     }

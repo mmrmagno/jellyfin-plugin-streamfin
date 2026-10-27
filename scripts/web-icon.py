@@ -8,8 +8,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 assets = pathlib.Path(__file__).resolve().parents[1] / 'src' / 'Assets'
-icons = {'Anime': assets / 'shuriken.svg', 'Movies & TV': assets / 'popcorn.svg'}
-channels = {'Anime': '18907d884630f40589cbfa4e8ebe228b', 'Movies & TV': '72298e672549e7f9b77425f096e48590'}
+icons = {'Anime': assets / 'shuriken.svg', 'Movies & TV': assets / 'popcorn.svg', 'Music': assets / 'music.svg'}
+channels = {'Anime': '18907d884630f40589cbfa4e8ebe228b', 'Movies & TV': '72298e672549e7f9b77425f096e48590', 'Music': 'ce63d2796012584383d21a52e86376c2'}
 parser = argparse.ArgumentParser(description='Show the channel icon in the Jellyfin web sidebar. Reads an API key from JELLYFIN_TOKEN.')
 parser.add_argument('--url', required=True)
 parser.add_argument('--channel', default='Anime', choices=list(icons))

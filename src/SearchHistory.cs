@@ -15,12 +15,13 @@ public sealed class SearchHistory(ILibraryManager library)
     public const string HiddenTag = "AniFin:ClearedSearchResult";
     private long generation;
     public long Generation => Interlocked.Read(ref generation);
-    public static bool IsSearchResult(BaseItem? item) => item is Series or MediaBrowser.Controller.Entities.Movies.Movie
-        && item.ExternalId is { } id && (id.StartsWith("title/search/", StringComparison.Ordinal)
-            || id.StartsWith("tv/search/", StringComparison.Ordinal) || id.StartsWith("movie/search/", StringComparison.Ordinal));
+    public static bool IsSearchResult(BaseItem? item) => item?.ExternalId is { } id && (item is Series or MediaBrowser.Controller.Entities.Movies.Movie
+        && (id.StartsWith("title/search/", StringComparison.Ordinal) || id.StartsWith("tv/search/", StringComparison.Ordinal) || id.StartsWith("movie/search/", StringComparison.Ordinal))
+        || item is MediaBrowser.Controller.Entities.Audio.MusicArtist or MediaBrowser.Controller.Entities.Audio.MusicAlbum or MediaBrowser.Controller.Entities.Audio.Audio
+        && (id.StartsWith("artist/", StringComparison.Ordinal) || id.StartsWith("album/search/", StringComparison.Ordinal) || id.StartsWith("track/hit/", StringComparison.Ordinal)));
     public static bool IsHidden(BaseItem? item) => IsSearchResult(item) && item!.Tags.Contains(HiddenTag, StringComparer.Ordinal);
     public static Guid[] Folders(ILibraryManager library) =>
-        [library.GetNewItemId("searchAnime16", typeof(Folder)), library.GetNewItemId(FilmSearch.FolderKey, typeof(Folder))];
+        [library.GetNewItemId("searchAnime16", typeof(Folder)), library.GetNewItemId(FilmSearch.FolderKey, typeof(Folder)), library.GetNewItemId(MusicSearch.FolderKey, typeof(Folder))];
 
     public async Task<int> ClearAsync(CancellationToken ct)
     {
@@ -29,7 +30,7 @@ public sealed class SearchHistory(ILibraryManager library)
         {
             // Searches already in flight must not refill the list after this clear.
             Interlocked.Increment(ref generation);
-            var channels = new[] { library.GetNewItemId("Channel Anime", typeof(Channel)), library.GetNewItemId("Channel " + FilmChannel.ChannelName, typeof(Channel)) };
+            var channels = new[] { "Channel Anime", "Channel " + FilmChannel.ChannelName, "Channel " + MusicChannel.ChannelName }.Select(key => library.GetNewItemId(key, typeof(Channel))).ToArray();
             var items = Folders(library).SelectMany(parentId => library.GetItemList(new InternalItemsQuery
             {
                 ParentId = parentId, Recursive = false, GroupByPresentationUniqueKey = false

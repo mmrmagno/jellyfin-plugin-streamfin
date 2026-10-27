@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Jellyfin.Plugin.StreamFin</AssemblyName>
     <RootNamespace>StreamFin</RootNamespace>
-    <Version>0.5.5.0</Version>
+    <Version>0.6.0.0</Version>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <JellyfinReferencePath Condition="'$(JellyfinReferencePath)' == ''">../.jellyfin</JellyfinReferencePath>
   </PropertyGroup>
@@ -15,5 +15,6 @@
     <EmbeddedResource Include="Configuration.html" />
     <EmbeddedResource Include="Assets/anime.png" />
     <EmbeddedResource Include="Assets/popcorn.png" />
+    <EmbeddedResource Include="Assets/music.png" />
   </ItemGroup>
 </Project>

@@ -18,6 +18,15 @@ public sealed class Configuration : BasePluginConfiguration
     public int MetadataCacheMinutes { get; set; } = 60;
     public bool FilmEnabled { get; set; } = true;
     public string TmdbApiKey { get; set; } = "";
+    public bool MusicEnabled { get; set; } = true;
+    // Empty means MusicCatalog.DefaultApi.
+    public string MusicApiUrl { get; set; } = "";
+    public bool MusicPreferExplicit { get; set; } = true;
+    // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.
+    public int MusicCacheMb { get; set; } = 4096;
+    public bool SubsonicEnabled { get; set; }
+    public bool SubsonicPreferLossless { get; set; } = true;
+    public SubsonicPassword[] SubsonicPasswords { get; set; } = [];
     // Incrementing this invalidates Jellyfin's own channel cache as well as ours.
     public int CacheRevision { get; set; }
 }
@@ -29,7 +38,7 @@ public sealed class Plugin : BasePlugin<Configuration>, IHasWebPages
     public Plugin(IApplicationPaths paths, IXmlSerializer serializer) : base(paths, serializer) => Instance = this;
     public override Guid Id => PluginId;
     public override string Name => "StreamFin";
-    public override string Description => "Anime, movies and TV from online sources, as Jellyfin channels.";
+    public override string Description => "Anime, movies, TV and lossless music from online sources, as Jellyfin channels.";
     public IEnumerable<PluginPageInfo> GetPages() => [new() { Name = "streamfin", EmbeddedResourcePath = "StreamFin.Configuration.html" }];
     public static bool Allows(Guid id) => id != Guid.Empty && Instance?.Configuration is { Enabled: true } c
         && c.AllowedUserIds.Any(value => Guid.TryParse(value, out var allowed) && allowed == id);

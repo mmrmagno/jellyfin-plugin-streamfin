@@ -187,6 +187,15 @@ public sealed class RateWindow(int limit, TimeSpan window)
             return start - now;
         }
     }
+    // Slots still free in the current window, for work that is nice to have but must not crowd out the rest.
+    public int Free(DateTime now)
+    {
+        lock (slots)
+        {
+            if (blockedUntil > now) return 0;
+            return limit - slots.Count(slot => slot > now - window);
+        }
+    }
     public void Exhaust(DateTime now, TimeSpan duration)
     {
         lock (slots) { if (now + duration > blockedUntil) blockedUntil = now + duration; }

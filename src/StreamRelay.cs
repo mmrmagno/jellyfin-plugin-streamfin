@@ -13,18 +13,23 @@ using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace StreamFin;
 
 public sealed record Playback(string Id, string Url, string Secret, IReadOnlyList<string> Subtitles);
 
-public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMediaEncoder encoder)
+public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMediaEncoder encoder, MusicCache songs)
 {
     // Jellyfin forwards User-Agent to both FFprobe and FFmpeg; arbitrary headers are not forwarded by FFprobe.
     // FFmpeg's HLS reader repeats it on every playlist and segment request.
     public const string Header = "User-Agent";
     private readonly string secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     private readonly ConcurrentDictionary<string, Ticket> tickets = new();
+    // A track's FLAC never changes, and the catalog throttles bursts, so each one is probed once.
+    // Kept as JSON so every playback gets its own copy of the streams to adjust.
+    private readonly MemoryCache audioProbes = new(new MemoryCacheOptions { SizeLimit = 5000 });
+    private sealed record AudioProbe(string Streams, long? RunTimeTicks, int? Bitrate, long? Size, string? Container);
 
     // Live is rechecked on every request and between chunks, so revoking a user, a source,
     // or a content filter stops playback that is already running.
@@ -72,12 +77,17 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
 
     private async Task<MediaSourceInfo> ProbeAsync(Playback playback, ResolvedVideo resolved, string name, CancellationToken ct)
     {
+        // Audio is direct played so the FLAC reaches the client untouched: with a required header, clients
+        // ask Jellyfin's static stream, which fetches the loopback URL itself and forwards User-Agent and Range.
+        // Jellyfin 12 disables direct stream for every HTTP source, and a transcode follows the client's
+        // profile, which is often lossy.
         var media = new MediaSourceInfo
         {
-            Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Hls ? "hls" : "mp4", IsRemote = true,
-            Name = name, SupportsDirectPlay = false, SupportsDirectStream = false, SupportsTranscoding = true, SupportsProbing = true,
+            Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Audio ? "flac" : resolved.Hls ? "hls" : "mp4", IsRemote = true,
+            Name = name, SupportsDirectPlay = resolved.Audio, SupportsDirectStream = resolved.Audio, SupportsTranscoding = true, SupportsProbing = true,
             RequiredHttpHeaders = new Dictionary<string, string> { [Header] = playback.Secret }
         };
+        if (resolved.Audio) return await ProbeAudioAsync(media, resolved.Url.AbsoluteUri, ct);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
@@ -95,6 +105,35 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         media.Bitrate = info.Bitrate;
         media.Size = info.Size;
         media.Container = info.Container;
+        return media;
+    }
+
+    private async Task<MediaSourceInfo> ProbeAudioAsync(MediaSourceInfo media, string key, CancellationToken ct)
+    {
+        if (!audioProbes.TryGetValue<AudioProbe>(key, out var probe))
+        {
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(60));
+                var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Audio, ExtractChapters = false }, timeout.Token);
+                var audio = info.MediaStreams.Where(s => s.Type == MediaStreamType.Audio).ToList();
+                if (audio.Count == 0) throw new ProviderException("The probe found no audio.");
+                probe = new AudioProbe(System.Text.Json.JsonSerializer.Serialize(audio), info.RunTimeTicks, info.Bitrate, info.Size, info.Container);
+                audioProbes.Set(key, probe, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(1) });
+            }
+            // The catalog only serves FLAC, so a probe it throttled must not stop playback; the player reads the details itself.
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                media.MediaStreams = [new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "flac", Channels = 2, ChannelLayout = "stereo", IsDefault = true }];
+                return media;
+            }
+        }
+        media.MediaStreams = System.Text.Json.JsonSerializer.Deserialize<List<MediaStream>>(probe!.Streams) ?? [];
+        media.RunTimeTicks = probe.RunTimeTicks;
+        media.Bitrate = probe.Bitrate;
+        media.Size = probe.Size;
+        media.Container = probe.Container ?? "flac";
         return media;
     }
 
@@ -125,8 +164,14 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         // Keep the probed file. Jellyfin holds the stable loopback URL, so when the CDN link expires
         // (403/404/410) the episode is resolved again, once, and only another MP4 is accepted.
         var video = ticket.Video!;
+        if (video.Audio)
+        {
+            songs.Warm(video.Url);
+            context.Response.Headers.CacheControl = "no-store";
+            if (await songs.ServeAsync(context, video.Url, range, () => Plugin.Allows(ticket.UserId) && ticket.Live())) return;
+        }
         // Reviewed anime hosts keep their strict rules; film players live on rotating hosts.
-        if (await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true)) return;
+        if (await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true, audio: video.Audio)) return;
         await ticket.Gate.WaitAsync(timeout.Token);
         try
         {
@@ -139,7 +184,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             video = ticket.Video!;
         }
         finally { ticket.Gate.Release(); }
-        await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token);
+        await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, audio: video.Audio);
     }
 
     public async Task ServeMasterAsync(HttpContext context, string id)
@@ -198,10 +243,10 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     }
 
     // Returns false, without writing anything, when a retryable request finds the link expired.
-    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false)
+    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false, bool audio = false)
     {
-        using var response = await http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
-            head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open);
+        using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
+            head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open), ct, attempts: audio ? 3 : 1);
         if (retryable && (int)response.StatusCode is 403 or 404 or 410) return false;
         context.Response.StatusCode = (int)response.StatusCode;
         context.Response.Headers.CacheControl = "no-store";
@@ -210,6 +255,8 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             if (response.Content.Headers.TryGetValues(name, out var contentValues)) context.Response.Headers[name] = contentValues.ToArray();
             else if (response.Headers.TryGetValues(name, out var values)) context.Response.Headers[name] = values.ToArray();
         }
+        // Jellyfin's static stream passes this on to the client; the catalog labels FLAC as octet-stream.
+        if (audio && response.IsSuccessStatusCode) context.Response.ContentType = "audio/flac";
         if (HttpMethods.IsHead(context.Request.Method)) return true;
         await using var input = await response.Content.ReadAsStreamAsync(context.RequestAborted);
         var buffer = new byte[65536];

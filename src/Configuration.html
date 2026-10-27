@@ -17,6 +17,20 @@
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmEnabled"><span>Show the Movies &amp; TV channel</span></label>
       <div class="inputContainer"><label class="inputLabel" for="tmdbKey">TMDB API key</label><input is="emby-input" type="password" id="tmdbKey" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Make a free account on themoviedb.org, then go to Settings &gt; API. The short API key and the long read access token both work. The channel stays hidden until a key is set.</div></div>
+      <h3>Music</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicEnabled"><span>Show the Music channel</span></label>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicExplicit"><span>Prefer explicit versions</span></label>
+      <div class="fieldDescription checkboxFieldDescription">When a song or album also exists as a clean edit, hide the edit and play the original.</div>
+      <div class="inputContainer"><label class="inputLabel" for="musicApi">Music catalog address</label><input is="emby-input" type="url" id="musicApi" autocomplete="off" spellcheck="false" placeholder="https://tracks.monochrome.st">
+        <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
+      <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
+        <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
+      <h3>Subsonic apps</h3>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="subsonicEnabled"><span>Turn on the Subsonic API</span></label>
+      <div class="fieldDescription checkboxFieldDescription">For Symfonium, Feishin, Tempo, play:Sub and other Subsonic apps. In the app, use the server address <code id="subsonicAddress"></code>, the Jellyfin username, and the app password below. The Jellyfin password does not work there. A new password replaces the old one.</div>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="subsonicLossless"><span>Always send lossless unless the app limits the bit rate</span></label>
+      <div class="fieldDescription checkboxFieldDescription">Some apps, Amperfy among them, ask for MP3 by default. With this on they get the original FLAC instead, which sounds better and seeks faster. A data saving limit in the app, such as 128 or 320 kbps, still gets a smaller converted file.</div>
+      <div id="subsonicPasswords"></div>
       <h3>Content filters</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult titles</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide ecchi titles</span></label>
@@ -28,7 +42,7 @@
       <h3>Maintenance</h3>
       <button is="emby-button" type="button" id="streamfinRefresh" class="raised block" disabled><span>Refresh catalogs now</span></button>
       <button is="emby-button" type="button" id="streamfinClearSearch" class="raised block" disabled><span>Clear search results</span></button>
-      <p>Clearing removes found titles from both channels' Search results, for every user. Watched status and resume positions are kept.</p>
+      <p>Clearing removes found titles from every channel's Search results, for every user. Watched status and resume positions are kept.</p>
       <p id="streamfinClearStatus" role="status"></p>
     </form>
     <script>
@@ -36,6 +50,29 @@
         const pluginId = 'a74fdb2e-938f-483b-b2ef-f527e14ff724';
         const page = document.querySelector('#streamfinConfig');
         let loaded = false;
+        let passwords = {};
+        // 32 symbols, so a random byte maps to one without bias. No l, o, 0 or 1 to misread.
+        const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';
+        function newPassword() { return Array.from(crypto.getRandomValues(new Uint8Array(24)), b => alphabet[b % 32]).join(''); }
+        function renderPasswords(users) {
+          const container = page.querySelector('#subsonicPasswords');
+          container.replaceChildren();
+          users.forEach(user => {
+            const key = user.Id.replaceAll('-', '').toLowerCase();
+            const row = document.createElement('div'); row.className = 'inputContainer';
+            const label = document.createElement('label'); label.className = 'inputLabel'; label.textContent = user.Name;
+            const input = document.createElement('input'); input.setAttribute('is', 'emby-input'); input.readOnly = true; input.spellcheck = false;
+            input.value = passwords[key] || ''; input.placeholder = 'No app password';
+            const make = document.createElement('button'); make.type = 'button'; make.setAttribute('is', 'emby-button'); make.className = 'raised';
+            make.textContent = 'New password';
+            make.addEventListener('click', () => { passwords[key] = newPassword(); input.value = passwords[key]; });
+            const remove = document.createElement('button'); remove.type = 'button'; remove.setAttribute('is', 'emby-button'); remove.className = 'raised';
+            remove.textContent = 'Remove';
+            remove.addEventListener('click', () => { delete passwords[key]; input.value = ''; });
+            const help = document.createElement('div'); help.className = 'fieldDescription'; help.textContent = 'Saved when you press Save. Only works for users ticked above.';
+            row.append(label, input, make, remove, help); container.append(row);
+          });
+        }
         page.addEventListener('viewshow', async function () {
           loaded = false;
           page.querySelector('#streamfinSave').disabled = true;
@@ -50,10 +87,20 @@
             page.querySelector('#animeGgEnabled').checked = config.AnimeGgEnabled;
             page.querySelector('#filmEnabled').checked = config.FilmEnabled !== false;
             page.querySelector('#tmdbKey').value = config.TmdbApiKey || '';
+            page.querySelector('#musicEnabled').checked = config.MusicEnabled !== false;
+            page.querySelector('#musicApi').value = config.MusicApiUrl || '';
+            page.querySelector('#musicExplicit').checked = config.MusicPreferExplicit !== false;
             page.querySelector('#animeHeavenEnabled').checked = config.AnimeHeavenEnabled !== false;
             page.querySelector('#hideAdult').checked = config.HideAdultContent !== false;
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
             page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
+            page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
+            page.querySelector('#subsonicEnabled').checked = config.SubsonicEnabled === true;
+            page.querySelector('#subsonicLossless').checked = config.SubsonicPreferLossless !== false;
+            page.querySelector('#subsonicAddress').textContent = ApiClient.serverAddress() + '/StreamFin';
+            passwords = {};
+            (config.SubsonicPasswords || []).forEach(entry => { passwords[entry.UserId.replaceAll('-', '').toLowerCase()] = entry.Password; });
+            renderPasswords(users);
             const container = page.querySelector('#streamfinUsers');
             container.replaceChildren();
             users.forEach(user => {
@@ -84,11 +131,18 @@
             config.AnimeGgEnabled = page.querySelector('#animeGgEnabled').checked;
             config.FilmEnabled = page.querySelector('#filmEnabled').checked;
             config.TmdbApiKey = page.querySelector('#tmdbKey').value.trim();
+            config.MusicEnabled = page.querySelector('#musicEnabled').checked;
+            config.MusicApiUrl = page.querySelector('#musicApi').value.trim();
+            config.MusicPreferExplicit = page.querySelector('#musicExplicit').checked;
             config.AnimeHeavenEnabled = page.querySelector('#animeHeavenEnabled').checked;
             config.HideAdultContent = page.querySelector('#hideAdult').checked;
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
             config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
+            config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
             config.AllowedUserIds = Array.from(page.querySelectorAll('#streamfinUsers input:checked'), input => input.value);
+            config.SubsonicEnabled = page.querySelector('#subsonicEnabled').checked;
+            config.SubsonicPreferLossless = page.querySelector('#subsonicLossless').checked;
+            config.SubsonicPasswords = Object.entries(passwords).filter(([, password]) => password).map(([UserId, Password]) => ({UserId, Password}));
             config.CacheRevision++;
             Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
           } finally { Dashboard.hideLoadingMsg(); }

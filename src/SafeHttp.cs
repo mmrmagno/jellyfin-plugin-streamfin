@@ -50,7 +50,7 @@ public sealed class SafeHttp : IDisposable
     // Sites and catalogs StreamFin talks to by name. Embed players and HLS CDNs rotate
     // hostnames weekly, so those use the open policy below instead of a list.
     public static bool IsKnownSite(string host) => host is "www.animegg.org" or "animegg.org" or "graphql.anilist.co" or "animeheaven.me"
-        or "zokoanime.video" or "api.themoviedb.org" or "flixhqz.net" or "flixhq.ws";
+        or "zokoanime.video" or "api.themoviedb.org" or "flixhqz.net" or "flixhq.ws" or MusicLyrics.Host || host == MusicCatalog.ApiHost;
 
     private static string Host(Uri uri)
     {
@@ -144,6 +144,20 @@ public sealed class SafeHttp : IDisposable
             output.Write(buffer, 0, count);
         }
         return (response.RequestMessage?.RequestUri ?? uri, Encoding.UTF8.GetString(output.ToArray()));
+    }
+
+    // The music catalog answers short bursts (a probe, a player's range requests, a quick skip) with 429 and
+    // no Retry-After. A brief wait clears it, so a player is not handed the 429 as a broken file.
+    public static async Task<HttpResponseMessage> PatientAsync(Func<Task<HttpResponseMessage>> open, CancellationToken ct, int attempts = 3)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var response = await open();
+            if (response.StatusCode != HttpStatusCode.TooManyRequests || attempt >= attempts) return response;
+            var wait = RetryAfter(response) is { } after && after > TimeSpan.Zero && after <= TimeSpan.FromSeconds(5) ? after : TimeSpan.FromSeconds(attempt);
+            response.Dispose();
+            await Task.Delay(wait, ct);
+        }
     }
 
     public static TimeSpan? RetryAfter(HttpResponseMessage response) => response.Headers.RetryAfter switch

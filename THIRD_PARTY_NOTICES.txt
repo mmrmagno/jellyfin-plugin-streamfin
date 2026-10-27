@@ -14,6 +14,13 @@ from https://github.com/Templarian/MaterialDesign (@mdi/svg 7.4.47).
 Copyright the Pictogrammers contributors. Licensed under Apache-2.0;
 the license text is at the end of this file. `popcorn-tile.svg` and `popcorn.png` add StreamFin colors and a background.
 
+## Music icon
+
+`src/Assets/music.svg` is the Material Design Icons **music** icon,
+from https://github.com/Templarian/MaterialDesign (@mdi/svg 7.4.47).
+Copyright the Pictogrammers contributors. Licensed under Apache-2.0;
+the license text is at the end of this file. `music-tile.svg` and `music.png` add StreamFin colors and a background.
+
 ## HiAnime provider
 
 `src/HiAnimeSource.cs` follows the request flow that ani-cli (https://github.com/pystardust/ani-cli,

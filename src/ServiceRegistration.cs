@@ -15,6 +15,11 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<AniListCatalog>();
         services.AddSingleton<TmdbCatalog>();
         services.AddSingleton<FlixSource>();
+        services.AddSingleton<MusicCatalog>();
+        services.AddSingleton<MusicLyrics>();
+        services.AddSingleton<MusicCache>();
+        services.AddSingleton<SubsonicAuth>();
+        services.AddSingleton(_ => new MusicLibraryStore());
         services.AddSingleton<IAnimeSource, HiAnimeSource>();
         services.AddSingleton<IAnimeSource, AnimeGgSource>();
         services.AddSingleton<IAnimeSource, AnimeHeavenSource>();
@@ -22,9 +27,11 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<StreamRelay>();
         services.AddSingleton<IChannel, AnimeChannel>();
         services.AddSingleton<IChannel, FilmChannel>();
+        services.AddSingleton<IChannel, MusicChannel>();
         services.AddSingleton<SearchHistory>();
         services.AddSingleton<MediaBrowser.Controller.Library.ISearchProvider, OnlineSearch>();
         services.AddSingleton<MediaBrowser.Controller.Library.ISearchProvider, FilmSearch>();
+        services.AddSingleton<MediaBrowser.Controller.Library.ISearchProvider, MusicSearch>();
         services.AddScoped<ContentAccess>();
         services.AddScoped<ChannelAccessFilter>();
         services.AddScoped<ArtworkAccess>();
