@@ -196,6 +196,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicLibraryStore store, 
         // The upstream address is stable, so a refresh after an expired link is the same address again.
         IReadOnlyList<ResolvedVideo> resolved = [new ResolvedVideo(MusicCatalog.StreamUri(recording.Id), "FLAC", new Dictionary<string, string>(), false, Audio: true)];
         var source = await relay.MediaSourceAsync(user, resolved[0], "FLAC", _ => Task.FromResult(resolved), () => Plugin.Allows(user) && IsAvailable, ct);
+        source.RunTimeTicks ??= recording.DurationMs is > 0 ? TimeSpan.FromMilliseconds(recording.DurationMs.Value).Ticks : null;
         // Most of the catalog is 16/44.1, but some masters are 24 bit up to 96 kHz; the probe knows which.
         if (source.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio) is { BitDepth: > 0, SampleRate: > 0 } audio)
             source.Name = $"FLAC · {audio.BitDepth} bit / {audio.SampleRate / 1000.0:0.#} kHz";

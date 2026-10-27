@@ -294,6 +294,15 @@ var subsonicNs = System.Xml.Linq.XNamespace.Get("http://subsonic.org/restapi");
 Check(subsonicXml.Root!.Name == subsonicNs + "subsonic-response" && subsonicXml.Root.Element(subsonicNs + "album")!.Elements(subsonicNs + "song").Count() == 2
     && subsonicXml.Root.Element(subsonicNs + "album")!.Element(subsonicNs + "song")!.Attribute("title")!.Value == "A <\"b\"> & c",
     "Subsonic XML: attributes escaped, control characters dropped");
+var throttledCalls = 0;
+HttpResponseMessage Throttled(int ok) => ++throttledCalls >= ok ? new HttpResponseMessage(HttpStatusCode.PartialContent)
+    : new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Headers = { RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMilliseconds(5)) } };
+Check((await SafeHttp.PatientAsync(() => Task.FromResult(Throttled(3)), default)).StatusCode == HttpStatusCode.PartialContent && throttledCalls == 3,
+    "a throttled media request is retried until the catalog answers");
+throttledCalls = 0;
+Check((await SafeHttp.PatientAsync(() => Task.FromResult(Throttled(9)), default)).StatusCode == HttpStatusCode.TooManyRequests && throttledCalls == 3
+    && (await SafeHttp.PatientAsync(() => Task.FromResult(Throttled(99)), default, attempts: 1)).StatusCode == HttpStatusCode.TooManyRequests && throttledCalls == 4,
+    "throttle retries are bounded, and video gets none");
 var musicStoreRoot = Path.Combine(Path.GetTempPath(), "streamfin-music-" + Guid.NewGuid().ToString("N"));
 try
 {

@@ -13,6 +13,7 @@ using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace StreamFin;
 
@@ -25,6 +26,10 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     public const string Header = "User-Agent";
     private readonly string secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     private readonly ConcurrentDictionary<string, Ticket> tickets = new();
+    // A track's FLAC never changes, and the catalog throttles bursts, so each one is probed once.
+    // Kept as JSON so every playback gets its own copy of the streams to adjust.
+    private readonly MemoryCache audioProbes = new(new MemoryCacheOptions { SizeLimit = 5000 });
+    private sealed record AudioProbe(string Streams, long? RunTimeTicks, int? Bitrate, long? Size, string? Container);
 
     // Live is rechecked on every request and between chunks, so revoking a user, a source,
     // or a content filter stops playback that is already running.
@@ -82,9 +87,10 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             Name = name, SupportsDirectPlay = resolved.Audio, SupportsDirectStream = resolved.Audio, SupportsTranscoding = true, SupportsProbing = true,
             RequiredHttpHeaders = new Dictionary<string, string> { [Header] = playback.Secret }
         };
+        if (resolved.Audio) return await ProbeAudioAsync(media, resolved.Url.AbsoluteUri, ct);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
-        var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = resolved.Audio ? DlnaProfileType.Audio : DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
+        var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
         var streams = info.MediaStreams.Where(s => s.Type != MediaStreamType.Subtitle).ToList();
         var subtitles = resolved.Subtitles ?? [];
         for (var i = 0; i < subtitles.Count; i++)
@@ -99,6 +105,35 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         media.Bitrate = info.Bitrate;
         media.Size = info.Size;
         media.Container = info.Container;
+        return media;
+    }
+
+    private async Task<MediaSourceInfo> ProbeAudioAsync(MediaSourceInfo media, string key, CancellationToken ct)
+    {
+        if (!audioProbes.TryGetValue<AudioProbe>(key, out var probe))
+        {
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(60));
+                var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Audio, ExtractChapters = false }, timeout.Token);
+                var audio = info.MediaStreams.Where(s => s.Type == MediaStreamType.Audio).ToList();
+                if (audio.Count == 0) throw new ProviderException("The probe found no audio.");
+                probe = new AudioProbe(System.Text.Json.JsonSerializer.Serialize(audio), info.RunTimeTicks, info.Bitrate, info.Size, info.Container);
+                audioProbes.Set(key, probe, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(1) });
+            }
+            // The catalog only serves FLAC, so a probe it throttled must not stop playback; the player reads the details itself.
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                media.MediaStreams = [new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "flac", Channels = 2, ChannelLayout = "stereo", IsDefault = true }];
+                return media;
+            }
+        }
+        media.MediaStreams = System.Text.Json.JsonSerializer.Deserialize<List<MediaStream>>(probe!.Streams) ?? [];
+        media.RunTimeTicks = probe.RunTimeTicks;
+        media.Bitrate = probe.Bitrate;
+        media.Size = probe.Size;
+        media.Container = probe.Container ?? "flac";
         return media;
     }
 
@@ -204,8 +239,8 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     // Returns false, without writing anything, when a retryable request finds the link expired.
     private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false, bool audio = false)
     {
-        using var response = await http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
-            head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open);
+        using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
+            head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open), ct, attempts: audio ? 3 : 1);
         if (retryable && (int)response.StatusCode is 403 or 404 or 410) return false;
         context.Response.StatusCode = (int)response.StatusCode;
         context.Response.Headers.CacheControl = "no-store";

@@ -686,7 +686,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                 Response.StatusCode = 416;
                 return null;
             }
-            using var response = await http.OpenAsync(upstream, true, Ct, range.Length == 0 ? null : range, head: HttpMethods.IsHead(Request.Method));
+            using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, Ct, range.Length == 0 ? null : range, head: HttpMethods.IsHead(Request.Method)), Ct);
             if ((int)response.StatusCode is not (200 or 206 or 416)) throw new SubsonicError(0, "The music catalog could not stream this song.");
             Response.StatusCode = (int)response.StatusCode;
             Response.ContentType = "audio/flac";
@@ -713,7 +713,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         if (!await Transcodes.WaitAsync(TimeSpan.FromSeconds(10), Ct)) throw new SubsonicError(0, "The server is busy converting other songs. Try again shortly.");
         try
         {
-            using var response = await http.OpenAsync(upstream, true, Ct);
+            using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, Ct), Ct);
             if (!response.IsSuccessStatusCode) throw new SubsonicError(0, "The music catalog could not stream this song.");
             var start = new ProcessStartInfo(encoder.EncoderPath)
             {
