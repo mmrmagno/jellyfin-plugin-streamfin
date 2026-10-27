@@ -114,6 +114,17 @@ Check(zoko.Subtitles!.Select(x => x.Language).SequenceEqual(["en", "pt"]), "HiAn
 Reject(() => HiAnimeSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://hls.example.top/m.m3u8","subtitles":[{"lang":"pt","label":"Portuguese","src":"https://hls.example.top/pt.vtt"}]}""")}\";</script>"), "HiAnime without English subtitles is refused");
 Reject(() => HiAnimeSource.ParseEmbed($"<script>window.__P=\"{Blob("""{"src":"https://10.0.0.5/m.m3u8","subtitles":[]}""")}\";</script>"), "HiAnime stream on a private address is refused");
 Reject(() => HiAnimeSource.ParseEmbed("<html>episode missing</html>"), "HiAnime page without a player fails explicitly");
+string Failure(Action action) { try { action(); } catch (ProviderException ex) { return ex.Message; } return ""; }
+Check(Failure(() => HiAnimeSource.ParseEmbed("<div class=\"err\">// Error 404</div><p>We couldn't find anything to play here.</p>")).Contains("does not have this episode")
+    && Failure(() => HiAnimeSource.ParseEmbed("<html>episode missing</html>")).Contains("changed its player page"), "HiAnime tells a missing episode from a changed player page");
+var rotatedKey = "otaku-embed-v2"u8.ToArray();
+string BlobWith(byte[] key, string json) { var raw = System.Text.Encoding.UTF8.GetBytes(json); for (var i = 0; i < raw.Length; i++) raw[i] ^= key[i % key.Length]; return Convert.ToBase64String(raw); }
+var rotatedPage = $"<script>window.__P=\"{BlobWith(rotatedKey, """{"src":"https://hls.example.top/m.m3u8","subtitles":[{"lang":"en","label":"English","src":"https://hls.example.top/en.vtt"}]}""")}\";</script>";
+try { HiAnimeSource.ParseEmbed(rotatedPage); throw new Exception("FAIL: HiAnime with a new key decoded with the old one"); }
+catch (HiAnimeSource.KeyChangedException) { Check(true, "HiAnime reports a changed key as such"); }
+Check(HiAnimeSource.ParseKey("const OBF_KEY = 'otaku-embed-v2';\nfunction xor(s) {}") is { } read && read.SequenceEqual(rotatedKey)
+    && HiAnimeSource.ParseEmbed(rotatedPage, rotatedKey)[0].Url.Host == "hls.example.top", "HiAnime reads a new key from the player script and decodes with it");
+Check(HiAnimeSource.ParseKey("const OBF_KEY = \"x\";") is null && HiAnimeSource.ParseKey("const OBF_KEY = 'has space';") is null && HiAnimeSource.ParseKey("") is null, "HiAnime ignores a key that is too short or not plain");
 foreach (var bad in new[] { "0", "12a", "1/2", "../1", "123456789012" }) Reject(() => HiAnimeSource.ValidateId(bad), "HiAnime rejects identifier " + bad);
 Reject(() => HiAnimeSource.ValidateId("52991", episode: true), "HiAnime episode IDs need an episode number");
 var zokoSource = new HiAnimeSource(new SafeHttp());
@@ -289,6 +300,21 @@ Check(MusicCache.Key(new Uri("https://tracks.monochrome.st/track/155102871061270
 var tagged = Flac("REPLAYGAIN_TRACK_GAIN=-2.5");
 Check(MusicGain.AudioStart([.. tagged, 0xFF, 0xF8]) == tagged.Length && MusicGain.AudioStart(tagged[..^1]) is null && MusicGain.AudioStart("ID3x0000"u8) is null,
     "FLAC audio starts after the last metadata block; cut short or not FLAC gives none");
+var single = new MusicRelease("155102851176075264", "Single", [new("155102851176075265", "Artist"), new("155102851176075266", "Guest")], "SINGLE", new DateTime(2023, 5, 1), null, null, 1,
+    [new MusicTrack("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 1000, null, false, 1, 1)]);
+var original = Flac("TITLE=Song (old)", "ARTIST=Artist", "ALBUM=Other Album", "ALBUMARTIST=Someone", "REPLAYGAIN_TRACK_GAIN=-5.6", "REPLAYGAIN_ALBUM_GAIN=-9.1", "REPLAYGAIN_ALBUM_PEAK=1.0");
+var retagged = MusicTags.Retag([.. original, 0xFF, 0xF8, 1, 2], MusicTags.For(single, single.Tracks[0]))!;
+var retaggedText = Encoding.UTF8.GetString(retagged);
+Check(MusicGain.AudioStart([.. retagged, 0xFF, 0xF8]) == retagged.Length && retagged.AsSpan(8, 34).SequenceEqual(original.AsSpan(8, 34))
+    && MusicGain.Parse(retagged) == new ReplayGain(-5.6, null, null, null), "a saved song keeps its stream info and track gain, and drops another album's gain");
+Check(retaggedText.Contains("ALBUM=Single") && retaggedText.Contains("ALBUMARTIST=Artist") && retaggedText.Contains("ALBUMARTIST=Guest")
+    && !retaggedText.Contains("Other Album") && !retaggedText.Contains("Someone") && retaggedText.Contains("ARTIST=Artist") && retaggedText.Contains("TRACKNUMBER=1")
+    && retaggedText.Contains("DATE=2023-05-01") && !retaggedText.Contains("(old)"), "a saved song is tagged with the release it was saved from");
+Check(MusicGain.Parse(MusicTags.Retag(Flac("ALBUM=single", "REPLAYGAIN_ALBUM_GAIN=-3"), MusicTags.For(single, single.Tracks[0]))!)?.AlbumGain == -3,
+    "the album gain stays when the song already belonged to that album");
+Check(MusicTags.Retag([.. "fLaC"u8, 0, 0, 0, 34, .. new byte[34], .. Enumerable.Range(0, 1200).SelectMany(_ => new byte[] { 1, 0, 0, 0 }), 0x81, 0, 0, 0], []) is null
+    && MusicTags.Retag("ID3x0000"u8, []) is null && MusicTags.Retag(original[..^2], []) is null
+    && MusicTags.Retag([.. "fLaC"u8, 0x84, 0, 0, 0], []) is null, "retagging refuses what is not a whole FLAC header");
 MusicGain.Remember(Flac("REPLAYGAIN_TRACK_GAIN=-2.5"), "155102871061270599", "155102871061270598");
 Check(MusicGain.For("155102871061270598")?.TrackGain == -2.5 && MusicGain.For("155102871061270597") is null, "ReplayGain is remembered for the clean and explicit ids");
 Check(SafeHttp.Allowed(new Uri("https://lrclib.net/api/get?track_name=x"), false) && !SafeHttp.Allowed(new Uri("https://lrclib.net.evil.example/api/get"), false), "lyrics host is a known site");
@@ -346,8 +372,53 @@ try
     File.WriteAllText(Path.Combine(musicStoreRoot, listener.ToString("N") + ".json"), "{not json");
     Check((await new MusicLibraryStore(musicStoreRoot).ReadAsync(listener, default)).Plays.Count == 0, "damaged music history does not break music");
     Check((await musicStore.ReadAsync(Guid.NewGuid(), default)).Plays.Count == 0, "music history is per user");
+    var saver = Guid.NewGuid();
+    await musicStore.UpdateAsync(saver, l =>
+    {
+        l.Saves.Add(new MusicSave("155102851176075264", new string('x', 500), "Artist", MusicSaver.Queued, 0, 10, null, DateTime.UtcNow));
+        l.Saves.Add(new MusicSave("155102851176075264", "Duplicate", "Artist", MusicSaver.Saved, 10, 10, null, DateTime.UtcNow));
+    }, default);
+    var saves = (await new MusicLibraryStore(musicStoreRoot).ReadAsync(saver, default)).Saves;
+    Check(saves.Count == 1 && saves[0].State == MusicSaver.Queued && saves[0].Title.Length == 200, "the save queue persists once per album with bounded text");
+    File.WriteAllText(Path.Combine(musicStoreRoot, saver.ToString("N") + ".json"),
+        """{"Saves":[{"ReleaseId":"../../etc","Title":"x","Artist":"y","State":"queued","Queued":"2026-10-27T00:00:00Z"},{"ReleaseId":"155102851176075264","Title":"x","Artist":"y","State":"run","Queued":"2026-10-27T00:00:00Z"},{"ReleaseId":"155102851176075264","Title":"x","Artist":"y","State":"saved","Queued":"2026-10-27T00:00:00Z"}]}""");
+    Check((await new MusicLibraryStore(musicStoreRoot).ReadAsync(saver, default)).Saves.Single().State == MusicSaver.Saved, "a stored save with a bad release ID or state is dropped");
 }
 finally { if (Directory.Exists(musicStoreRoot)) Directory.Delete(musicStoreRoot, true); }
+
+Check(MusicRadio.NameKey("AC/DC") == MusicRadio.NameKey("acdc") && MusicRadio.NameKey("Simon & Garfunkel") == MusicRadio.NameKey("simon and garfunkel")
+    && MusicRadio.NameKey("Beyoncé") != MusicRadio.NameKey("Beyonce"), "artist names compare without punctuation or case");
+const string Mbid = "a74b1b7f-71a5-4011-9441-d0b5e4122711";
+string WithMbid(string json) => json.Replace("MBID", Mbid, StringComparison.Ordinal);
+Check(MusicRadio.ParseIsrc(WithMbid("""{"recordings":[{"artist-credit":[{"artist":{"id":"MBID","name":"Radiohead"}},{"artist":{"id":"0383dadf-2a4e-4d10-a46a-e9e041da8eb3","name":"Queen"}}]},{"artist-credit":[{"artist":{"id":"MBID","name":"Radiohead"}}]}]}"""), "radiohead") == Mbid,
+    "MusicBrainz ISRC lookup picks the credited artist with the catalog's name");
+Check(MusicRadio.ParseIsrc("""{"recordings":[{"artist-credit":[{"artist":{"id":"../../x","name":"Radiohead"}}]}]}""", "Radiohead") is null
+    && MusicRadio.ParseIsrc("{}", "Radiohead") is null && MusicRadio.ParseIsrc("[]", "Radiohead") is null, "MusicBrainz IDs must be UUIDs");
+Check(MusicRadio.ParseArtistSearch(WithMbid("""{"artists":[{"id":"0383dadf-2a4e-4d10-a46a-e9e041da8eb3","score":100,"name":"Radiohead Tribute"},{"id":"MBID","score":80,"name":"Radiohead"}]}"""), "Radiohead") is null
+    && MusicRadio.ParseArtistSearch(WithMbid("""{"artists":[{"id":"MBID","score":100,"name":"Radiohead"}]}"""), "Radiohead") == Mbid, "MusicBrainz name search needs a confident, same-name hit");
+var similarNames = MusicRadio.ParseSimilar(WithMbid("""[{"artist_mbid":"MBID","name":"Radiohead","score":99999},{"artist_mbid":"5b11f4ce-a62d-471e-81fc-a69a8278c7da","name":"Nirvana","score":10},{"artist_mbid":"9c9f1380-2516-4fc9-a3e6-f9f61941d090","name":"Muse <b>","score":20},{"artist_mbid":"bad","name":"Bad","score":30},{"artist_mbid":"9c9f1380-2516-4fc9-a3e6-f9f61941d090","name":"MUSE B","score":5}]"""), Mbid);
+Check(similarNames.Select(a => a.Name).SequenceEqual(["Muse b", "Nirvana"]), "ListenBrainz similar artists are ranked, cleaned, deduplicated and exclude the artist itself");
+Check(MusicRadio.ParseSimilar("""{"error":"x"}""").Count == 0, "a ListenBrainz error object means no similar artists");
+Check(MusicRadio.ParseLastFm("""{"similarartists":{"artist":[{"name":"Muse","match":"0.5"},{"name":"Nirvana","match":"1"},{"name":"Odd","match":"NaN"},{"name":"Big","match":"7"}]}}""")
+    .Select(a => a.Name).SequenceEqual(["Nirvana", "Muse"]), "Last.fm similar artists are ranked and bounded");
+foreach (var host in new[] { "musicbrainz.org", "labs.api.listenbrainz.org", "ws.audioscrobbler.com" }) SafeHttp.Validate(new Uri($"https://{host}/x"), false);
+Check(true, "radio services are known sites");
+Check(MusicPaths.Part(new string('a', 79) + " b") == new string('a', 79) && MusicPaths.Part(new string('\uFFFD', 59) + "a é") == new string('\uFFFD', 59) + "a"
+    && MusicPaths.Part(new string('a', 79) + ".b") == new string('a', 79), "a shortened path part never ends in a space or a dot");
+foreach (var (text, part) in new[] { (".. .", "_"), (". .", "_"), ("..", "_"), (".", "_"), ("  ", "_"), ("a/b\\c", "a_b_c"), ("../../etc", ".._.._etc"), ("Name.", "Name"), ("AC/DC", "AC_DC"), ("x\0y", "x_y") })
+    Check(MusicPaths.Part(text) == part, "music path part " + text.Replace("\0", "NUL"));
+Check(MusicPaths.Part(new string('é', 200)).Length == 80 && System.Text.Encoding.UTF8.GetByteCount(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))) <= 180
+    && !char.IsHighSurrogate(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))[^1]), "music path parts stay short in characters and bytes without splitting a character");
+Check(MusicPaths.Root("") is null && MusicPaths.Root("relative/music") is null && MusicPaths.Root("/srv/music/") == "/srv/music" && MusicPaths.Root("/srv/x/../music") == "/srv/music",
+    "the music library folder must be absolute and is normalised");
+var savedAlbum = new MusicRelease("155102851176075264", "OK Computer", [new("155102851176075265", "Radiohead")], "ALBUM", new DateTime(1997, 7, 1), null, null, 12, []);
+var albumFolder = MusicPaths.Album("/srv/music", savedAlbum);
+Check(albumFolder == "/srv/music/Radiohead/OK Computer (1997)", "saved albums go under artist and album with the year");
+Check(MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Artists = [new("155102851176075265", "..")] }) == "/srv/music/_/.. (1997)" && MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Date = null }) == "/srv/music/Radiohead/_"
+    && MusicPaths.Album("/srv/music", savedAlbum with { Date = null, Artists = [] }) == "/srv/music/Unknown artist/OK Computer", "album folders cannot climb out of the library folder");
+var savedTrack = musicSearch.Tracks[0] with { Title = "Paranoid Android", Number = 2, Disc = 1 };
+Check(MusicPaths.Track(albumFolder, savedTrack, false) == albumFolder + "/02 Paranoid Android.flac"
+    && MusicPaths.Track(albumFolder, savedTrack with { Disc = 2, Title = "../x" }, true) == albumFolder + "/2-02 .._x.flac", "saved songs are numbered, with the disc when there are several");
 
 if (args.Contains("--provider-live"))
 {
@@ -380,6 +451,11 @@ if (args.Contains("--provider-live"))
     using var flac = await http.OpenAsync(MusicCatalog.StreamUri(hit.Id), true, flacTimeout.Token, range: "bytes=0-65535");
     var head = await flac.Content.ReadAsByteArrayAsync(flacTimeout.Token);
     Check(flac.StatusCode == HttpStatusCode.PartialContent && head.Length == 65536 && head[..4].SequenceEqual("fLaC"u8.ToArray()), "live music stream is FLAC with byte ranges");
+    using var radio = new MusicRadio(http, music);
+    var daft = await music.ArtistAsync(hit.Artists[0].Id, default);
+    Check(await radio.MbidAsync(daft, default) == "056e4f3e-d505-4dad-8ec1-d04f521cbb56", "live MusicBrainz ID from an ISRC");
+    var mix = await radio.RadioAsync(daft.Id, 30, default);
+    Check(mix.Count >= 10 && mix.SelectMany(t => t.Artists.Take(1)).Select(a => a.Id).Distinct().Count() >= 3, "live radio mixes the artist with similar ones from the catalog");
 }
 if (args.Contains("--hls-live"))
 {

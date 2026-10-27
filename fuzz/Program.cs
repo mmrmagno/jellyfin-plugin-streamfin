@@ -19,6 +19,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["lyrics"] = Targets.Lyrics,
     ["subsonic"] = Targets.Subsonic,
     ["gain"] = Targets.Gain,
+    ["radio"] = Targets.Radio,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -199,6 +200,10 @@ static class Targets
             Expect(html.EndsWith(body, StringComparison.Ordinal), "response body is the tail of the response");
         });
         HiAnime(html);
+        Guard(() =>
+        {
+            if (HiAnimeSource.ParseKey(html) is { } key) Expect(key.Length is >= 4 and <= 64 && key.All(b => b is >= 0x21 and <= 0x7e), "HiAnime key is short printable ASCII");
+        });
     }
 
     public static void HiAnimeConfig(string json)
@@ -227,6 +232,14 @@ static class Targets
         Guard(() => Clean(AnimeGgSource.Clean(text), "cleaned text"));
         Guard(() => Expect(Regex.IsMatch(AnimeGgSource.Normalize(text), @"\A[\p{L}\p{N}]*\z"), "normalized title is letters and numbers"));
         Guard(() => Expect(LanguageCode.IsMatch(Languages.Code(text, text)) && LanguageCode.IsMatch(Languages.Code("", text)), "language code is two letters or und"));
+        Guard(() =>
+        {
+            var part = MusicPaths.Part(text);
+            Expect(part.Length is > 0 and <= 80 && Encoding.UTF8.GetByteCount(part) <= 180 && part is not ("." or "..")
+                && part.IndexOfAny(['/', '\\', '\0']) < 0 && part == part.Trim(), "music path part is one short segment");
+            Expect(MusicPaths.Album("/srv/music", new MusicRelease("155102851176075264", text, [new("155102851176075265", text)], "ALBUM", null, null, null, null, []))
+                .StartsWith("/srv/music/", StringComparison.Ordinal), "saved album stays inside the library folder");
+        });
     }
 
     public static void Tmdb(string json)
@@ -299,6 +312,7 @@ static class Targets
             "Subsonic XML parses and carries no control characters");
     }
 
+    private static readonly MusicRelease Album = new("155102851176075264", "Album", [new("155102851176075265", "Artist")], "ALBUM", new DateTime(2020, 1, 1), "Label", null, 1, []);
     private static readonly MusicTrack Song = new("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, true, 1, 1);
 
     // FLAC is binary; Latin-1 maps each char back to one byte.
@@ -308,11 +322,35 @@ static class Targets
         {
             var bytes = Encoding.Latin1.GetBytes(text);
             Expect(MusicGain.AudioStart(bytes) is not int audio || audio >= 8 && audio <= bytes.Length, "audio starts inside the bytes read");
+            if (MusicTags.Retag(bytes, MusicTags.For(Album, Song)) is { } header)
+            {
+                var info = 3 + ((bytes[5] << 16) | (bytes[6] << 8) | bytes[7]);
+                Expect(MusicGain.AudioStart(header) == header.Length && (header[4] & 0x7f) == 0 && header.AsSpan(5, info).SequenceEqual(bytes.AsSpan(5, info)),
+                    "a retagged header is a whole FLAC header that keeps the stream info first");
+                Expect(MusicGain.Parse(header) is not { AlbumGain: not null } || MusicGain.Parse(bytes) is { AlbumGain: not null }, "retagging never invents an album gain");
+            }
             if (MusicGain.Parse(bytes) is not { } gain) return;
             Expect(gain.TrackGain is not null || gain.AlbumGain is not null, "a gain result carries a gain");
             Expect(new[] { gain.TrackGain, gain.AlbumGain }.All(g => g is null or >= -64 and <= 64)
                 && new[] { gain.TrackPeak, gain.AlbumPeak }.All(g => g is null or >= 0 and <= 16), "gains and peaks are in range");
         });
+    }
+
+    private static readonly Regex Uuid = new(@"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z");
+
+    // MusicBrainz, ListenBrainz and Last.fm answers; names reach channel listings and Subsonic responses.
+    public static void Radio(string json)
+    {
+        Guard(() => Expect(MusicRadio.ParseIsrc(json, "Radiohead") is not { } id || Uuid.IsMatch(id), "ISRC lookup yields a UUID"));
+        Guard(() => Expect(MusicRadio.ParseArtistSearch(json, "Radiohead") is not { } id || Uuid.IsMatch(id), "artist search yields a UUID"));
+        foreach (var parse in new Func<string, IReadOnlyList<SimilarArtist>>[] { j => MusicRadio.ParseSimilar(j), MusicRadio.ParseLastFm })
+            Guard(() =>
+            {
+                var artists = parse(json);
+                Expect(artists.Count <= 50 && artists.All(a => a.Name.Length is > 0 and <= 300 && double.IsFinite(a.Score) && a.Score >= 0), "similar artists are bounded");
+                foreach (var a in artists) Clean(a.Name, "similar artist name");
+                Expect(artists.Zip(artists.Skip(1)).All(p => p.First.Score >= p.Second.Score), "similar artists are best first");
+            });
     }
 
     public static void Lyrics(string json)

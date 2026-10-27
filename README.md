@@ -49,6 +49,18 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   also published as a clean edit, the edit is hidden and the original plays. Played songs
   are kept on the server (4 GB by default, **Song cache** in the settings, 0 turns it off),
   so skipping within a song and playing it again do not wait for the catalog.
+- **Radio**: every artist page has a **Radio** folder that mixes the artist's top tracks with
+  those of similar artists, as [ListenBrainz](https://listenbrainz.org) listeners play them
+  (the artist is found on [MusicBrainz](https://musicbrainz.org) by the ISRC of one of its
+  songs). Music apps get the same mix as "similar songs" or instant mix, and the similar
+  artists on the artist page. For artists ListenBrainz does not know, a free Last.fm API key in
+  the settings adds Last.fm's similar artists.
+- **Save to library**: set a **Music library folder** in the settings and every album you star
+  (a heart in Jellyfin, a star in a music app) is saved there as FLAC with its cover, as
+  `Artist/Album (Year)/01 Title.flac`, tagged with that album even when the catalog's file names another. Add that folder to a Jellyfin music library and the
+  albums play offline and in any Jellyfin music app, Finamp included. Saving is slow on purpose,
+  one song every 20 seconds, so the catalog does not block the server. Existing files are never
+  replaced, and unstarring an album stops its save but keeps what was already saved.
 - **Search**: Jellyfin's normal search also looks in the online catalogs, so it finds
   titles nobody has browsed yet. Found titles stay under each channel's Search results.
 - **Access**: only the users ticked in the settings see the channels.
@@ -61,7 +73,8 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
 | FlixHQ (movies and TV) | Title and year | Usually a separate English track |
 | Monochrome (music) | Its own catalog IDs, with ISRCs | Not applicable |
 
-If a source fails or is missing an episode, go back and pick another one.
+If a source fails or is missing an episode, go back and pick another one. The message says
+which it was: HiAnime, for one, tells an episode it does not have apart from a change on its site.
 
 ## Install
 

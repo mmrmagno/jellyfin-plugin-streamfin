@@ -7,6 +7,9 @@ public sealed record MusicPlay(MusicTrack Track, string Album, DateTime At);
 // Albums are kept without their track list; a listing loads the release again.
 public sealed record MusicStarredAlbum(MusicRelease Release, DateTime At);
 public sealed record MusicStarredArtist(MusicArtistRef Artist, DateTime At);
+// An album being kept as files in the music library folder (MusicSaver); State is one of MusicSaver's constants.
+public sealed record MusicSave(string ReleaseId, string Title, string Artist, string State, int Saved, int Total, string? Note, DateTime Queued,
+    DateTime? Finished = null);
 public sealed record MusicPlaylist(Guid Id, string Name, string Comment, DateTime Created, DateTime Changed, IReadOnlyList<MusicPlay> Entries);
 public sealed class MusicLibrary
 {
@@ -15,6 +18,7 @@ public sealed class MusicLibrary
     public List<MusicStarredAlbum> StarredAlbums { get; set; } = [];
     public List<MusicStarredArtist> StarredArtists { get; set; } = [];
     public List<MusicPlaylist> Playlists { get; set; } = [];
+    public List<MusicSave> Saves { get; set; } = [];
 }
 
 // The catalog has no accounts, so what a user played lives here, one JSON file per Jellyfin user.
@@ -26,6 +30,7 @@ public sealed class MusicLibraryStore
     public const int PlaylistEntryLimit = 2000;
     // Across all of a user's playlists, so the file stays a few megabytes at most.
     public const int PlaylistTotalLimit = 20_000;
+    public const int SaveLimit = 1000;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> gates = new();
     private readonly ConcurrentDictionary<Guid, MusicLibrary> loaded = new();
     private readonly ConcurrentDictionary<Guid, long> versions = new();
@@ -57,6 +62,8 @@ public sealed class MusicLibraryStore
             library.StarredTracks = library.StarredTracks.DistinctBy(s => s.Track.Id).Take(StarLimit).ToList();
             library.StarredAlbums = library.StarredAlbums.DistinctBy(s => s.Release.Id).Take(StarLimit).ToList();
             library.StarredArtists = library.StarredArtists.DistinctBy(s => s.Artist.Id).Take(StarLimit).ToList();
+            library.Saves = library.Saves.DistinctBy(s => s.ReleaseId).Take(SaveLimit).Select(s => s with { Title = Bounded(s.Title), Artist = Bounded(s.Artist),
+                Note = s.Note is null ? null : Bounded(s.Note) }).ToList();
             var room = PlaylistTotalLimit;
             library.Playlists = library.Playlists.DistinctBy(p => p.Id).Take(PlaylistLimit).Select(p =>
             {
@@ -103,6 +110,8 @@ public sealed class MusicLibraryStore
         library.StarredAlbums = (library.StarredAlbums ?? []).Where(s => s?.Release is { Title: not null, Artists: not null } r && MusicCatalog.IsId(r.Id))
             .Select(s => s with { Release = s.Release with { Tracks = [] } }).ToList();
         library.StarredArtists = (library.StarredArtists ?? []).Where(s => s?.Artist is { Name: not null } a && MusicCatalog.IsId(a.Id)).ToList();
+        library.Saves = (library.Saves ?? []).Where(s => s is { Title: not null, Artist: not null, State: MusicSaver.Queued or MusicSaver.Saving or MusicSaver.Saved or MusicSaver.Failed }
+            && MusicCatalog.IsId(s.ReleaseId)).ToList();
         library.Playlists = (library.Playlists ?? []).Where(p => p is { Name: not null } && p.Id != Guid.Empty)
             .Select(p => p with { Comment = p.Comment ?? "", Entries = (p.Entries ?? []).Where(Valid).ToArray() }).ToList();
         return loaded[user] = library;
@@ -117,6 +126,6 @@ public sealed class MusicLibraryStore
     private static MusicLibrary Copy(MusicLibrary library) => new()
     {
         Plays = [.. library.Plays], StarredTracks = [.. library.StarredTracks], StarredAlbums = [.. library.StarredAlbums],
-        StarredArtists = [.. library.StarredArtists], Playlists = [.. library.Playlists]
+        StarredArtists = [.. library.StarredArtists], Playlists = [.. library.Playlists], Saves = [.. library.Saves]
     };
 }
