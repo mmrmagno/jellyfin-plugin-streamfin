@@ -18,7 +18,7 @@ namespace StreamFin;
 // IChannel.IsEnabledFor hides the channel, but cached descendants can also be requested
 // via Jellyfin's generic item/playback endpoints. Protect those routes and their results.
 public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationContext authorization, IChannelManager channels, ArtworkAccess artwork, ContentAccess content,
-    MusicLyrics lyrics)
+    MusicLyrics lyrics, MusicMix mix)
     : IAsyncActionFilter, IAsyncResultFilter
 {
     private bool IsOurs(Guid id) => id != Guid.Empty && content.IsOurs(id);
@@ -74,6 +74,17 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
                 context.Result = library.GetItemById(lyricId) is Audio audio && await lyrics.ForItemAsync(audio, context.HttpContext.RequestAborted) is { } found
                     ? new OkObjectResult(found) : new NotFoundResult();
                 return;
+            }
+            if (context.ActionDescriptor is ControllerActionDescriptor { ControllerName: "InstantMix" }
+                && ids.Where(IsOurs).Select(library.GetItemById).FirstOrDefault(i => i is MusicArtist or MusicAlbum or Audio) is { } seed)
+            {
+                var auth = await authorization.GetAuthorizationInfo(context.HttpContext);
+                var limit = int.TryParse(context.HttpContext.Request.Query["limit"], out var asked) ? Math.Clamp(asked, 1, 50) : 50;
+                QueryResult<BaseItemDto>? mixed;
+                try { mixed = auth.User is null ? null : await mix.MixAsync(seed, auth.User, limit, context.HttpContext.RequestAborted); }
+                catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException
+                    or TaskCanceledException && !context.HttpContext.RequestAborted.IsCancellationRequested) { mixed = new QueryResult<BaseItemDto> { Items = [], TotalRecordCount = 0 }; }
+                if (mixed is not null) { context.Result = new OkObjectResult(mixed); return; }
             }
             // Native series/season screens use the Shows API instead of Channel/Items.
             // Populate those children lazily before Jellyfin answers the normal request.

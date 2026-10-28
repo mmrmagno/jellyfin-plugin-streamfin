@@ -28,6 +28,42 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
         && (query.MediaTypes.Length == 0 || query.MediaTypes.Contains(MediaType.Audio))
         && (!query.ParentId.HasValue || query.ParentId == Guid.Empty || query.ParentId == ChannelId || query.ParentId == SearchFolderId);
 
+    // The Search results folder, made on first use. Callers hold ChannelNavigation.Gate.
+    public static Folder Folder(ILibraryManager library, Channel channel)
+    {
+        var id = library.GetNewItemId(FolderKey, typeof(Folder));
+        if (library.GetItemById(id) is Folder known) return known;
+        var parent = new Folder { Id = id, Name = "Search results", ExternalId = "search", ChannelId = channel.Id, ParentId = channel.Id, Tags = ["StreamFin"] };
+        parent.OnMetadataChanged();
+        library.CreateItem(parent, channel);
+        return parent;
+    }
+
+    // Stores a found artist, album or song under Search results, where the channel lists it again.
+    public static async Task<T> SaveAsync<T>(ILibraryManager library, Folder parent, ChannelItemInfo info, Action<T> fill, CancellationToken ct) where T : BaseItem, new()
+    {
+        var id = library.GetNewItemId(info.Id + MusicChannel.ChannelName + "16", typeof(T));
+        var existing = library.GetItemById(id) as T;
+        var item = existing ?? new T { Id = id, DateCreated = DateTime.UtcNow };
+        item.ExternalId = info.Id;
+        item.ChannelId = parent.ChannelId;
+        item.ParentId = parent.Id;
+        item.Name = info.Name;
+        item.Overview = info.Overview;
+        item.ProductionYear = info.ProductionYear;
+        item.PremiereDate = info.PremiereDate;
+        item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Distinct().ToArray();
+        item.ProviderIds = info.ProviderIds;
+        // Generic search groups by this key; a shared NULL would collapse unrelated results.
+        item.PresentationUniqueKey = "streamfin-search-" + info.Id;
+        fill(item);
+        if (info.ImageUrl is not null && !item.HasImage(ImageType.Primary)) item.SetImagePath(ImageType.Primary, info.ImageUrl);
+        item.OnMetadataChanged();
+        if (existing is null) library.CreateItem(item, parent);
+        else await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
+        return item;
+    }
+
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(SearchProviderQuery query, CancellationToken ct)
     {
         if (!CanSearch(query) || !MusicChannel.IsAvailable || contexts.HttpContext is not { } context) return [];
@@ -52,38 +88,11 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
                 // A search that started before Clear must not refill the list.
                 if (generation != history.Generation) return [];
                 if (library.GetItemById(ChannelId) is not Channel channel) return [];
-                var parent = library.GetItemById(SearchFolderId) as Folder;
-                if (parent is null)
-                {
-                    parent = new Folder { Id = SearchFolderId, Name = "Search results", ExternalId = "search", ChannelId = ChannelId, ParentId = ChannelId, Tags = ["StreamFin"] };
-                    parent.OnMetadataChanged();
-                    library.CreateItem(parent, channel);
-                }
+                var parent = Folder(library, channel);
                 var limit = Math.Clamp(query.Limit ?? 20, 1, 20);
                 var found = new List<SearchResult>();
                 async Task AddAsync<T>(ChannelItemInfo info, Action<T> fill) where T : BaseItem, new()
-                {
-                    var id = library.GetNewItemId(info.Id + MusicChannel.ChannelName + "16", typeof(T));
-                    var existing = library.GetItemById(id) as T;
-                    var item = existing ?? new T { Id = id, DateCreated = DateTime.UtcNow };
-                    item.ExternalId = info.Id;
-                    item.ChannelId = ChannelId;
-                    item.ParentId = parent.Id;
-                    item.Name = info.Name;
-                    item.Overview = info.Overview;
-                    item.ProductionYear = info.ProductionYear;
-                    item.PremiereDate = info.PremiereDate;
-                    item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Distinct().ToArray();
-                    item.ProviderIds = info.ProviderIds;
-                    // Generic search groups by this key; a shared NULL would collapse unrelated results.
-                    item.PresentationUniqueKey = "streamfin-search-" + info.Id;
-                    fill(item);
-                    if (info.ImageUrl is not null && !item.HasImage(ImageType.Primary)) item.SetImagePath(ImageType.Primary, info.ImageUrl);
-                    item.OnMetadataChanged();
-                    if (existing is null) library.CreateItem(item, parent);
-                    else await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, timeout.Token);
-                    found.Add(new SearchResult(id, 80 - found.Count));
-                }
+                    => found.Add(new SearchResult((await SaveAsync(library, parent, info, fill, timeout.Token)).Id, 80 - found.Count));
                 if (Wants(query, BaseItemKind.MusicArtist))
                     foreach (var artist in results.Artists.Take(limit)) await AddAsync<MusicArtist>(MusicChannel.Artist(artist), _ => { });
                 if (Wants(query, BaseItemKind.MusicAlbum))

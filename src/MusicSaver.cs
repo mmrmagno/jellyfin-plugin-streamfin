@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using MediaBrowser.Controller.Channels;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
@@ -34,10 +35,11 @@ public static class MusicPaths
         return Path.TrimEndingDirectorySeparator(Path.GetFullPath(text.Trim()));
     }
 
-    public static string Album(string root, MusicRelease release)
+    // A second edition of an album (clean and explicit share title and year) gets the end of its id added.
+    public static string Album(string root, MusicRelease release, bool edition = false)
     {
         var artist = Part(release.Artists.FirstOrDefault()?.Name ?? "Unknown artist");
-        var album = Part(release.Date is { } date ? $"{release.Title} ({date.Year})" : release.Title);
+        var album = Part((release.Date is { } date ? $"{release.Title} ({date.Year})" : release.Title) + (edition ? $" [{release.Id[^6..]}]" : ""));
         return Inside(root, Path.Combine(root, artist, album));
     }
 
@@ -54,7 +56,7 @@ public static class MusicPaths
 // Starred albums kept as FLAC files in a normal Jellyfin music library, so they play offline and in any music app.
 // One album at a time, one song every 20 seconds: the catalog limits each address, and this is not urgent.
 public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibraryStore store, MusicCache songs, ILibraryManager library,
-    IUserDataManager userData, ILogger<MusicSaver> logger) : BackgroundService
+    IUserDataManager userData, IUserManager users, ILogger<MusicSaver> logger) : BackgroundService
 {
     public const string Queued = "queued", Saving = "saving", Saved = "saved", Failed = "failed";
     private static readonly TimeSpan Pace = TimeSpan.FromSeconds(20);
@@ -63,6 +65,8 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
     // One user starring a whole discography must not hold everyone else up for weeks, or fill the disk.
     public const int QueueLimit = 200;
     private const long MinimumFree = 5L * 1024 * 1024 * 1024;
+    private const string Marker = ".streamfin-release";
+    private sealed class DiskFullException() : ProviderException("The music library disk is nearly full, so saving is paused. It carries on once there is space.");
     private int turn;
     private readonly SemaphoreSlim wake = new(0, int.MaxValue);
     private DateTime lastFetch;
@@ -117,6 +121,28 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         return base.StopAsync(ct);
     }
 
+    // A star from a Subsonic app shows as a heart on the album in Jellyfin too. The handler below sees the
+    // change, finds the store already matches, and does nothing more.
+    // Jellyfin keys channel items by external ID, so an album has one item per place it was listed: search, Starred,
+    // and the page of each of its artists.
+    public async Task MirrorAsync(Guid user, IReadOnlyCollection<string> releases, bool favourite, CancellationToken ct)
+    {
+        if (releases.Count == 0 || users.GetUserById(user) is not { } account) return;
+        foreach (var id in releases)
+        {
+            IEnumerable<string> scopes = ["search", "starred"];
+            try { scopes = scopes.Concat((await catalog.ReleaseAsync(id, ct)).Artists.Select(a => a.Id)); }
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException) { }
+            foreach (var item in scopes.Select(scope => library.GetItemById(library.GetNewItemId($"album/{scope}/{id}{MusicChannel.ChannelName}16", typeof(MediaBrowser.Controller.Entities.Audio.MusicAlbum)))).OfType<BaseItem>())
+            {
+                var data = userData.GetUserData(account, item);
+                if (data is null || data.IsFavorite == favourite) continue;
+                data.IsFavorite = favourite;
+                userData.SaveUserData(account, item, data, UserDataSaveReason.UpdateUserRating, ct);
+            }
+        }
+    }
+
     // A heart on a channel album in Jellyfin is the same as a star in a Subsonic app.
     private void OnUserDataSaved(object? sender, UserDataSaveEventArgs e)
     {
@@ -150,23 +176,29 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
         // Saves interrupted by a restart pick up where they were; finished files are skipped.
-        var saved = false;
+        var scan = false;
         while (!stop.IsCancellationRequested)
         {
             (Guid User, MusicSave Save)? next = null;
             // An exception leaving a background service stops Jellyfin itself, so none may.
             try
             {
+                // Each album shows up as soon as it is saved; a scan already running means another one after it.
+                if (scan) scan = !Scan();
                 if ((next = await NextAsync(stop)) is not var (user, save))
                 {
-                    if (saved) Scan();
-                    saved = false;
-                    await wake.WaitAsync(TimeSpan.FromMinutes(30), stop);
+                    await wake.WaitAsync(scan ? TimeSpan.FromMinutes(2) : TimeSpan.FromMinutes(30), stop);
                     continue;
                 }
-                saved |= await SaveAsync(user, save, stop);
+                scan |= await SaveAsync(user, save, stop);
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
+            catch (DiskFullException ex) when (next is var (user, save))
+            {
+                logger.LogWarning("StreamFin music library: the disk is nearly full, saving paused");
+                try { await SetAsync(user, save.ReleaseId, s => s with { State = Queued, Note = ex.Message }); } catch (Exception) { }
+                await wake.WaitAsync(TimeSpan.FromMinutes(30), stop).ContinueWith(_ => { }, TaskScheduler.Default);
+            }
             catch (Exception ex)
             {
                 logger.LogWarning("StreamFin could not save an album to the music library ({ErrorType})", ex.GetType().Name);
@@ -206,8 +238,12 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         var root = Folder ?? throw new ProviderException("No music library folder is set.");
         var release = await catalog.ReleaseAsync(save.ReleaseId, ct);
         if (release.Tracks.Count == 0) throw new ProviderException("The catalog lists no tracks for this album.");
+        // The folder notes which release filled it, so another edition of the same album gets its own.
         var folder = MusicPaths.Album(root, release);
+        var owner = Path.Combine(folder, Marker);
+        if (File.Exists(owner) && (await File.ReadAllTextAsync(owner, ct)).Trim() != release.Id) folder = MusicPaths.Album(root, release, edition: true);
         Directory.CreateDirectory(folder);
+        if (!File.Exists(Path.Combine(folder, Marker))) await File.WriteAllTextAsync(Path.Combine(folder, Marker), release.Id, ct);
         await SetAsync(user, save.ReleaseId, s => s with { State = Saving, Total = release.Tracks.Count, Title = release.Title });
         await CoverAsync(release, folder, ct);
         var discs = release.Tracks.Select(t => t.Disc ?? 1).Distinct().Count() > 1;
@@ -217,9 +253,10 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
             if (!await Wanted(user, save.ReleaseId, ct)) return done > 0;
             var path = MusicPaths.Track(folder, track, discs);
             var drive = new DriveInfo(folder);
-            if (drive.AvailableFreeSpace < Math.Clamp(drive.TotalSize / 20, MinimumFree, 10 * MinimumFree))
-                throw new ProviderException("The music library disk is nearly full, so saving stopped. Free some space, then star the album again.");
-            if (!File.Exists(path)) await SongAsync(track, path, MusicTags.For(release, track), ct);
+            if (drive.AvailableFreeSpace < Math.Clamp(drive.TotalSize / 20, MinimumFree, 10 * MinimumFree)) throw new DiskFullException();
+            // The recording that plays is the one kept: with "prefer explicit", a clean edit's explicit original.
+            if (!File.Exists(path))
+                await SongAsync(MusicCatalog.PreferExplicit ? await catalog.ExplicitAsync(track, ct) : track, path, MusicTags.For(release, track), ct);
             done++;
             await SetAsync(user, save.ReleaseId, s => s with { Saved = done });
         }
@@ -239,13 +276,15 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
             || !Images.TryGetValue(extension, out var magic)) return;
         var path = Path.Combine(folder, "cover" + extension);
         if (File.Exists(path)) return;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromMinutes(1));
         try
         {
-            using var response = await http.OpenAsync(new Uri(artwork), false, ct);
+            using var response = await http.OpenAsync(new Uri(artwork), false, timeout.Token);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength is > 20 * 1024 * 1024) return;
-            if (await WriteAsync(response, path + ".part", 20 * 1024 * 1024, magic, ct) && !File.Exists(path)) File.Move(path + ".part", path, overwrite: false);
+            if (await WriteAsync(response, path + ".part", 20 * 1024 * 1024, magic, timeout.Token) && !File.Exists(path)) File.Move(path + ".part", path, overwrite: false);
         }
-        catch (Exception ex) when (ex is HttpRequestException or IOException or ProviderException or TaskCanceledException && !ct.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or ProviderException or OperationCanceledException && !ct.IsCancellationRequested) { }
         finally { Discard(path + ".part"); }
     }
 
@@ -272,23 +311,36 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
                 await cached.CopyToAsync(file, ct);
                 return;
             }
-        for (var busy = 0; ; busy++)
+        for (int busy = 0, broken = 0; ; )
         {
             var wait = lastFetch + Pace - DateTime.UtcNow;
             if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
             lastFetch = DateTime.UtcNow;
-            using var response = await http.OpenAsync(upstream, true, ct);
-            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            // A connection that stalls must not hold every user's queue until Jellyfin restarts.
+            using var song = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            song.CancelAfter(TimeSpan.FromMinutes(20));
+            try
             {
-                if (busy + 1 >= BusyLimit) throw new ProviderException("The music catalog kept refusing downloads. Star the album again later to retry.");
-                logger.LogInformation("StreamFin music library: the catalog is busy, waiting {Minutes} minutes", Busy.TotalMinutes);
-                await Task.Delay(Busy, ct);
-                continue;
+                using var response = await http.OpenAsync(upstream, true, song.Token);
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    if (++busy >= BusyLimit) throw new ProviderException("The music catalog kept refusing downloads. Star the album again later to retry.");
+                    logger.LogInformation("StreamFin music library: the catalog is busy, waiting {Minutes} minutes", Busy.TotalMinutes);
+                    await Task.Delay(Busy, ct);
+                    continue;
+                }
+                if ((int)response.StatusCode >= 500) throw new HttpRequestException("The catalog answered " + (int)response.StatusCode);
+                if (response.StatusCode != HttpStatusCode.OK || response.Content.Headers.ContentLength is not long size || size is <= 0 or > MusicCache.SongLimit)
+                    throw new ProviderException($"The catalog answered HTTP {(int)response.StatusCode} for a song of this album.");
+                if (await WriteAsync(response, part, size, "fLaC"u8.ToArray(), song.Token, exact: true)) return;
+                throw new IOException("A song arrived incomplete.");
             }
-            if (response.StatusCode != HttpStatusCode.OK || response.Content.Headers.ContentLength is not long size || size is <= 0 or > MusicCache.SongLimit)
-                throw new ProviderException($"The catalog answered HTTP {(int)response.StatusCode} for a song of this album.");
-            if (await WriteAsync(response, part, size, "fLaC"u8.ToArray(), ct, exact: true)) return;
-            throw new ProviderException("A song of this album arrived incomplete. Star the album again to retry.");
+            // Dropped and stalled downloads, and catalog hiccups, are tried again a little later.
+            catch (Exception ex) when ((ex is HttpRequestException or IOException || ex is OperationCanceledException && !ct.IsCancellationRequested) && ++broken < 3)
+            {
+                logger.LogInformation("StreamFin music library: a download broke off ({ErrorType}), trying again", ex.GetType().Name);
+                await Task.Delay(TimeSpan.FromMinutes(1), ct);
+            }
         }
     }
 
@@ -325,8 +377,11 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         {
             var buffer = new byte[1 << 16];
             int read;
-            while ((read = await input.ReadAsync(buffer, ct)) > 0)
+            while (true)
             {
+                using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                idle.CancelAfter(TimeSpan.FromSeconds(60));
+                if ((read = await input.ReadAsync(buffer, idle.Token)) == 0) break;
                 if ((written += read) > limit) return false;
                 await file.WriteAsync(buffer.AsMemory(0, read), ct);
             }
@@ -347,10 +402,13 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         .Where(v => v.Locations.Any(l => MusicPaths.Root(l) is { } location && (root == location || root.StartsWith(location + Path.DirectorySeparatorChar, StringComparison.Ordinal))))
         .Select(v => v.Name).ToArray();
 
-    private void Scan()
+    // False when a scan is already running, so the caller asks again afterwards.
+    private bool Scan()
     {
-        if (Libraries().Count == 0 || library.IsScanRunning) return;
+        if (Libraries().Count == 0) return true;
+        if (library.IsScanRunning) return false;
         library.QueueLibraryScan();
+        return true;
     }
 
     public override void Dispose()

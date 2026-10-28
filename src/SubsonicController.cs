@@ -529,6 +529,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         }, Ct);
         if (!star) await saver.CancelAsync(user.Id, albums.Select(a => a.Release.Id).ToArray(), Ct);
         else foreach (var album in albums) await saver.QueueAsync(user.Id, album.Release, Ct);
+        await saver.MirrorAsync(user.Id, albums.Select(a => a.Release.Id).ToArray(), star, Ct);
         return Success();
     }
 
