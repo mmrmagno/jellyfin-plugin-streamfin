@@ -46,11 +46,12 @@ public static class MusicTags
         var album = Value(comments, "ALBUM");
         // An album gain measured on another album is wrong for this one; players fall back to the track gain.
         var otherAlbum = album is not null && tags.FirstOrDefault(t => t.Key == "ALBUM").Value is { } title && !string.Equals(album, title, StringComparison.OrdinalIgnoreCase);
-        comments = comments.Where(c => !replaced.Contains(Key(c)) && !(otherAlbum && Key(c) is "REPLAYGAIN_ALBUM_GAIN" or "REPLAYGAIN_ALBUM_PEAK")).ToList();
+        comments = comments.Where(c => !replaced.Contains(Key(c)) && !(otherAlbum && OtherAlbum(Key(c)))).ToList();
         comments.AddRange(tags.Where(t => t.Value.Length > 0).Select(t => t.Key.ToUpperInvariant() + "=" + Clean(t.Value)));
         var block = Write(vendor, comments);
         if (block.Length > BlockLimit) return null;
-        blocks = [blocks[0], (4, block), .. blocks.Skip(1).Where(b => b.Type != 4)];
+        // An embedded picture of another album would show instead of the folder's cover.
+        blocks = [blocks[0], (4, block), .. blocks.Skip(1).Where(b => b.Type != 4 && !(otherAlbum && b.Type == 6))];
         using var output = new MemoryStream();
         output.Write("fLaC"u8);
         for (var i = 0; i < blocks.Count; i++)
@@ -65,6 +66,8 @@ public static class MusicTags
         return output.ToArray();
     }
 
+    private static bool OtherAlbum(string key) => key is "REPLAYGAIN_ALBUM_GAIN" or "REPLAYGAIN_ALBUM_PEAK" or "BARCODE" or "UPC" or "CATALOGNUMBER" or "LABELNO"
+        || key.StartsWith("MUSICBRAINZ_ALBUM", StringComparison.Ordinal) || key.StartsWith("MUSICBRAINZ_RELEASE", StringComparison.Ordinal);
     private static string Clean(string value) => new(value.Where(c => c >= ' ').ToArray());
     private static string Key(string comment) => (comment.IndexOf('=', StringComparison.Ordinal) is var split and > 0 ? comment[..split] : comment).ToUpperInvariant();
     private static string? Value(List<string> comments, string key) => comments.FirstOrDefault(c => Key(c) == key) is { } c ? c[(c.IndexOf('=', StringComparison.Ordinal) + 1)..] : null;

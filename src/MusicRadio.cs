@@ -43,11 +43,11 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
         var artist = await catalog.ArtistAsync(artistId, ct);
         var similar = await SimilarArtistsAsync(artist, ct, deadline);
         if (similar.Count == 0) return [];
-        var lists = new List<Queue<MusicTrack>> { new(Shuffle(artist.TopTracks).Take(Math.Max(3, count / (similar.Count + 1)))) };
+        var lists = new List<Queue<MusicTrack>> { new(Shuffle(artist.TopTracks, artist.Id).Take(Math.Max(3, count / (similar.Count + 1)))) };
         foreach (var other in similar)
         {
             if (!catalog.HasArtist(other.Id) && !await RoomAsync(deadline, ct)) break;
-            lists.Add(new Queue<MusicTrack>(Shuffle((await catalog.ArtistAsync(other.Id, ct)).TopTracks).Take(5)));
+            lists.Add(new Queue<MusicTrack>(Shuffle((await catalog.ArtistAsync(other.Id, ct)).TopTracks, artist.Id).Take(5)));
         }
         var mix = new List<MusicTrack>();
         while (mix.Count < count * 2 && lists.Any(l => l.Count > 0))
@@ -66,7 +66,13 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
         return true;
     }
 
-    private static IEnumerable<MusicTrack> Shuffle(IEnumerable<MusicTrack> tracks) => tracks.OrderBy(_ => Random.Shared.Next());
+    // The same mix all day for an artist: Jellyfin keeps the songs of a channel listing only while the listing has them,
+    // so a new shuffle on every request would pull songs out from under a queue someone is playing.
+    private static IEnumerable<MusicTrack> Shuffle(IEnumerable<MusicTrack> tracks, string seed)
+    {
+        var random = new Random((int)(long.Parse(seed, CultureInfo.InvariantCulture) % int.MaxValue) ^ DateOnly.FromDateTime(DateTime.UtcNow).DayNumber);
+        return tracks.Select(t => (Key: random.Next(), Track: t)).ToArray().OrderBy(p => p.Key).Select(p => p.Track);
+    }
 
     // Similar artists that the catalog has, best match first.
     public async Task<IReadOnlyList<MusicArtistRef>> SimilarArtistsAsync(MusicArtistPage artist, CancellationToken ct, DateTime? deadline = null)
@@ -100,25 +106,41 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
         return (match, true);
     }
 
-    // Null when MusicBrainz could not be asked in time; nothing is cached then.
+    // Null when no source could be asked or answered in time. Only a real answer, even an empty one, is cached:
+    // a failure kept as "no similar artists" would empty the radio for days.
     private async Task<IReadOnlyList<SimilarArtist>?> SimilarNamesAsync(MusicArtistPage artist, DateTime deadline, CancellationToken ct)
     {
         IReadOnlyList<SimilarArtist> names = [];
+        var failed = false;
         try
         {
             if (await MbidAsync(artist, ct, deadline) is { } mbid)
+            {
+                using var timeout = Until(deadline, ct);
                 names = await CachedAsync("listenbrainz/" + mbid, async () => ParseSimilar(await http.TextAsync(new Uri(
-                    $"https://{ListenBrainzHost}/similar-artists/json?artist_mbids={mbid}&algorithm={Algorithm}"), ct), mbid), ct);
+                    $"https://{ListenBrainzHost}/similar-artists/json?artist_mbids={mbid}&algorithm={Algorithm}"), timeout.Token), mbid), ct);
+            }
         }
-        catch (TimeoutException) { return null; }
-        catch (Exception ex) when (Failed(ex, ct)) { }
-        if (names.Count > 0 || LastFmKey is not { } key) return names;
-        try
-        {
-            return await CachedAsync("lastfm/" + NameKey(artist.Name), async () => ParseLastFm(await http.TextAsync(new Uri(
-                $"https://{LastFmHost}/2.0/?method=artist.getsimilar&format=json&limit=30&autocorrect=1&artist={Uri.EscapeDataString(artist.Name)}&api_key={key}"), ct)), ct);
-        }
-        catch (Exception ex) when (Failed(ex, ct)) { return []; }
+        catch (Exception ex) when (ex is TimeoutException || Failed(ex, ct)) { failed = true; }
+        if (names.Count > 0) return names;
+        if (LastFmKey is { } key)
+            try
+            {
+                using var timeout = Until(deadline, ct);
+                var other = await CachedAsync("lastfm/" + NameKey(artist.Name), async () => ParseLastFm(await http.TextAsync(new Uri(
+                    $"https://{LastFmHost}/2.0/?method=artist.getsimilar&format=json&limit=30&autocorrect=1&artist={Uri.EscapeDataString(artist.Name)}&api_key={key}"), timeout.Token)), ct);
+                if (other.Count > 0 || !failed) return other;
+            }
+            catch (Exception ex) when (Failed(ex, ct)) { failed = true; }
+        return failed ? null : names;
+    }
+
+    // At least a few seconds, so a request that starts just before the deadline is not cut off at once.
+    private static CancellationTokenSource Until(DateTime deadline, CancellationToken ct)
+    {
+        var source = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        source.CancelAfter(Remaining(deadline) + TimeSpan.FromSeconds(3));
+        return source;
     }
 
     private static bool Failed(Exception ex, CancellationToken ct) => ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException

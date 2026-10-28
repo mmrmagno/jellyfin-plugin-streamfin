@@ -68,6 +68,16 @@ try:
     wait('the star to go', lambda: not any(a['name'] == 'Discovery' for a in call('getStarred2')['starred2'].get('album', [])), 30)
     print('PASS: a favourite on a channel album stars it for music apps, and removing it unstars', flush=True)
 
+    def hearted():
+        return jellyfin('/Users/' + viewer['id'] + '/Items/' + album['Id'], viewer['token'])['UserData']['IsFavorite']
+    starred_id = next(a['id'] for a in call('search3', query='daft punk discovery', artistCount=0, songCount=0)['searchResult3']['album'] if a['name'] == 'Discovery'
+                      and a['id'].removeprefix('al-') in json.dumps(jellyfin('/Items/' + album['Id'] + '?userId=' + viewer['id'] + '&fields=ProviderIds', viewer['token'])['ProviderIds']))
+    assert call('star', albumId=starred_id)['status'] == 'ok'
+    wait('the star to show as a heart', hearted, 30)
+    assert call('unstar', albumId=starred_id)['status'] == 'ok'
+    wait('the heart to go', lambda: not hearted(), 30)
+    print('PASS: a star from a music app shows as a heart in Jellyfin, both ways', flush=True)
+
     song = next(s for s in call('search3', query='daft punk one more time', artistCount=0, albumCount=0)['searchResult3']['song'] if s['title'] == 'One More Time')
     mix = call('getSimilarSongs2', id=song['artistId'], count=30)['similarSongs2']['song']
     assert len(mix) >= 10 and len({s['artistId'] for s in mix}) >= 3, [(s['artist'], s['title']) for s in mix]
@@ -82,6 +92,20 @@ try:
     tracks = items(radio['Id'], viewer['token'], viewer['id'])
     assert len(tracks) >= 10 and len({t['AlbumArtist'] for t in tracks if t.get('AlbumArtist')}) >= 3, [(t.get('AlbumArtist'), t['Name']) for t in tracks]
     print('PASS: artist pages in the channel have a Radio folder with similar artists mixed in', flush=True)
+
+    # Jellyfin's artist page shows albums only; its Instant Mix button is how the web and mobile apps reach radio.
+    for path in ('/Artists/' + artist['Id'] + '/InstantMix', '/Items/' + artist['Id'] + '/InstantMix', '/Albums/' + album['Id'] + '/InstantMix'):
+        mixed = jellyfin(path + '?userId=' + viewer['id'] + '&limit=200', viewer['token'])['Items']
+        assert len(mixed) >= 10 and all(i['Type'] == 'Audio' for i in mixed) and len({i.get('AlbumArtist') for i in mixed}) >= 3, (path, [(i.get('AlbumArtist'), i['Name']) for i in mixed])
+    song_item = items(next(f['Id'] for f in items(artist['Id'], viewer['token'], viewer['id']) if f['Name'] == 'Top tracks'), viewer['token'], viewer['id'])[0]
+    assert len(jellyfin('/Songs/' + song_item['Id'] + '/InstantMix?userId=' + viewer['id'], viewer['token'])['Items']) >= 10
+    for identity in (state['users']['other']['token'],):
+        try:
+            jellyfin('/Items/' + artist['Id'] + '/InstantMix?userId=' + state['users']['other']['id'], identity)
+            raise AssertionError('another user got a StreamFin mix')
+        except urllib.error.HTTPError as error:
+            assert error.code in (401, 403, 404), error.code
+    print('PASS: Instant Mix on a channel artist, album or song plays the radio, and only for allowed users', flush=True)
 
     folder = args.music.rstrip('/') + '/StreamFin'
     library = next((v for v in jellyfin('/Library/VirtualFolders', admin) if args.music in v['Locations']), None)

@@ -302,7 +302,8 @@ Check(MusicGain.AudioStart([.. tagged, 0xFF, 0xF8]) == tagged.Length && MusicGai
     "FLAC audio starts after the last metadata block; cut short or not FLAC gives none");
 var single = new MusicRelease("155102851176075264", "Single", [new("155102851176075265", "Artist"), new("155102851176075266", "Guest")], "SINGLE", new DateTime(2023, 5, 1), null, null, 1,
     [new MusicTrack("155102871061270528", "Song", [new("155102851176075265", "Artist")], "155102851176075264", null, 1000, null, false, 1, 1)]);
-var original = Flac("TITLE=Song (old)", "ARTIST=Artist", "ALBUM=Other Album", "ALBUMARTIST=Someone", "REPLAYGAIN_TRACK_GAIN=-5.6", "REPLAYGAIN_ALBUM_GAIN=-9.1", "REPLAYGAIN_ALBUM_PEAK=1.0");
+var original = Flac("TITLE=Song (old)", "ARTIST=Artist", "ALBUM=Other Album", "ALBUMARTIST=Someone", "REPLAYGAIN_TRACK_GAIN=-5.6", "REPLAYGAIN_ALBUM_GAIN=-9.1", "REPLAYGAIN_ALBUM_PEAK=1.0",
+    "BARCODE=123", "MUSICBRAINZ_ALBUMID=x", "ISRC=GBAYE9701376");
 var retagged = MusicTags.Retag([.. original, 0xFF, 0xF8, 1, 2], MusicTags.For(single, single.Tracks[0]))!;
 var retaggedText = Encoding.UTF8.GetString(retagged);
 Check(MusicGain.AudioStart([.. retagged, 0xFF, 0xF8]) == retagged.Length && retagged.AsSpan(8, 34).SequenceEqual(original.AsSpan(8, 34))
@@ -310,6 +311,24 @@ Check(MusicGain.AudioStart([.. retagged, 0xFF, 0xF8]) == retagged.Length && reta
 Check(retaggedText.Contains("ALBUM=Single") && retaggedText.Contains("ALBUMARTIST=Artist") && retaggedText.Contains("ALBUMARTIST=Guest")
     && !retaggedText.Contains("Other Album") && !retaggedText.Contains("Someone") && retaggedText.Contains("ARTIST=Artist") && retaggedText.Contains("TRACKNUMBER=1")
     && retaggedText.Contains("DATE=2023-05-01") && !retaggedText.Contains("(old)"), "a saved song is tagged with the release it was saved from");
+Check(!retaggedText.Contains("BARCODE") && !retaggedText.Contains("MUSICBRAINZ_ALBUMID") && retaggedText.Contains("ISRC=GBAYE9701376"),
+    "another album's own identifiers go, the recording's stay");
+static List<int> BlockTypes(byte[] flac)
+{
+    var types = new List<int>();
+    for (var at = 4; at + 4 <= flac.Length; )
+    {
+        types.Add(flac[at] & 0x7f);
+        var last = (flac[at] & 0x80) != 0;
+        at += 4 + ((flac[at + 1] << 16) | (flac[at + 2] << 8) | flac[at + 3]);
+        if (last) break;
+    }
+    return types;
+}
+byte[] withPicture = [.. original[..42], 0x06, 0, 0, 2, 9, 9, .. original[42..]];
+Check(MusicTags.Retag(withPicture, MusicTags.For(single, single.Tracks[0])) is { } noPicture && BlockTypes(noPicture).SequenceEqual([0, 4])
+    && MusicTags.Retag(withPicture, MusicTags.For(single with { Title = "Other Album" }, single.Tracks[0])) is { } kept && BlockTypes(kept).SequenceEqual([0, 4, 6]),
+    "another album's embedded picture goes; the same album's stays");
 Check(MusicGain.Parse(MusicTags.Retag(Flac("ALBUM=single", "REPLAYGAIN_ALBUM_GAIN=-3"), MusicTags.For(single, single.Tracks[0]))!)?.AlbumGain == -3,
     "the album gain stays when the song already belonged to that album");
 Check(MusicTags.Retag([.. "fLaC"u8, 0, 0, 0, 34, .. new byte[34], .. Enumerable.Range(0, 1200).SelectMany(_ => new byte[] { 1, 0, 0, 0 }), 0x81, 0, 0, 0], []) is null
@@ -414,6 +433,7 @@ Check(MusicPaths.Root("") is null && MusicPaths.Root("relative/music") is null &
 var savedAlbum = new MusicRelease("155102851176075264", "OK Computer", [new("155102851176075265", "Radiohead")], "ALBUM", new DateTime(1997, 7, 1), null, null, 12, []);
 var albumFolder = MusicPaths.Album("/srv/music", savedAlbum);
 Check(albumFolder == "/srv/music/Radiohead/OK Computer (1997)", "saved albums go under artist and album with the year");
+Check(MusicPaths.Album("/srv/music", savedAlbum, edition: true) == "/srv/music/Radiohead/OK Computer (1997) [075264]", "a second edition of an album gets its own folder");
 Check(MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Artists = [new("155102851176075265", "..")] }) == "/srv/music/_/.. (1997)" && MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Date = null }) == "/srv/music/Radiohead/_"
     && MusicPaths.Album("/srv/music", savedAlbum with { Date = null, Artists = [] }) == "/srv/music/Unknown artist/OK Computer", "album folders cannot climb out of the library folder");
 var savedTrack = musicSearch.Tracks[0] with { Title = "Paranoid Android", Number = 2, Disc = 1 };
