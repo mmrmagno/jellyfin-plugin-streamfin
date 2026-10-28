@@ -72,6 +72,21 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
     private DateTime lastFetch;
 
     public static string? Folder => MusicPaths.Root(Plugin.Instance?.Configuration.MusicLibraryFolder);
+    public const string NotWritable = "Jellyfin cannot write to the music library folder. If Jellyfin runs in a container, the folder may be mounted read-only.";
+
+    // Whether Jellyfin can make the folder and write a file in it.
+    public static bool Writable(string folder)
+    {
+        var probe = Path.Combine(folder, ".streamfin-write-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(folder);
+            File.WriteAllBytes(probe, []);
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
     public static bool Enabled => MusicChannel.IsAvailable && Folder is not null;
 
     public async Task QueueAsync(Guid user, MusicRelease release, CancellationToken ct)
@@ -236,6 +251,7 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
     private async Task<bool> SaveAsync(Guid user, MusicSave save, CancellationToken ct)
     {
         var root = Folder ?? throw new ProviderException("No music library folder is set.");
+        if (!Writable(root)) throw new ProviderException(NotWritable + " Fix that, then press \"Save every starred album now\".");
         var release = await catalog.ReleaseAsync(save.ReleaseId, ct);
         if (release.Tracks.Count == 0) throw new ProviderException("The catalog lists no tracks for this album.");
         // The folder notes which release filled it, so another edition of the same album gets its own.
@@ -419,7 +435,7 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
 }
 
 public sealed record MusicSaveStatus(string User, string Album, string Artist, string State, int Saved, int Total, string? Note);
-public sealed record MusicSavesResponse(string? Folder, IReadOnlyList<string> Libraries, IReadOnlyList<MusicSaveStatus> Saves);
+public sealed record MusicSavesResponse(string? Folder, bool Writable, IReadOnlyList<string> Libraries, IReadOnlyList<MusicSaveStatus> Saves);
 
 [ApiController]
 [Authorize(Policy = Policies.RequiresElevation)]
@@ -436,7 +452,7 @@ public sealed class MusicSavesController(MusicSaver saver, MusicLibraryStore sto
             saves.AddRange((await store.ReadAsync(id, ct)).Saves.OrderByDescending(s => s.Queued).Take(50)
                 .Select(s => new MusicSaveStatus(name, s.Title, s.Artist, s.State, s.Saved, s.Total, s.Note)));
         }
-        return Ok(new MusicSavesResponse(MusicSaver.Folder, saver.Libraries(), saves));
+        return Ok(new MusicSavesResponse(MusicSaver.Folder, MusicSaver.Folder is { } folder && MusicSaver.Writable(folder), saver.Libraries(), saves));
     }
 
     [HttpPost("QueueStarred")]
