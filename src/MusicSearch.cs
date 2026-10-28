@@ -116,6 +116,8 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
             }
             finally { ChannelNavigation.Gate.Release(); }
         }
+        // Apps search as you type and cancel the previous search with each letter; that is not a failure.
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return []; }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException or OperationCanceledException && !ct.IsCancellationRequested)
         {
             logger.LogWarning("StreamFin music search unavailable ({ErrorType}); local search remains available", ex.GetType().Name);

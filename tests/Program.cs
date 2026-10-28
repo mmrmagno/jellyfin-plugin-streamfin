@@ -424,6 +424,8 @@ foreach (var host in new[] { "musicbrainz.org", "labs.api.listenbrainz.org", "ws
 Check(true, "radio services are known sites");
 Check(MusicPaths.Part(new string('a', 79) + " b") == new string('a', 79) && MusicPaths.Part(new string('\uFFFD', 59) + "a é") == new string('\uFFFD', 59) + "a"
     && MusicPaths.Part(new string('a', 79) + ".b") == new string('a', 79), "a shortened path part never ends in a space or a dot");
+using (var page = new StreamReader(typeof(Plugin).Assembly.GetManifestResourceStream("StreamFin.Configuration.html")!))
+    Check(!page.ReadToEnd().Contains("${", StringComparison.Ordinal), "the settings page has no dollar-brace text, which Jellyfin would replace with a translation");
 foreach (var (text, part) in new[] { (".. .", "_"), (". .", "_"), ("..", "_"), (".", "_"), ("  ", "_"), ("a/b\\c", "a_b_c"), ("../../etc", ".._.._etc"), ("Name.", "Name"), ("AC/DC", "AC_DC"), ("x\0y", "x_y") })
     Check(MusicPaths.Part(text) == part, "music path part " + text.Replace("\0", "NUL"));
 Check(MusicPaths.Part(new string('é', 200)).Length == 80 && System.Text.Encoding.UTF8.GetByteCount(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))) <= 180

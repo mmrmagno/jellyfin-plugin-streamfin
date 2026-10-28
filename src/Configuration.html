@@ -169,12 +169,14 @@
             const result = await ApiClient.ajax({type: 'GET', url: ApiClient.getUrl('StreamFin/MusicSaves'), dataType: 'json'});
             page.querySelector('#musicSaveStarred').disabled = !result.Folder;
             if (!result.Folder) { status.textContent = ''; return; }
-            status.textContent = result.Libraries.length ? 'Saved albums appear in: ' + result.Libraries.join(', ') + '.'
+            status.textContent = !result.Writable ? 'Jellyfin cannot write to this folder. If Jellyfin runs in a container, the folder may be mounted read-only: give Jellyfin write access to it.'
+              : result.Libraries.length ? 'Saved albums appear in: ' + result.Libraries.join(', ') + '.'
               : 'This folder is not part of any Jellyfin library yet, so saved albums will not show up. Add it to a music library.';
             result.Saves.forEach(save => {
               const item = document.createElement('li');
-              item.textContent = `${save.Artist} - ${save.Album}: ${states[save.State] || save.State}` + (save.State === 'saving' ? ` (${save.Saved} of ${save.Total})` : '')
-                + (save.Note ? `. ${save.Note}` : '') + ` (starred by ${save.User})`;
+              // No template literals on this page: Jellyfin treats dollar-brace text in plugin pages as translation keys and replaces it.
+              item.textContent = save.Artist + ' - ' + save.Album + ': ' + (states[save.State] || save.State)
+                + (save.State === 'saving' ? ' (' + save.Saved + ' of ' + save.Total + ')' : '') + (save.Note ? '. ' + save.Note : '') + ' (starred by ' + save.User + ')';
               list.append(item);
             });
           } catch {
@@ -187,7 +189,7 @@
           button.disabled = true;
           try {
             const count = await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('StreamFin/MusicSaves/QueueStarred'), dataType: 'json'});
-            page.querySelector('#musicSaveStatus').textContent = count ? `Queued ${count} starred albums. Albums already saved are skipped.` : 'No starred albums to save. Save the folder setting first.';
+            page.querySelector('#musicSaveStatus').textContent = count ? 'Queued ' + count + ' starred albums. Albums already saved are skipped.' : 'No starred albums to save. Save the folder setting first.';
           } catch {
             page.querySelector('#musicSaveStatus').textContent = 'Could not queue the starred albums. Please try again.';
           } finally { button.disabled = false; }

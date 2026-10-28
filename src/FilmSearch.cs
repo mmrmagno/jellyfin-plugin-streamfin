@@ -85,6 +85,8 @@ public sealed class FilmSearch(TmdbCatalog catalog, ILibraryManager library, Sea
             }
             finally { ChannelNavigation.Gate.Release(); }
         }
+        // Apps search as you type and cancel the previous search with each letter; that is not a failure.
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return []; }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException or OperationCanceledException && !ct.IsCancellationRequested)
         {
             logger.LogWarning("StreamFin film search unavailable ({ErrorType}); local search remains available", ex.GetType().Name);
