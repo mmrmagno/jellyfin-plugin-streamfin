@@ -327,17 +327,21 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
                 await cached.CopyToAsync(file, ct);
                 return;
             }
+        // The catalog often drops a long download partway; each attempt carries on from the byte it reached, and
+        // only attempts that get nowhere count against the limit.
+        long size = 0;
         for (int busy = 0, broken = 0; ; )
         {
             var wait = lastFetch + Pace - DateTime.UtcNow;
             if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
             lastFetch = DateTime.UtcNow;
+            var from = size > 0 && File.Exists(part) ? new FileInfo(part).Length : 0;
             // A connection that stalls must not hold every user's queue until Jellyfin restarts.
             using var song = CancellationTokenSource.CreateLinkedTokenSource(ct);
             song.CancelAfter(TimeSpan.FromMinutes(20));
             try
             {
-                using var response = await http.OpenAsync(upstream, true, song.Token);
+                using var response = await http.OpenAsync(upstream, true, song.Token, from > 0 ? $"bytes={from}-" : null);
                 if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 {
                     if (++busy >= BusyLimit) throw new ProviderException("The music catalog kept refusing downloads. Star the album again later to retry.");
@@ -346,18 +350,57 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
                     continue;
                 }
                 if ((int)response.StatusCode >= 500) throw new HttpRequestException("The catalog answered " + (int)response.StatusCode);
-                if (response.StatusCode != HttpStatusCode.OK || response.Content.Headers.ContentLength is not long size || size is <= 0 or > MusicCache.SongLimit)
-                    throw new ProviderException($"The catalog answered HTTP {(int)response.StatusCode} for a song of this album.");
-                if (await WriteAsync(response, part, size, "fLaC"u8.ToArray(), song.Token, exact: true)) return;
-                throw new IOException("A song arrived incomplete.");
+                if (from == 0)
+                {
+                    if (response.StatusCode != HttpStatusCode.OK || response.Content.Headers.ContentLength is not long length || length is <= 0 or > MusicCache.SongLimit)
+                        throw new ProviderException($"The catalog answered HTTP {(int)response.StatusCode} for a song of this album.");
+                    size = length;
+                }
+                else if (response.StatusCode != HttpStatusCode.PartialContent || response.Content.Headers.ContentRange is not { } range
+                    || range.From != from || range.Length != size)
+                {
+                    // The catalog did not continue where the file stopped; start the song again.
+                    size = 0;
+                    throw new IOException("The catalog did not resume the song.");
+                }
+                await AppendAsync(response, part, from, size, song.Token);
+                if (new FileInfo(part).Length == size && await StartsWithAsync(part, "fLaC"u8.ToArray(), ct)) return;
+                size = 0;
+                throw new IOException("A song arrived damaged.");
             }
             // Dropped and stalled downloads, and catalog hiccups, are tried again a little later.
-            catch (Exception ex) when ((ex is HttpRequestException or IOException || ex is OperationCanceledException && !ct.IsCancellationRequested) && ++broken < 3)
+            catch (Exception ex) when (ex is HttpRequestException or IOException || ex is OperationCanceledException && !ct.IsCancellationRequested)
             {
-                logger.LogInformation("StreamFin music library: a download broke off ({ErrorType}), trying again", ex.GetType().Name);
-                await Task.Delay(TimeSpan.FromMinutes(1), ct);
+                var progressed = size > 0 && File.Exists(part) && new FileInfo(part).Length > from;
+                if (progressed) broken = 0;
+                else if (++broken >= 3) throw;
+                logger.LogInformation("StreamFin music library: a download broke off ({ErrorType}), {Action}", ex.GetType().Name, progressed ? "resuming" : "trying again");
+                await Task.Delay(progressed ? TimeSpan.FromSeconds(5) : TimeSpan.FromMinutes(1), ct);
             }
         }
+    }
+
+    private static async Task AppendAsync(HttpResponseMessage response, string part, long from, long size, CancellationToken ct)
+    {
+        await using var input = await response.Content.ReadAsStreamAsync(ct);
+        await using var file = new FileStream(part, from > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
+        var buffer = new byte[1 << 16];
+        for (var written = from; ; )
+        {
+            using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            idle.CancelAfter(TimeSpan.FromSeconds(60));
+            var read = await input.ReadAsync(buffer, idle.Token);
+            if (read == 0) return;
+            if ((written += read) > size) throw new IOException("The catalog sent more than the song's size.");
+            await file.WriteAsync(buffer.AsMemory(0, read), ct);
+        }
+    }
+
+    private static async Task<bool> StartsWithAsync(string path, byte[] magic, CancellationToken ct)
+    {
+        var head = new byte[magic.Length];
+        await using var check = new FileStream(path, FileMode.Open, FileAccess.Read);
+        return await check.ReadAsync(head, ct) == head.Length && head.AsSpan().SequenceEqual(magic);
     }
 
     // The metadata is at the start and small; the new header is written, then the audio copied after it unchanged.
@@ -385,27 +428,12 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
     }
 
     // Moved into place only when whole, so the library never scans half a file.
-    private static async Task<bool> WriteAsync(HttpResponseMessage response, string part, long limit, byte[] magic, CancellationToken ct, bool exact = false)
+    // The cover: written whole or not at all, and only when it is the image it claims to be.
+    private static async Task<bool> WriteAsync(HttpResponseMessage response, string part, long limit, byte[] magic, CancellationToken ct)
     {
-        long written = 0;
-        await using (var input = await response.Content.ReadAsStreamAsync(ct))
-        await using (var file = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true))
-        {
-            var buffer = new byte[1 << 16];
-            int read;
-            while (true)
-            {
-                using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                idle.CancelAfter(TimeSpan.FromSeconds(60));
-                if ((read = await input.ReadAsync(buffer, idle.Token)) == 0) break;
-                if ((written += read) > limit) return false;
-                await file.WriteAsync(buffer.AsMemory(0, read), ct);
-            }
-        }
-        if (exact && written != limit) return false;
-        var head = new byte[magic.Length];
-        await using (var check = new FileStream(part, FileMode.Open, FileAccess.Read))
-            return await check.ReadAsync(head, ct) == head.Length && head.AsSpan().SequenceEqual(magic);
+        try { await AppendAsync(response, part, 0, limit, ct); }
+        catch (IOException) { return false; }
+        return await StartsWithAsync(part, magic, ct);
     }
 
     private static void Discard(string part)
