@@ -11,6 +11,9 @@ public sealed record MusicStarredArtist(MusicArtistRef Artist, DateTime At);
 public sealed record MusicSave(string ReleaseId, string Title, string Artist, string State, int Saved, int Total, string? Note, DateTime Queued,
     DateTime? Finished = null);
 public sealed record MusicPlaylist(Guid Id, string Name, string Comment, DateTime Created, DateTime Changed, IReadOnlyList<MusicPlay> Entries);
+// What an app was playing, so another device can pick it up (Subsonic savePlayQueue). Current is a song id.
+public sealed record MusicQueue(IReadOnlyList<MusicPlay> Entries, string? Current, long Position, DateTime Changed, string ChangedBy);
+public sealed record MusicBookmark(MusicPlay Entry, long Position, string Comment, DateTime Created, DateTime Changed);
 public sealed class MusicLibrary
 {
     public List<MusicPlay> Plays { get; set; } = [];
@@ -19,6 +22,12 @@ public sealed class MusicLibrary
     public List<MusicStarredArtist> StarredArtists { get; set; } = [];
     public List<MusicPlaylist> Playlists { get; set; } = [];
     public List<MusicSave> Saves { get; set; } = [];
+    // 1 to 5 stars, keyed by Subsonic id (tr-, al-, ar-).
+    public Dictionary<string, int> Ratings { get; set; } = [];
+    public MusicQueue? Queue { get; set; }
+    public List<MusicBookmark> Bookmarks { get; set; } = [];
+    // When anything here last changed, for apps that ask whether their copy of the index is current.
+    public DateTime Changed { get; set; }
 }
 
 // The catalog has no accounts, so what a user played lives here, one JSON file per Jellyfin user.
@@ -31,6 +40,11 @@ public sealed class MusicLibraryStore
     // Across all of a user's playlists, so the file stays a few megabytes at most.
     public const int PlaylistTotalLimit = 20_000;
     public const int SaveLimit = 1000;
+    public const int QueueLimit = 1000;
+    public const int BookmarkLimit = 200;
+    public static bool IsRatingKey(string? id) => id is not null
+        && System.Text.RegularExpressions.Regex.IsMatch(id, @"\A(?:tr-[0-9]{15,20}-[0-9]{15,20}|al-[0-9]{15,20}|ar-[0-9]{15,20})\z",
+            System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> gates = new();
     private readonly ConcurrentDictionary<Guid, MusicLibrary> loaded = new();
     private readonly ConcurrentDictionary<Guid, long> versions = new();
@@ -49,7 +63,9 @@ public sealed class MusicLibraryStore
         finally { gate.Release(); }
     }
 
-    public async Task UpdateAsync(Guid user, Action<MusicLibrary> change, CancellationToken ct)
+    // content: whether this changes what the library lists. A saved play queue does not, so apps that compare
+    // the index date do not sync again on every skip.
+    public async Task UpdateAsync(Guid user, Action<MusicLibrary> change, CancellationToken ct, bool content = true)
     {
         if (user == Guid.Empty) throw new ArgumentException("A user is required.", nameof(user));
         var gate = gates.GetOrAdd(user, _ => new SemaphoreSlim(1, 1));
@@ -64,6 +80,12 @@ public sealed class MusicLibraryStore
             library.StarredArtists = library.StarredArtists.DistinctBy(s => s.Artist.Id).Take(StarLimit).ToList();
             library.Saves = library.Saves.DistinctBy(s => s.ReleaseId).Take(SaveLimit).Select(s => s with { Title = Bounded(s.Title), Artist = Bounded(s.Artist),
                 Note = s.Note is null ? null : Bounded(s.Note) }).ToList();
+            library.Ratings = library.Ratings.Where(r => r.Value is >= 1 and <= 5 && IsRatingKey(r.Key)).Take(StarLimit).ToDictionary();
+            if (library.Queue is { } queue)
+                library.Queue = queue with { Entries = queue.Entries.Take(QueueLimit).ToArray(), ChangedBy = Bounded(queue.ChangedBy), Position = Math.Max(0, queue.Position) };
+            library.Bookmarks = library.Bookmarks.DistinctBy(b => b.Entry.Track.Id).Take(BookmarkLimit)
+                .Select(b => b with { Comment = Bounded(b.Comment), Position = Math.Max(0, b.Position) }).ToList();
+            if (content) library.Changed = DateTime.UtcNow;
             var room = PlaylistTotalLimit;
             library.Playlists = library.Playlists.DistinctBy(p => p.Id).Take(PlaylistLimit).Select(p =>
             {
@@ -114,6 +136,12 @@ public sealed class MusicLibraryStore
             && MusicCatalog.IsId(s.ReleaseId)).ToList();
         library.Playlists = (library.Playlists ?? []).Where(p => p is { Name: not null } && p.Id != Guid.Empty)
             .Select(p => p with { Comment = p.Comment ?? "", Entries = (p.Entries ?? []).Where(Valid).ToArray() }).ToList();
+        library.Ratings = (library.Ratings ?? []).Where(r => r.Value is >= 1 and <= 5 && IsRatingKey(r.Key)).ToDictionary();
+        library.Queue = library.Queue is { Entries: not null, ChangedBy: not null } queue
+            ? queue with { Entries = queue.Entries.Where(Valid).ToArray(), Current = IsRatingKey(queue.Current) ? queue.Current : null } : null;
+        library.Bookmarks = (library.Bookmarks ?? []).Where(b => b is { Comment: not null } && Valid(b.Entry)).ToList();
+        // A library from before this was kept counts as changed now, so an app's older index date is not taken as current.
+        if (library.Changed == default) library.Changed = DateTime.UtcNow;
         return loaded[user] = library;
     }
 
@@ -126,6 +154,7 @@ public sealed class MusicLibraryStore
     private static MusicLibrary Copy(MusicLibrary library) => new()
     {
         Plays = [.. library.Plays], StarredTracks = [.. library.StarredTracks], StarredAlbums = [.. library.StarredAlbums],
-        StarredArtists = [.. library.StarredArtists], Playlists = [.. library.Playlists], Saves = [.. library.Saves]
+        StarredArtists = [.. library.StarredArtists], Playlists = [.. library.Playlists], Saves = [.. library.Saves],
+        Ratings = new(library.Ratings), Queue = library.Queue, Bookmarks = [.. library.Bookmarks], Changed = library.Changed
     };
 }

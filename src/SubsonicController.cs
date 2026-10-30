@@ -66,6 +66,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         if (!SubsonicAuth.Enabled) { await SendAsync(SubsonicResponse.Error(50, "The Subsonic API is turned off in the StreamFin settings.")); return; }
         try
         {
+            // OpenSubsonic: apps ask what the server supports before they sign in. It is the same fixed list for everyone.
+            if (name == "getOpenSubsonicExtensions") { await SendAsync(Extensions()); return; }
             if (Request.HasFormContentType)
             {
                 // Read before sign-in, so the size is checked first. A playlist of 2000 songs fits in well under this.
@@ -114,13 +116,23 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     private static SubsonicError Missing(string name) => new(10, "Required parameter is missing: " + name);
     private static SubsonicError NotFound(string what) => new(70, what + " not found.");
 
+    // JSONP wraps the JSON in a call to the named function. The name is limited to a plain identifier path, so it
+    // cannot carry script of its own.
+    private string? Callback => One("f") == "jsonp" && One("callback") is { } name
+        && Regex.IsMatch(name, @"\A[A-Za-z_$][A-Za-z0-9_$]{0,63}(?:\.[A-Za-z_$][A-Za-z0-9_$]{0,63}){0,3}\z", RegexOptions.None, TimeSpan.FromSeconds(1)) ? name : null;
+
     private async Task SendAsync(SubsonicNode node)
     {
         if (Response.HasStarted) return;
         Response.StatusCode = 200;
-        Response.ContentType = Json ? "application/json; charset=utf-8" : "text/xml; charset=utf-8";
+        var callback = Callback;
+        Response.ContentType = callback is not null ? "application/javascript; charset=utf-8" : Json ? "application/json; charset=utf-8" : "text/xml; charset=utf-8";
         Response.Headers.CacheControl = "no-store";
-        if (!HttpMethods.IsHead(Request.Method)) await Response.Body.WriteAsync(Json ? SubsonicResponse.Json(node) : SubsonicResponse.Xml(node), HttpContext.RequestAborted);
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        var body = Json ? SubsonicResponse.Json(node) : SubsonicResponse.Xml(node);
+        // The leading comment is the usual guard against a response being read as something other than script.
+        if (callback is not null) body = [.. System.Text.Encoding.UTF8.GetBytes("/**/" + callback + "("), .. body, .. ");"u8];
+        if (!HttpMethods.IsHead(Request.Method)) await Response.Body.WriteAsync(body, HttpContext.RequestAborted);
     }
 
     private static SubsonicNode Success() => SubsonicResponse.Root(true);
@@ -130,16 +142,21 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     {
         "ping" => Done(Success()),
         "getLicense" => Done(Success().One(new SubsonicNode("license").Set("valid", true))),
-        "getOpenSubsonicExtensions" => Done(Success().AddRange(new[] { "formPost", "apiKeyAuthentication", "songLyrics", "transcodeOffset" }
-            .Select(e => new SubsonicNode("openSubsonicExtensions").Set("name", e).Set("versions", new[] { 1 })))),
+        "getOpenSubsonicExtensions" => Done(Extensions()),
+        "tokenInfo" => Done(Success().One(new SubsonicNode("tokenInfo").Set("username", user.Name))),
         "getMusicFolders" => Done(Success().One(new SubsonicNode("musicFolders").Add(new SubsonicNode("musicFolder").Set("id", 1).Set("name", "StreamFin")))),
-        "getUser" => Done(Success().One(UserNode())),
+        "getUser" => Done(One("username") is { } asked && !string.Equals(asked, user.Name, StringComparison.OrdinalIgnoreCase)
+            ? SubsonicResponse.Error(50, "Only your own account can be looked up.") : Success().One(UserNode())),
         "getScanStatus" or "startScan" => Done(Success().One(new SubsonicNode("scanStatus").Set("scanning", false).Set("count", 0))),
         "getGenres" => Done(Success().One(new SubsonicNode("genres"))),
         "getSongsByGenre" => Done(Success().One(new SubsonicNode("songsByGenre"))),
-        "getNowPlaying" => Done(Success().One(new SubsonicNode("nowPlaying"))),
-        "getBookmarks" => Done(Success().One(new SubsonicNode("bookmarks"))),
-        "getPlayQueue" or "savePlayQueue" or "createBookmark" or "deleteBookmark" => Done(Success()),
+        "getNowPlaying" => NowPlayingAsync(),
+        "getBookmarks" => BookmarksAsync(),
+        "createBookmark" => CreateBookmarkAsync(),
+        "deleteBookmark" => DeleteBookmarkAsync(),
+        "getPlayQueue" => PlayQueueAsync(),
+        "savePlayQueue" => SavePlayQueueAsync(),
+        "setRating" => RatingAsync(),
         "getInternetRadioStations" => Done(Success().One(new SubsonicNode("internetRadioStations"))),
         "getPodcasts" => Done(Success().One(new SubsonicNode("podcasts"))),
         "getNewestPodcasts" => Done(Success().One(new SubsonicNode("newestPodcasts"))),
@@ -175,6 +192,9 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
 
     private static Task<SubsonicNode?> Done(SubsonicNode node) => Task.FromResult<SubsonicNode?>(node);
 
+    private static SubsonicNode Extensions() => Success().AddRange(new[] { "formPost", "apiKeyAuthentication", "songLyrics", "transcodeOffset" }
+        .Select(e => new SubsonicNode("openSubsonicExtensions").Set("name", e).Set("versions", new[] { 1 })));
+
     private SubsonicNode UserNode() => new SubsonicNode("user").Set("username", user.Name).Set("scrobblingEnabled", true).Set("adminRole", false)
         .Set("settingsRole", false).Set("downloadRole", true).Set("uploadRole", false).Set("playlistRole", true).Set("coverArtRole", true)
         .Set("commentRole", false).Set("podcastRole", false).Set("streamRole", true).Set("jukeboxRole", false).Set("shareRole", false)
@@ -182,11 +202,19 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
 
     // ---- Library: what this user played, starred or put in a playlist. The catalog has no browsable index.
 
-    private sealed record Starred(Dictionary<string, DateTime> Tracks, Dictionary<string, DateTime> Albums, Dictionary<string, DateTime> Artists);
+    private sealed record Played(int Count, DateTime Last);
+    private sealed record Starred(Dictionary<string, DateTime> Tracks, Dictionary<string, DateTime> Albums, Dictionary<string, DateTime> Artists,
+        Dictionary<string, int> Ratings, Dictionary<string, Played> TrackPlays, Dictionary<string, Played> AlbumPlays)
+    {
+        public int? Rating(string id) => Ratings.TryGetValue(id, out var rating) ? rating : null;
+    }
     private static Starred Stars(MusicLibrary library) => new(
         library.StarredTracks.GroupBy(s => s.Track.Id).ToDictionary(g => g.Key, g => g.First().At),
         library.StarredAlbums.GroupBy(s => s.Release.Id).ToDictionary(g => g.Key, g => g.First().At),
-        library.StarredArtists.GroupBy(s => s.Artist.Id).ToDictionary(g => g.Key, g => g.First().At));
+        library.StarredArtists.GroupBy(s => s.Artist.Id).ToDictionary(g => g.Key, g => g.First().At),
+        library.Ratings,
+        library.Plays.GroupBy(p => p.Track.Id).ToDictionary(g => g.Key, g => new Played(g.Count(), g.Max(p => p.At))),
+        library.Plays.GroupBy(p => p.Track.ReleaseId).ToDictionary(g => g.Key, g => new Played(g.Count(), g.Max(p => p.At))));
 
     private static IEnumerable<MusicPlay> Songs(MusicLibrary library) => library.Plays.Concat(library.StarredTracks)
         .Concat(library.Playlists.SelectMany(p => p.Entries)).DistinctBy(p => p.Track.Id);
@@ -212,6 +240,72 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         return [.. albums.Values];
     }
 
+    // The library grows with taste: every album of an artist this user starred or keeps playing is listed too,
+    // so apps that show "all albums" or sync the library are not limited to what was played. Only artist pages
+    // the server already keeps are used; missing ones are fetched in the background while the catalog has room.
+    private const int GrowthArtists = 50;
+    private const int GrowthAlbums = 100;
+    private const int GrowthPlays = 3;
+
+    private static IEnumerable<string> GrowthArtistIds(MusicLibrary library) => library.StarredArtists.OrderByDescending(s => s.At).Select(s => s.Artist.Id)
+        .Concat(library.Plays.Where(p => p.Track.Artists.Count > 0).GroupBy(p => p.Track.Artists[0].Id).Where(g => g.Count() >= GrowthPlays)
+            .OrderByDescending(g => g.Count()).Select(g => g.Key))
+        .Distinct().Take(GrowthArtists);
+
+    // Built once per user and library version, and again every few minutes while missing artist pages arrive. Changed
+    // moves only when the set of albums does, for apps that compare the index date.
+    private sealed record Grown(long Version, IReadOnlyList<LibraryAlbum> Albums, DateTime Changed, DateTime Built);
+    private static readonly MemoryCache Growth = new(new MemoryCacheOptions { SizeLimit = 1000 });
+
+    private async Task<Grown> GrowthAsync(MusicLibrary library)
+    {
+        var version = store.Version(user.Id);
+        Growth.TryGetValue<Grown>(user.Id, out var known);
+        if (known is not null && known.Version == version && DateTime.UtcNow - known.Built < TimeSpan.FromMinutes(2)) return known;
+        var listed = Albums(library).Select(a => a.Release.Id).ToHashSet();
+        var grown = new List<LibraryAlbum>();
+        var started = 0;
+        foreach (var artistId in GrowthArtistIds(library))
+        {
+            if (!catalog.HasArtist(artistId))
+            {
+                if (started++ < 2 && catalog.Spare && !catalog.Down) _ = WarmArtistAsync(artistId);
+                continue;
+            }
+            MusicArtistPage page;
+            try { page = await catalog.ArtistAsync(artistId, Ct); }
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or IOException or RegexMatchTimeoutException
+                or OperationCanceledException && !Ct.IsCancellationRequested) { continue; }
+            // The catalog lists a clean edit next to the explicit album; one entry per title and length is enough.
+            foreach (var release in page.Releases.GroupBy(r => (r.Title.ToLowerInvariant(), r.Type, r.TrackCount)).Select(g => g.First()).Take(GrowthAlbums))
+                if (listed.Add(release.Id))
+                    grown.Add(new LibraryAlbum(release, release.Date ?? new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc), null, 0));
+        }
+        var changed = known is not null && known.Albums.Select(a => a.Release.Id).ToHashSet().SetEquals(grown.Select(a => a.Release.Id)) ? known.Changed : DateTime.UtcNow;
+        var result = new Grown(version, grown, changed, DateTime.UtcNow);
+        Growth.Set(user.Id, result, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromMinutes(30) });
+        return result;
+    }
+
+    private async Task<List<LibraryAlbum>> AlbumsAsync(MusicLibrary library)
+    {
+        var albums = Albums(library);
+        var listed = albums.Select(a => a.Release.Id).ToHashSet();
+        albums.AddRange((await GrowthAsync(library)).Albums.Where(a => listed.Add(a.Release.Id)));
+        return albums;
+    }
+
+    // Albums per artist, counted once for a whole listing.
+    private static Dictionary<string, int> AlbumCounts(List<LibraryAlbum> albums) => albums.SelectMany(al => al.Release.Artists.Select(a => a.Id).Distinct())
+        .GroupBy(id => id).ToDictionary(g => g.Key, g => g.Count());
+
+    private async Task WarmArtistAsync(string artistId)
+    {
+        try { await catalog.ArtistAsync(artistId, CancellationToken.None); }
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or OperationCanceledException or IOException
+            or RegexMatchTimeoutException) { }
+    }
+
     private static List<MusicArtistRef> Artists(MusicLibrary library) => library.StarredArtists.Select(s => s.Artist)
         .Concat(Songs(library).SelectMany(p => p.Track.Artists)).Concat(library.StarredAlbums.SelectMany(s => s.Release.Artists))
         .DistinctBy(a => a.Id).ToList();
@@ -221,7 +315,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     private static string Names(IEnumerable<MusicArtistRef> artists) => string.Join(", ", artists.Select(a => a.Name));
     private static string Kind(string type) => type switch { "SINGLE" => "Single", "EP" => "EP", "COMPILATION" => "Compilation", _ => "Album" };
 
-    private static SubsonicNode Song(string element, MusicTrack t, string album, Starred stars)
+    private static SubsonicNode Song(string element, MusicTrack t, string album, Starred stars, MusicRelease? release = null)
     {
         var node = new SubsonicNode(element).Set("id", TrackId(t)).Set("parent", "al-" + t.ReleaseId).Set("isDir", false).Set("title", t.Title)
             .Set("album", album).Set("artist", Names(t.Artists)).Set("track", t.Number).Set("discNumber", t.Disc).Set("coverArt", "al-" + t.ReleaseId)
@@ -230,7 +324,13 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             .Set("albumId", "al-" + t.ReleaseId).Set("artistId", t.Artists.Count > 0 ? "ar-" + t.Artists[0].Id : null).Set("type", "music")
             .Set("mediaType", "song").Set("isVideo", false).Set("displayArtist", Names(t.Artists))
             .Set("isrc", t.Isrc is null ? null : new[] { t.Isrc }).Set("explicitStatus", t.Explicit ? "explicit" : "clean")
-            .Set("starred", stars.Tracks.TryGetValue(t.Id, out var at) ? at : null);
+            .Set("starred", stars.Tracks.TryGetValue(t.Id, out var at) ? at : null)
+            .Set("userRating", stars.Rating(TrackId(t))).Set("playCount", stars.TrackPlays.GetValueOrDefault(t.Id)?.Count)
+            .Set("played", stars.TrackPlays.GetValueOrDefault(t.Id)?.Last).Set("year", release?.Date?.Year)
+            .Set("displayAlbumArtist", release is { Artists.Count: > 0 } ? Names(release.Artists) : null);
+        // Known once the song has passed through here: its header says how it was mastered.
+        if (MusicGain.FormatFor(t.Id) is { } format)
+            node.Set("samplingRate", format.SampleRate).Set("bitDepth", format.BitDepth).Set("channelCount", format.Channels);
         // Amperfy hides a song whose size is unknown, and the catalog JSON has none: the real one once the song
         // has played here, otherwise an estimate from the length (lossless averages about 70% of CD rate).
         var duration = t.DurationMs is > 0 ? t.DurationMs.Value / 1000.0 : 0;
@@ -240,7 +340,8 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         if (MusicGain.For(t.Id) is { } gain)
             node.One(new SubsonicNode("replayGain").Set("trackGain", gain.TrackGain).Set("albumGain", gain.AlbumGain)
                 .Set("trackPeak", gain.TrackPeak).Set("albumPeak", gain.AlbumPeak));
-        return node.AddRange(t.Artists.Select(a => new SubsonicNode("artists").Set("id", "ar-" + a.Id).Set("name", a.Name)));
+        node.AddRange(t.Artists.Select(a => new SubsonicNode("artists").Set("id", "ar-" + a.Id).Set("name", a.Name)));
+        return node.AddRange((release?.Artists ?? []).Select(a => new SubsonicNode("albumArtists").Set("id", "ar-" + a.Id).Set("name", a.Name)));
     }
 
     private static SubsonicNode Album(string element, MusicRelease r, Starred stars, bool directory = false)
@@ -253,12 +354,17 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             .Set("parent", directory && r.Artists.Count > 0 ? "ar-" + r.Artists[0].Id : null)
             .Set("starred", stars.Albums.TryGetValue(r.Id, out var at) ? at : null).Set("displayArtist", Names(r.Artists))
             .Set("releaseTypes", new[] { Kind(r.Type) }).Set("isCompilation", r.Type == "COMPILATION")
-            .Set("explicitStatus", r.Tracks.Count == 0 ? null : r.Tracks.Any(t => t.Explicit) ? "explicit" : "clean");
+            .Set("explicitStatus", r.Tracks.Count == 0 ? null : r.Tracks.Any(t => t.Explicit) ? "explicit" : "clean")
+            .Set("userRating", stars.Rating("al-" + r.Id)).Set("playCount", stars.AlbumPlays.GetValueOrDefault(r.Id)?.Count)
+            .Set("played", stars.AlbumPlays.GetValueOrDefault(r.Id)?.Last).Set("sortName", SortName(r.Title));
+        if (r.Date is { } date) node.One(new SubsonicNode("originalReleaseDate").Set("year", date.Year).Set("month", date.Month).Set("day", date.Day));
+        if (r.Label is { Length: > 0 } label) node.Add(new SubsonicNode("recordLabels").Set("name", label));
         return node.AddRange(r.Artists.Select(a => new SubsonicNode("artists").Set("id", "ar-" + a.Id).Set("name", a.Name)));
     }
 
     private static SubsonicNode Artist(string element, MusicArtistRef a, int albums, Starred stars) => new SubsonicNode(element).Set("id", "ar-" + a.Id)
-        .Set("name", a.Name).Set("coverArt", "ar-" + a.Id).Set("albumCount", albums).Set("starred", stars.Artists.TryGetValue(a.Id, out var at) ? at : null);
+        .Set("name", a.Name).Set("coverArt", "ar-" + a.Id).Set("albumCount", albums).Set("starred", stars.Artists.TryGetValue(a.Id, out var at) ? at : null)
+        .Set("userRating", stars.Rating("ar-" + a.Id)).Set("sortName", SortName(a.Name));
 
     private async Task<(MusicLibrary Library, Starred Stars)> LibraryAsync()
     {
@@ -317,13 +423,17 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     private async Task<SubsonicNode?> ArtistsAsync(string element)
     {
         var (library, stars) = await LibraryAsync();
-        var albums = Albums(library);
-        var root = new SubsonicNode(element).Set("ignoredArticles", string.Join(' ', Articles))
-            .Set("lastModified", element == "indexes" ? new DateTimeOffset(DateTime.UtcNow).ToUnixTimeMilliseconds() : null);
+        var grown = await GrowthAsync(library);
+        var changed = new DateTimeOffset(library.Changed > grown.Changed ? library.Changed : grown.Changed).ToUnixTimeMilliseconds();
+        var root = new SubsonicNode(element).Set("ignoredArticles", string.Join(' ', Articles)).Set("lastModified", element == "indexes" ? changed : null);
+        // An app that already has this version of the index gets an empty answer, as the API allows.
+        if (element == "indexes" && long.TryParse(One("ifModifiedSince"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var since) && since >= changed)
+            return Success().One(root);
+        var counts = AlbumCounts(await AlbumsAsync(library));
         foreach (var group in Artists(library).GroupBy(a => SortName(a.Name) is { Length: > 0 } s && char.IsLetter(s[0]) ? char.ToUpperInvariant(s[0]).ToString() : "#")
                      .OrderBy(g => g.Key == "#" ? "~" : g.Key, StringComparer.Ordinal))
             root.Add(new SubsonicNode("index").Set("name", group.Key).AddRange(group.OrderBy(a => SortName(a.Name), StringComparer.OrdinalIgnoreCase)
-                .Select(a => Artist("artist", a, albums.Count(al => al.Release.Artists.Any(x => x.Id == a.Id)), stars))));
+                .Select(a => Artist("artist", a, counts.GetValueOrDefault(a.Id), stars))));
         return Success().One(root);
     }
 
@@ -342,14 +452,14 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         var id = ParseId(One("id") ?? throw Missing("id"), "al") ?? throw NotFound("Album");
         var release = await catalog.ReleaseAsync(id, Ct);
         var (_, stars) = await LibraryAsync();
-        return Success().One(Album("album", release, stars).AddRange(release.Tracks.Select(t => Song("song", t with { Artwork = t.Artwork ?? release.Artwork }, release.Title, stars))));
+        return Success().One(Album("album", release, stars).AddRange(release.Tracks.Select(t => Song("song", t with { Artwork = t.Artwork ?? release.Artwork }, release.Title, stars, release))));
     }
 
     private async Task<SubsonicNode?> SongAsync()
     {
         var (track, release) = await TrackAsync(One("id"));
         var (_, stars) = await LibraryAsync();
-        return Success().One(Song("song", track, release.Title, stars));
+        return Success().One(Song("song", track, release.Title, stars, release.Tracks.Count > 0 ? release : null));
     }
 
     // Folder browsing for older clients: an artist holds albums, an album holds songs.
@@ -368,7 +478,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             var release = await catalog.ReleaseAsync(releaseId, Ct);
             return Success().One(new SubsonicNode("directory").Set("id", id).Set("name", release.Title)
                 .Set("parent", release.Artists.Count > 0 ? "ar-" + release.Artists[0].Id : null)
-                .AddRange(release.Tracks.Select(t => Song("child", t, release.Title, stars))));
+                .AddRange(release.Tracks.Select(t => Song("child", t, release.Title, stars, release))));
         }
         if (id == "1")
         {
@@ -449,9 +559,9 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         // An empty query is how Symfonium and others sync "the whole library": hand them this user's own.
         if (query.Length == 0 || query == "*")
         {
-            var albums = Albums(library);
-            root.AddRange(Artists(library).Skip(Offset("artist")).Take(Count("artist"))
-                .Select(a => Artist("artist", a, albums.Count(al => al.Release.Artists.Any(x => x.Id == a.Id)), stars)));
+            var albums = await AlbumsAsync(library);
+            var counts = AlbumCounts(albums);
+            root.AddRange(Artists(library).Skip(Offset("artist")).Take(Count("artist")).Select(a => Artist("artist", a, counts.GetValueOrDefault(a.Id), stars)));
             root.AddRange(albums.OrderByDescending(a => a.Added).Skip(Offset("album")).Take(Count("album")).Select(a => Album("album", a.Release, stars)));
             root.AddRange(Songs(library).Skip(Offset("song")).Take(Count("song")).Select(p => Song("song", p.Track, p.Album, stars)));
             return Success().One(root);
@@ -472,13 +582,23 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         var size = Int("size", 10, 1, 500);
         var offset = Int("offset", 0, 0, 100_000);
         var (library, stars) = await LibraryAsync();
-        var albums = Albums(library);
+        var albums = await AlbumsAsync(library);
+        if (type == "highest")
+        {
+            // An album rated from a search may be in no other list; a stored copy describes it.
+            var listed = albums.Select(a => a.Release.Id).ToHashSet();
+            foreach (var id in stars.Ratings.Keys.Select(k => ParseId(k, "al")).OfType<string>().Where(id => !listed.Contains(id) && catalog.HasRelease(id)).Take(200))
+                try { albums.Add(new LibraryAlbum((await catalog.ReleaseAsync(id, Ct)) with { Tracks = [] }, DateTime.UtcNow, null, 0)); }
+                catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException) { }
+        }
         IEnumerable<LibraryAlbum> ordered = type switch
         {
             "random" => albums.OrderBy(_ => Random.Shared.Next()),
             "newest" => albums.OrderByDescending(a => a.Added),
             "recent" => albums.Where(a => a.Played is not null).OrderByDescending(a => a.Played),
-            "frequent" or "highest" => albums.Where(a => a.Plays > 0).OrderByDescending(a => a.Plays).ThenByDescending(a => a.Played),
+            "frequent" => albums.Where(a => a.Plays > 0).OrderByDescending(a => a.Plays).ThenByDescending(a => a.Played),
+            "highest" => albums.Where(a => stars.Rating("al-" + a.Release.Id) is not null).OrderByDescending(a => stars.Rating("al-" + a.Release.Id))
+                .ThenByDescending(a => a.Plays),
             "starred" => albums.Where(a => stars.Albums.ContainsKey(a.Release.Id)).OrderByDescending(a => stars.Albums[a.Release.Id]),
             "alphabeticalByName" => albums.OrderBy(a => a.Release.Title, StringComparer.OrdinalIgnoreCase),
             "alphabeticalByArtist" => albums.OrderBy(a => SortName(Names(a.Release.Artists)), StringComparer.OrdinalIgnoreCase).ThenBy(a => a.Release.Title, StringComparer.OrdinalIgnoreCase),
@@ -508,9 +628,9 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     private async Task<SubsonicNode?> StarredAsync(string element)
     {
         var (library, stars) = await LibraryAsync();
-        var albums = Albums(library);
+        var counts = AlbumCounts(await AlbumsAsync(library));
         return Success().One(new SubsonicNode(element)
-            .AddRange(library.StarredArtists.Select(s => Artist("artist", s.Artist, albums.Count(al => al.Release.Artists.Any(x => x.Id == s.Artist.Id)), stars)))
+            .AddRange(library.StarredArtists.Select(s => Artist("artist", s.Artist, counts.GetValueOrDefault(s.Artist.Id), stars)))
             .AddRange(library.StarredAlbums.Select(s => Album("album", s.Release, stars, directory: element == "starred")))
             .AddRange(library.StarredTracks.Select(s => Song("song", s.Track, s.Album, stars))));
     }
@@ -583,12 +703,34 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         return new MusicArtistRef(artist.Id, artist.Name);
     }
 
+    // What each user is listening to right now, from scrobble submission=false. Shown only to that user: other
+    // people's listening is theirs, as with Recently played.
+    private sealed record Listening(MusicPlay Play, DateTime At, string Client);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Listening> NowPlaying = new();
+
+    private async Task<SubsonicNode?> NowPlayingAsync()
+    {
+        var node = new SubsonicNode("nowPlaying");
+        if (NowPlaying.TryGetValue(user.Id, out var now) && DateTime.UtcNow - now.At < TimeSpan.FromMilliseconds(Math.Max(now.Play.Track.DurationMs ?? 0, 600_000)))
+        {
+            var (_, stars) = await LibraryAsync();
+            node.Add(Song("entry", now.Play.Track, now.Play.Album, stars).Set("username", user.Name)
+                .Set("minutesAgo", (int)(DateTime.UtcNow - now.At).TotalMinutes).Set("playerId", 0).Set("playerName", now.Client));
+        }
+        return Success().One(node);
+    }
+
     private async Task<SubsonicNode?> ScrobbleAsync()
     {
         var ids = All("id").Take(50).ToArray();
         if (ids.Length == 0) throw Missing("id");
-        // submission=false is "now playing", which has nowhere to go here.
-        if (One("submission") is "false") return Success();
+        if (One("submission") is "false")
+        {
+            // Now playing is a courtesy: only a song already known is shown, and the app never waits on the catalog for it.
+            if ((await ResolveAsync([ids[0]])).FirstOrDefault(p => p.Track.Title.Length > 0) is { } playing)
+                NowPlaying[user.Id] = new Listening(playing, DateTime.UtcNow, Client());
+            return Success();
+        }
         var times = All("time");
         var plays = new List<MusicPlay>();
         for (var i = 0; i < ids.Length; i++)
@@ -700,6 +842,128 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         return removed == 0 ? throw NotFound("Playlist") : Success();
     }
 
+    private string Client() => One("c") is { Length: > 0 } client ? (client.Length > 60 ? client[..60] : client) : "Subsonic";
+
+    private async Task<SubsonicNode?> RatingAsync()
+    {
+        var id = One("id") ?? throw Missing("id");
+        if (!MusicLibraryStore.IsRatingKey(id)) throw NotFound("Item");
+        if (!int.TryParse(One("rating") ?? throw Missing("rating"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rating) || rating is < 0 or > 5)
+            throw new SubsonicError(0, "A rating is 0 (none) to 5.");
+        var full = false;
+        await store.UpdateAsync(user.Id, library =>
+        {
+            if (rating == 0) library.Ratings.Remove(id);
+            else if (library.Ratings.ContainsKey(id) || library.Ratings.Count < MusicLibraryStore.StarLimit) library.Ratings[id] = rating;
+            else full = true;
+        }, Ct);
+        return full ? throw new SubsonicError(0, $"Up to {MusicLibraryStore.StarLimit} ratings are kept.") : Success();
+    }
+
+    // Songs for a queue, from what is already known: a stored album, this user's library, or a song the catalog
+    // described in an earlier answer. Apps save the queue on every skip, so this never waits on the catalog; a song
+    // nothing describes yet is kept by its id alone and described when the queue is read.
+    private async Task<List<MusicPlay>> ResolveAsync(IEnumerable<string> ids)
+    {
+        var found = new List<MusicPlay>();
+        foreach (var id in ids)
+        {
+            if (ParseTrack(id) is not var (releaseId, trackId)) continue;
+            try
+            {
+                if (catalog.HasRelease(releaseId))
+                {
+                    var (track, release) = await TrackAsync(id);
+                    found.Add(new MusicPlay(track, release.Title, DateTime.UtcNow));
+                }
+                else if (await KnownAsync(releaseId, trackId) is var (mine, album)) found.Add(new MusicPlay(mine, album.Title, DateTime.UtcNow));
+                else if (catalog.KnownTrack(trackId) is { } seen && seen.ReleaseId == releaseId) found.Add(new MusicPlay(seen, "", DateTime.UtcNow));
+                else found.Add(new MusicPlay(new MusicTrack(trackId, "", [], releaseId, null, null, null, false, null, null), "", DateTime.UtcNow));
+            }
+            catch (Exception ex) when (ex is ProviderException or SubsonicError or HttpRequestException or JsonException) { }
+        }
+        return found;
+    }
+
+    // Apps save the queue on every skip and some on a timer. The latest one is kept here and written to the user's
+    // library when its songs change, or at most every 30 seconds when only the position moved.
+    private sealed record LiveQueue(MusicQueue Queue, DateTime Written);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, LiveQueue> LiveQueues = new();
+
+    private async Task<SubsonicNode?> SavePlayQueueAsync()
+    {
+        var ids = All("id").Take(MusicLibraryStore.QueueLimit).ToArray();
+        if (ids.Length == 0)
+        {
+            LiveQueues.TryRemove(user.Id, out _);
+            await store.UpdateAsync(user.Id, library => library.Queue = null, Ct, content: false);
+            return Success();
+        }
+        var entries = await ResolveAsync(ids);
+        var current = One("current") is { } given && entries.Any(e => TrackId(e.Track) == given) ? given : null;
+        var position = long.TryParse(One("position"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var ms) ? Math.Max(0, ms) : 0;
+        var queue = new MusicQueue(entries, current, position, DateTime.UtcNow, Client());
+        LiveQueues.TryGetValue(user.Id, out var live);
+        var same = live is not null && live.Queue.Current == current && live.Queue.Entries.Select(e => TrackId(e.Track)).SequenceEqual(entries.Select(e => TrackId(e.Track)));
+        if (same && DateTime.UtcNow - live!.Written < TimeSpan.FromSeconds(30))
+        {
+            LiveQueues[user.Id] = live with { Queue = queue };
+            return Success();
+        }
+        LiveQueues[user.Id] = new LiveQueue(queue, DateTime.UtcNow);
+        await store.UpdateAsync(user.Id, library => library.Queue = queue, Ct, content: false);
+        return Success();
+    }
+
+    private async Task<SubsonicNode?> PlayQueueAsync()
+    {
+        var (library, stars) = await LibraryAsync();
+        if ((LiveQueues.TryGetValue(user.Id, out var live) ? live.Queue : library.Queue) is not { } queue) return Success();
+        var node = new SubsonicNode("playQueue").Set("current", queue.Current).Set("position", queue.Position).Set("username", user.Name)
+            .Set("changed", queue.Changed).Set("changedBy", queue.ChangedBy);
+        foreach (var entry in queue.Entries)
+        {
+            if (entry.Track.Title.Length > 0) { node.Add(Song("entry", entry.Track, entry.Album, stars)); continue; }
+            // Kept by id only: described from a copy the server has by now, otherwise left out of this answer. Reading
+            // the queue never waits on the catalog either.
+            if (!catalog.HasRelease(entry.Track.ReleaseId) && catalog.KnownTrack(entry.Track.Id) is null) continue;
+            if ((await ResolveAsync([TrackId(entry.Track)])).FirstOrDefault(p => p.Track.Title.Length > 0) is { } known)
+                node.Add(Song("entry", known.Track, known.Album, stars));
+        }
+        return Success().One(node);
+    }
+
+    private async Task<SubsonicNode?> BookmarksAsync()
+    {
+        var (library, stars) = await LibraryAsync();
+        return Success().One(new SubsonicNode("bookmarks").AddRange(library.Bookmarks.Select(b => new SubsonicNode("bookmark").Set("position", b.Position)
+            .Set("username", user.Name).Set("comment", b.Comment).Set("created", b.Created).Set("changed", b.Changed)
+            .One(Song("entry", b.Entry.Track, b.Entry.Album, stars)))));
+    }
+
+    private async Task<SubsonicNode?> CreateBookmarkAsync()
+    {
+        var id = One("id") ?? throw Missing("id");
+        var position = long.TryParse(One("position") ?? throw Missing("position"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var ms) ? Math.Max(0, ms) : 0;
+        var (track, release) = await TrackAsync(id);
+        var now = DateTime.UtcNow;
+        await store.UpdateAsync(user.Id, library =>
+        {
+            var old = library.Bookmarks.FirstOrDefault(b => b.Entry.Track.Id == track.Id);
+            library.Bookmarks.RemoveAll(b => b.Entry.Track.Id == track.Id);
+            library.Bookmarks.Insert(0, new MusicBookmark(new MusicPlay(track, release.Title, now), position, One("comment") ?? old?.Comment ?? "", old?.Created ?? now, now));
+        }, Ct);
+        return Success();
+    }
+
+    private async Task<SubsonicNode?> DeleteBookmarkAsync()
+    {
+        if (ParseTrack(One("id") ?? throw Missing("id")) is not var (_, trackId)) throw NotFound("Bookmark");
+        var removed = 0;
+        await store.UpdateAsync(user.Id, library => removed = library.Bookmarks.RemoveAll(b => b.Entry.Track.Id == trackId), Ct);
+        return removed == 0 ? throw NotFound("Bookmark") : Success();
+    }
+
     // ---- Lyrics
 
     private async Task<SubsonicNode?> LyricsBySongAsync()
@@ -743,7 +1007,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         {
             // Lists ask for a cover per album: what this user's library already knows costs the catalog nothing.
             if (ParseId(id, "al") is { } releaseId)
-                address = !catalog.HasRelease(releaseId) && Albums(await store.ReadAsync(user.Id, Ct)).FirstOrDefault(a => a.Release.Id == releaseId) is { Release.Artwork: { } mine }
+                address = !catalog.HasRelease(releaseId) && (await AlbumsAsync(await store.ReadAsync(user.Id, Ct))).FirstOrDefault(a => a.Release.Id == releaseId) is { Release.Artwork: { } mine }
                     ? mine : (await catalog.ReleaseAsync(releaseId, Ct)).Artwork;
             else if (ParseTrack(id) is not null) address = (await TrackAsync(id)).Track.Artwork;
             else if (ParseId(id, "ar") is { } artistId) address = (await catalog.ArtistAsync(artistId, Ct)).Image;

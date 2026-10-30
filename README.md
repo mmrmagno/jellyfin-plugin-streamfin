@@ -122,6 +122,11 @@ Subsonic or OpenSubsonic and enter:
 - **Username**: the Jellyfin username
 - **Password**: the app password from the settings, not the Jellyfin one
 
+The catalog has no list of everything, so the library an app syncs is yours: what you played,
+starred or put in a playlist, plus every album of the artists you starred or keep
+playing. Ratings, play counts and the play queue are saved on the server, so another device
+picks up where you stopped.
+
 Subsonic apps put their credentials in the address of every request, as Jellyfin's own
 apps do with their tokens, so they can show up in Jellyfin's log and in reverse proxy logs.
 Keep those logs private. If an app password may have leaked, press **New password** to

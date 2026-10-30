@@ -20,6 +20,9 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
 {
     public const string DefaultApi = "https://tracks.monochrome.st/";
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 8000 });
+    // Songs the catalog has described in any answer (search hits, top tracks, album tracks), by id. A queue or a
+    // scrobble of a song from a search then needs no lookup of its whole album.
+    private readonly MemoryCache tracks = new(new MemoryCacheOptions { SizeLimit = 20_000 });
     private const int Budget = 20;
     private readonly RateWindow budget = new(Budget, TimeSpan.FromSeconds(10));
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<object>> loading = new();
@@ -60,6 +63,21 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
 
     public Task<MusicRelease> ReleaseAsync(string id, CancellationToken ct) => CachedAsync("release/" + ValidateId(id), Lifetime, "releases/" + id, ParseRelease,
         "release", id, ct);
+
+    public MusicTrack? KnownTrack(string trackId) => tracks.TryGetValue<MusicTrack>(trackId, out var track) ? track : null;
+
+    private void Learn(object value)
+    {
+        IEnumerable<MusicTrack> found = value switch
+        {
+            MusicResults results => results.Tracks,
+            MusicArtistPage artist => artist.TopTracks,
+            MusicRelease release => release.Tracks.Select(t => t with { Artwork = t.Artwork ?? release.Artwork }),
+            _ => []
+        };
+        foreach (var track in found)
+            tracks.Set(track.Id, track, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(1) });
+    }
 
     // Whether a lookup would be answered without asking the catalog: fresh, or a stored copy that answers at once.
     public bool HasRelease(string id) => IsId(id) && (Known("release/" + id) || disk?.Has("release", id) == true);
@@ -176,6 +194,7 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
         {
             var value = parse(json);
             cache.Set(Stale(key), value, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(24) });
+            Learn(value);
             return value;
         }
         catch (Exception ex) when (ex is ProviderException or JsonException or RegexMatchTimeoutException)
@@ -205,6 +224,7 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
             {
                 var json = await QueryAsync(path);
                 var value = parse(json);
+                Learn(value);
                 cache.Set(slot, value, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = lifetime });
                 cache.Set(Stale(key), value, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(24) });
                 if (kind is not null && id is not null && disk is not null) await disk.WriteAsync(kind, id, json);
@@ -341,6 +361,7 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
     public void Dispose()
     {
         cache.Dispose();
+        tracks.Dispose();
         flight.Dispose();
         refreshes.Dispose();
     }

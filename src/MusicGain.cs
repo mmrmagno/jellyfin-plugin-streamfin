@@ -6,6 +6,7 @@ using Microsoft.Extensions.Caching.Memory;
 namespace StreamFin;
 
 public sealed record ReplayGain(double? TrackGain, double? AlbumGain, double? TrackPeak, double? AlbumPeak);
+public sealed record FlacFormat(int SampleRate, int BitDepth, int Channels);
 
 // The catalog's FLAC files carry ReplayGain tags in their Vorbis comment, about a kilobyte in. The catalog JSON
 // does not, so the tags are read from the first bytes of a stream as they pass through and kept per track.
@@ -13,11 +14,16 @@ public static class MusicGain
 {
     public const int HeadBytes = 64 * 1024;
     private static readonly MemoryCache Known = new(new MemoryCacheOptions { SizeLimit = 50_000 });
+    private static readonly MemoryCache Formats = new(new MemoryCacheOptions { SizeLimit = 50_000 });
 
     public static ReplayGain? For(string trackId) => Known.TryGetValue<ReplayGain>(trackId, out var gain) ? gain : null;
+    public static FlacFormat? FormatFor(string trackId) => Formats.TryGetValue<FlacFormat>(trackId, out var format) ? format : null;
 
     public static void Remember(ReadOnlySpan<byte> head, params string[] trackIds)
     {
+        if (Format(head) is { } format)
+            foreach (var id in trackIds.Distinct())
+                Formats.Set(id, format, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(30) });
         if (Parse(head) is not { } gain) return;
         foreach (var id in trackIds.Distinct())
             Known.Set(id, gain, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(30) });
@@ -35,6 +41,16 @@ public static class MusicGain
             if ((header & 0x80) != 0) return at <= flac.Length ? at : null;
         }
         return null;
+    }
+
+    // STREAMINFO is always the first block: sample rate (20 bits), channels (3) and bits per sample (5), 10 bytes in.
+    public static FlacFormat? Format(ReadOnlySpan<byte> flac)
+    {
+        if (flac.Length < 42 || !flac[..4].SequenceEqual("fLaC"u8) || (flac[4] & 0x7f) != 0) return null;
+        var rate = (flac[18] << 12) | (flac[19] << 4) | (flac[20] >> 4);
+        var channels = ((flac[20] >> 1) & 7) + 1;
+        var bits = (((flac[20] & 1) << 4) | (flac[21] >> 4)) + 1;
+        return rate is > 0 and <= 768_000 && bits is >= 4 ? new FlacFormat(rate, bits, channels) : null;
     }
 
     public static ReplayGain? Parse(ReadOnlySpan<byte> flac)

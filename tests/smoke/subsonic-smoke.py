@@ -153,11 +153,55 @@ try:
     assert call('unstar', me, id=song['id'])['status'] == 'ok'
     print('PASS: stars (also in the channel\'s Starred folder), scrobbles, recent albums and playlists, including a long one sent as a form', flush=True)
 
+    with urllib.request.urlopen(REST + 'getOpenSubsonicExtensions.view?f=json', timeout=30) as res:
+        extensions = json.loads(res.read())['subsonic-response']
+    assert extensions['status'] == 'ok' and any(e['name'] == 'songLyrics' for e in extensions['openSubsonicExtensions'])
+    status, headers, body = call('ping', {**me, 'f': 'jsonp'}, raw=True, callback='app.done')
+    assert headers.get_content_type() == 'application/javascript' and body.startswith(b'/**/app.done({') and body.endswith(b');')
+    status, headers, body = call('ping', {**me, 'f': 'jsonp'}, raw=True, callback='alert(1)//')
+    assert headers.get_content_type() == 'application/json' and body.startswith(b'{')
+    assert call('tokenInfo', {'apiKey': password, 'f': 'json'})['tokenInfo']['username'] == viewer_name
+    assert call('getUser', me, username=other_name)['error']['code'] == 50
+    print('PASS: extensions answer without sign-in, JSONP only with a plain callback name, tokenInfo, getUser only for yourself', flush=True)
+
+    assert call('setRating', me, id=song['albumId'], rating='5')['status'] == 'ok'
+    assert call('setRating', me, id=song['id'], rating='4')['status'] == 'ok'
+    assert call('getSong', me, id=song['id'])['song']['userRating'] == 4
+    highest = call('getAlbumList2', me, type='highest')['albumList2']['album']
+    assert highest[0]['id'] == song['albumId'] and highest[0]['userRating'] == 5
+    rated = call('getAlbum', me, id=song['albumId'])['album']
+    assert rated['originalReleaseDate']['year'] == rated['year'] and rated['song'][0]['year'] == rated['year'] and rated['playCount'] >= 1
+    assert call('scrobble', me, id=song['id'], submission='false')['status'] == 'ok'
+    assert call('getNowPlaying', me)['nowPlaying']['entry'][0]['id'] == song['id']
+    queued = [s['id'] for s in album['song'][:3]]
+    assert call('savePlayQueue', me, id=queued, current=queued[1], position='42000')['status'] == 'ok'
+    queue = call('getPlayQueue', me)['playQueue']
+    assert [e['id'] for e in queue['entry']] == queued and queue['current'] == queued[1] and queue['position'] == 42000
+    assert call('createBookmark', me, id=song['id'], position='1000', comment='halfway')['status'] == 'ok'
+    assert call('getBookmarks', me)['bookmarks']['bookmark'][0]['entry']['id'] == song['id']
+    assert call('deleteBookmark', me, id=song['id'])['status'] == 'ok' and not call('getBookmarks', me)['bookmarks'].get('bookmark')
+    changed = call('getIndexes', me)['indexes']['lastModified']
+    assert 'index' not in call('getIndexes', me, ifModifiedSince=str(changed))['indexes']
+    assert call('getIndexes', me)['indexes']['lastModified'] == changed
+    print('PASS: ratings, play counts, release dates, now playing, play queue, bookmarks and a stable index date', flush=True)
+
+    # The starred artist's other albums join the library once the server has their page.
+    grown = []
+    for _ in range(12):
+        grown = call('getAlbumList2', me, type='alphabeticalByName', size='500')['albumList2'].get('album', [])
+        if len(grown) > 3:
+            break
+        time.sleep(5)
+    assert len(grown) > 3, f'the library did not grow from the starred artist ({len(grown)} albums)'
+    print(f'PASS: the library grows from a starred artist ({len(grown)} albums)', flush=True)
+
     # The other user has their own library, even with access.
     config['AllowedUserIds'] = [viewer['id'], other['id']]
     jellyfin(config_path, admin, config)
     them = credentials(other_name, other_password)
     assert call('ping', them)['status'] == 'ok' and not call('getStarred2', them)['starred2'].get('album')
+    assert 'playQueue' not in call('getPlayQueue', them) and not call('getNowPlaying', them)['nowPlaying'].get('entry')
+    assert call('getSong', them, id=song['id'])['song'].get('userRating') is None
     config['SubsonicEnabled'] = False
     jellyfin(config_path, admin, config)
     time.sleep(1)
