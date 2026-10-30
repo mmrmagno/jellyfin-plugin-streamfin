@@ -193,7 +193,7 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                 if (failures >= 3 || attempts >= 30) return;
                 var from = Volatile.Read(ref entry.Written);
                 if (from > 0 && failures > 0) await Task.Delay(TimeSpan.FromSeconds(2 * failures), ct);
-                using var response = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, TimeSpan.FromSeconds(15), ct, from == 0 ? null : $"bytes={from}-"), ct,
+                using var response = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, TimeSpan.FromSeconds(45), ct, from == 0 ? null : $"bytes={from}-"), ct,
                     outages: true);
                 if (from == 0)
                 {

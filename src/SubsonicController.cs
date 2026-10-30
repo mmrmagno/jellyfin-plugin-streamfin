@@ -837,8 +837,9 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         };
     }
 
-    // Headers from the catalog within this, or the request is tried again; a song itself may take minutes.
-    private static readonly TimeSpan HeaderLimit = TimeSpan.FromSeconds(15);
+    // Headers from the catalog within this. On a bad day it takes 20-40 s and Cloudflare answers 522 at about 40 s,
+    // so a shorter limit would refuse songs that would have played. A song itself may take minutes.
+    private static readonly TimeSpan HeaderLimit = TimeSpan.FromSeconds(45);
 
     private async Task<SubsonicNode?> StreamAsync(bool download)
     {
@@ -874,7 +875,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             songs.Warm(upstream);
             if (await songs.ServeAsync(HttpContext, upstream, range, () => Plugin.Allows(user.Id) && SubsonicAuth.Enabled)) return null;
             using var response = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, HeaderLimit, Ct, range.Length == 0 ? null : range, HttpMethods.IsHead(Request.Method)),
-                Ct, outages: true);
+                Ct, attempts: 2, outages: true);
             if ((int)response.StatusCode is not (200 or 206 or 416)) throw new SubsonicError(0, "The music catalog could not stream this song.");
             Response.StatusCode = (int)response.StatusCode;
             Response.ContentType = "audio/flac";
@@ -893,7 +894,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             {
                 if (lastByte is null || firstByte + done > lastByte) return null;
                 var from = firstByte + done;
-                var again = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, HeaderLimit, Ct, $"bytes={from}-{lastByte}"), Ct, attempts: 4, outages: true);
+                var again = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, HeaderLimit, Ct, $"bytes={from}-{lastByte}"), Ct, attempts: 3, outages: true);
                 resumed.Add(again);
                 // Anything but the exact bytes asked for would splice the wrong audio into the song.
                 if (again.StatusCode == System.Net.HttpStatusCode.PartialContent && again.Content.Headers.ContentRange?.From == from)
@@ -997,7 +998,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             }
             else if (seek > 0 && durationMs is > 0)
             {
-                using var head = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, HeaderLimit, Ct, "bytes=0-65535"), Ct, outages: true);
+                using var head = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, HeaderLimit, Ct, "bytes=0-65535"), Ct, attempts: 2, outages: true);
                 if (head.StatusCode == System.Net.HttpStatusCode.PartialContent && head.Content.Headers.ContentRange?.Length is long flacSize)
                 {
                     await using var headStream = await head.Content.ReadAsStreamAsync(Ct);
@@ -1014,7 +1015,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                     }
                 }
             }
-            using var response = local is not null ? null : await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, HeaderLimit, Ct, from), Ct, outages: true);
+            using var response = local is not null ? null : await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, HeaderLimit, Ct, from), Ct, attempts: 2, outages: true);
             if (response is { IsSuccessStatusCode: false }) throw new SubsonicError(0, "The music catalog could not stream this song.");
             var start = new ProcessStartInfo(encoder.EncoderPath)
             {

@@ -158,7 +158,8 @@ public sealed class SafeHttp : IDisposable
         {
             HttpResponseMessage response;
             try { response = await open(); }
-            catch (Exception ex) when (outages && attempt < attempts && (ex is HttpRequestException || ex is OperationCanceledException && !ct.IsCancellationRequested))
+            // A lost connection is worth another try; a request that ran out of time would only run out again.
+            catch (Exception ex) when (outages && attempt < attempts && ex is HttpRequestException)
             {
                 await Task.Delay(TimeSpan.FromSeconds(attempt), ct);
                 continue;

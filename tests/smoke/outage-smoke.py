@@ -55,6 +55,16 @@ def call(method, auth, raw=False, **params):
         return (res.status, res.headers, body) if raw else json.loads(body)['subsonic-response']
 
 
+# A slow catalog gets "answering slowly, try again" while the lookup carries on and is cached; apps retry.
+def patient(method, auth, **params):
+    for _ in range(4):
+        answer = call(method, auth, **params)
+        if answer['status'] == 'ok' or 'slowly' not in answer.get('error', {}).get('message', ''):
+            return answer
+        time.sleep(15)
+    return answer
+
+
 def timed(limit, what, method, auth, **params):
     started = time.monotonic()
     answer = call(method, auth, **params)
@@ -68,15 +78,15 @@ viewer = state['users']['viewer']
 me = sign_in()
 
 if args.phase == 'warm':
-    songs = call('search3', me, query='daft punk one more time', songCount=5, albumCount=0, artistCount=0)['searchResult3']['song']
+    songs = patient('search3', me, query='daft punk one more time', songCount=5, albumCount=0, artistCount=0)['searchResult3']['song']
     song = next(s for s in songs if s.get('duration', 0) > 60)
-    album = call('getAlbum', me, id=song['albumId'])['album']
+    album = patient('getAlbum', me, id=song['albumId'])['album']
     assert any(s['id'] == song['id'] for s in album['song'])
     status, headers, body = call('stream', me, raw=True, id=song['id'], format='raw')
     assert status == 200 and body[:4] == b'fLaC' and len(body) == int(headers['Content-Length'])
     assert call('scrobble', me, id=song['id'])['status'] == 'ok'
     assert call('star', me, id=song['id'])['status'] == 'ok'
-    lyrics = call('getLyricsBySongId', me, id=song['id'])['lyricsList'].get('structuredLyrics', [])
+    lyrics = patient('getLyricsBySongId', me, id=song['id'])['lyricsList'].get('structuredLyrics', [])
     status, headers, cover = call('getCoverArt', me, raw=True, id=song['albumId'])
     assert status == 200 and headers.get_content_type().startswith('image/')
     # The cache renames the finished download a moment after the last byte is read.
