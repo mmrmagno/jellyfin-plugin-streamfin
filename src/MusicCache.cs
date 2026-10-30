@@ -76,6 +76,14 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
         }
     }
 
+    // Whether the whole song is on disk, so it can play while the catalog is out.
+    public bool Has(string trackId)
+    {
+        if (Limit == 0 || Root is not { } root) return false;
+        lock (Gate) Scan(root);
+        return Entries.TryGetValue(trackId, out var entry) && entry.Complete;
+    }
+
     // The finished file, for FFmpeg's input; null while it is still being fetched.
     public FileStream? OpenComplete(Uri upstream)
     {
@@ -96,7 +104,7 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
         // A download that has just started knows its size within moments. Waiting for it beats a second catalog
         // request for the same song: the player then reads the file as it fills.
         var size = Volatile.Read(ref entry.Size);
-        for (var i = 0; size <= 0 && i < 100 && Entries.TryGetValue(id, out var current) && ReferenceEquals(current, entry); i++)
+        for (var i = 0; size <= 0 && i < 200 && Entries.TryGetValue(id, out var current) && ReferenceEquals(current, entry); i++)
         {
             await Task.Delay(50, context.RequestAborted);
             size = Volatile.Read(ref entry.Size);
@@ -147,7 +155,8 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                     if (file.Position >= available)
                     {
                         // The download stopped before reaching this part: cut the connection rather than send a short file as whole.
-                        if (!Entries.TryGetValue(id, out var current) || !ReferenceEquals(current, entry) || ++waited > 600) { context.Abort(); return true; }
+                        // The wait outlasts the download's own 45 s stall limit, so a resume in progress gets its chance.
+                        if (!Entries.TryGetValue(id, out var current) || !ReferenceEquals(current, entry) || ++waited > 1200) { context.Abort(); return true; }
                         await Task.Delay(50, ct);
                         continue;
                     }
@@ -159,7 +168,11 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                     remaining -= read;
                 }
             }
-            catch (Exception ex) when (ex is IOException or OperationCanceledException && ct.IsCancellationRequested) { }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                // Headers are out with the full length; a short body must not pass for the whole song.
+                if (!ct.IsCancellationRequested) context.Abort();
+            }
         }
         return true;
     }
@@ -173,10 +186,15 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(part)!);
             await using var file = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 1 << 16, useAsync: true);
             var buffer = new byte[1 << 16];
-            for (var resumes = 0; ; resumes++)
+            // The catalog drops long downloads partway and sometimes answers a resume with a 5xx. Only attempts that
+            // gain nothing count against the song, so a slow, choppy download still finishes.
+            for (int failures = 0, attempts = 0; entry.Written < entry.Size || entry.Size == 0; attempts++)
             {
+                if (failures >= 3 || attempts >= 30) return;
                 var from = Volatile.Read(ref entry.Written);
-                using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, ct, from == 0 ? null : $"bytes={from}-"), ct);
+                if (from > 0 && failures > 0) await Task.Delay(TimeSpan.FromSeconds(2 * failures), ct);
+                using var response = await SafeHttp.PatientAsync(() => http.MediaAsync(upstream, TimeSpan.FromSeconds(15), ct, from == 0 ? null : $"bytes={from}-"), ct,
+                    outages: true);
                 if (from == 0)
                 {
                     if (response.StatusCode != HttpStatusCode.OK || response.Content.Headers.ContentLength is not long size || size is <= 0 or > SongLimit)
@@ -187,7 +205,13 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                     }
                     Volatile.Write(ref entry.Size, size);
                 }
-                else if (response.StatusCode != HttpStatusCode.PartialContent || response.Content.Headers.ContentRange?.From != from) return;
+                else if (response.StatusCode != HttpStatusCode.PartialContent || response.Content.Headers.ContentRange?.From != from)
+                {
+                    logger.LogInformation("StreamFin music cache: {Id} could not resume at byte {From}, the catalog answered {Status}", id, from, (int)response.StatusCode);
+                    if (response.StatusCode == HttpStatusCode.TooManyRequests) coolUntil = DateTime.UtcNow.AddMinutes(2);
+                    failures++;
+                    continue;
+                }
                 await using var input = await response.Content.ReadAsStreamAsync(ct);
                 try
                 {
@@ -204,9 +228,9 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                         if (Interlocked.Add(ref entry.Written, read) is var written && written >= MusicGain.HeadBytes && written - read < MusicGain.HeadBytes) Learn(id, part);
                     }
                 }
-                // The catalog sometimes drops a long download partway; pick it up where it stopped.
-                catch (Exception ex) when ((ex is IOException or HttpRequestException || ex is OperationCanceledException && !ct.IsCancellationRequested) && resumes < 3) { continue; }
-                if (entry.Written >= entry.Size || resumes >= 3) break;
+                catch (Exception ex) when (ex is IOException or HttpRequestException || ex is OperationCanceledException && !ct.IsCancellationRequested) { }
+                if (Volatile.Read(ref entry.Written) == from) failures++;
+                else failures = 0;
             }
             if (entry.Written != entry.Size) return;
             await file.DisposeAsync();

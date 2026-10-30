@@ -47,7 +47,10 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
         foreach (var other in similar)
         {
             if (!catalog.HasArtist(other.Id) && !await RoomAsync(deadline, ct)) break;
-            lists.Add(new Queue<MusicTrack>(Shuffle((await catalog.ArtistAsync(other.Id, ct)).TopTracks, artist.Id).Take(5)));
+            // One similar artist the catalog cannot load leaves a shorter mix, not none.
+            try { lists.Add(new Queue<MusicTrack>(Shuffle((await catalog.ArtistAsync(other.Id, ct)).TopTracks, artist.Id).Take(5))); }
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException
+                or OperationCanceledException && !ct.IsCancellationRequested) { if (catalog.Down) break; }
         }
         var mix = new List<MusicTrack>();
         while (mix.Count < count * 2 && lists.Any(l => l.Count > 0))
@@ -58,6 +61,7 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
     // The catalog budget is shared with people browsing, so a radio only uses it while half is free, waiting a little if not.
     private async Task<bool> RoomAsync(DateTime deadline, CancellationToken ct)
     {
+        if (DateTime.UtcNow > deadline || catalog.Down) return false;
         while (!catalog.Spare)
         {
             if (DateTime.UtcNow + TimeSpan.FromMilliseconds(500) > deadline) return false;
@@ -101,7 +105,14 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
         if (key == "catalog/") return (null, true);
         if (cache.TryGetValue<MusicArtistRef?>(key, out var known)) return (known, true);
         if (!await RoomAsync(deadline, ct)) return (null, false);
-        var match = (await catalog.SearchAsync(name, ct)).Artists.FirstOrDefault(a => NameKey(a.Name) == NameKey(name)) is { } page ? new MusicArtistRef(page.Id, page.Name) : null;
+        MusicArtistRef? match;
+        try
+        {
+            match = (await catalog.SearchAsync(name, ct).WaitAsync(deadline - DateTime.UtcNow is var left && left > TimeSpan.Zero ? left : TimeSpan.Zero, ct))
+                .Artists.FirstOrDefault(a => NameKey(a.Name) == NameKey(name)) is { } page ? new MusicArtistRef(page.Id, page.Name) : null;
+        }
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException or TimeoutException
+            or OperationCanceledException && !ct.IsCancellationRequested) { return (null, false); }
         Keep(key, match, Days);
         return (match, true);
     }

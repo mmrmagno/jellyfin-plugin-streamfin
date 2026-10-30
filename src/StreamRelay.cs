@@ -114,8 +114,9 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         {
             try
             {
+                // Well inside the minute a player or proxy waits: a song that needs longer to describe plays undescribed.
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromSeconds(60));
+                timeout.CancelAfter(TimeSpan.FromSeconds(15));
                 var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Audio, ExtractChapters = false }, timeout.Token);
                 var audio = info.MediaStreams.Where(s => s.Type == MediaStreamType.Audio).ToList();
                 if (audio.Count == 0) throw new ProviderException("The probe found no audio.");
@@ -123,10 +124,12 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
                 audioProbes.Set(key, probe, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(1) });
             }
             // The catalog only serves FLAC, so a probe it throttled must not stop playback; the player reads the details itself.
+            // The plain description is kept a few minutes, so replaying a song whose probe failed does not wait again.
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
-                media.MediaStreams = [new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "flac", Channels = 2, ChannelLayout = "stereo", IsDefault = true }];
-                return media;
+                var plain = new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "flac", Channels = 2, ChannelLayout = "stereo", IsDefault = true };
+                probe = new AudioProbe(System.Text.Json.JsonSerializer.Serialize(new List<MediaStream> { plain }), null, null, null, "flac");
+                audioProbes.Set(key, probe, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5) });
             }
         }
         media.MediaStreams = System.Text.Json.JsonSerializer.Deserialize<List<MediaStream>>(probe!.Streams) ?? [];

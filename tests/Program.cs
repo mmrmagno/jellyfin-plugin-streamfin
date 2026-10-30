@@ -405,6 +405,78 @@ try
 }
 finally { if (Directory.Exists(musicStoreRoot)) Directory.Delete(musicStoreRoot, true); }
 
+var breaker = new CatalogBreaker(3, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(20));
+var clock = new DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc);
+breaker.Failure(clock);
+breaker.Failure(clock.AddSeconds(1));
+Check(!breaker.IsOpen(clock.AddSeconds(1)) && breaker.Allow(clock.AddSeconds(1)), "two catalog failures do not count it as down");
+Check(breaker.Failure(clock.AddSeconds(2)) && breaker.IsOpen(clock.AddSeconds(3)) && !breaker.Allow(clock.AddSeconds(3)), "the third failure in a row counts the catalog as down");
+Check(breaker.Allow(clock.AddSeconds(23)) && !breaker.Allow(clock.AddSeconds(24)), "while down, one request per period checks whether it is back");
+Check(!breaker.Failure(clock.AddSeconds(25)) && !breaker.Allow(clock.AddSeconds(30)), "a failed check keeps it down without logging the outage again");
+Check(breaker.Success() && !breaker.IsOpen(clock.AddSeconds(31)) && breaker.Allow(clock.AddSeconds(31)), "one answer brings the catalog back");
+var spread = new CatalogBreaker(3, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(20));
+spread.Failure(clock);
+spread.Failure(clock.AddSeconds(10));
+spread.Failure(clock.AddSeconds(45));
+Check(!spread.IsOpen(clock.AddSeconds(46)), "failures spread over minutes do not count the catalog as down");
+Check(CatalogBreaker.IsOutage(new SourceStatusException(522), default) && CatalogBreaker.IsOutage(new HttpRequestException(), default)
+    && CatalogBreaker.IsOutage(new TaskCanceledException(), default) && !CatalogBreaker.IsOutage(new SourceStatusException(404), default)
+    && !CatalogBreaker.IsOutage(new RateLimitedException("x", null), default), "timeouts, lost connections and 5xx are outages; 404 and 429 are not");
+using (var cancelled = new CancellationTokenSource())
+{
+    cancelled.Cancel();
+    Check(!CatalogBreaker.IsOutage(new TaskCanceledException(), cancelled.Token), "a caller giving up is not an outage");
+}
+var outageCalls = 0;
+HttpResponseMessage Flaky(int ok) => ++outageCalls >= ok ? new HttpResponseMessage(HttpStatusCode.PartialContent) : new HttpResponseMessage((HttpStatusCode)522);
+Check((await SafeHttp.PatientAsync(() => Task.FromResult(Flaky(2)), default, outages: true)).StatusCode == HttpStatusCode.PartialContent && outageCalls == 2,
+    "a media request the catalog answers with 522 is tried again");
+outageCalls = 0;
+Check((await SafeHttp.PatientAsync(() => Task.FromResult(Flaky(2)), default)).StatusCode == (HttpStatusCode)522 && outageCalls == 1, "without outages, a 5xx is not retried");
+outageCalls = 0;
+Check((await SafeHttp.PatientAsync(() => ++outageCalls < 2 ? throw new HttpRequestException("reset") : Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)), default,
+    outages: true)).StatusCode == HttpStatusCode.OK && outageCalls == 2, "a dropped connection to the catalog is tried again");
+
+var metaRoot = Path.Combine(Path.GetTempPath(), "streamfin-meta-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var meta = new MusicMetadataStore(Microsoft.Extensions.Logging.Abstractions.NullLogger<MusicMetadataStore>.Instance, metaRoot);
+    const string storedRelease = """{"releaseId":"155102851176075264","title":"Stored","tracks":[{"trackId":"155102871061270528","title":"Kept","duration":200000}]}""";
+    await meta.WriteAsync("release", "155102851176075264", storedRelease);
+    Check(meta.Has("release", "155102851176075264") && meta.Read("release", "155102851176075264") == storedRelease, "catalog answers are kept on disk");
+    await meta.WriteAsync("release", "../../etc/passwd", "x");
+    await meta.WriteAsync("settings", "155102851176075264", "x");
+    Check(meta.Read("release", "../../etc/passwd") is null && !meta.Has("settings", "155102851176075264")
+        && Directory.EnumerateFiles(metaRoot, "*", SearchOption.AllDirectories).Count() == 1, "stored metadata is named by kind and validated id only");
+    using (var offline = new MusicCatalog(new SafeHttp(), meta))
+    {
+        var stored = await offline.ReleaseAsync("155102851176075264", default);
+        Check(stored.Title == "Stored" && stored.Tracks.Single().Title == "Kept" && offline.HasRelease("155102851176075264"),
+            "a stored album answers at once, without waiting for the catalog");
+    }
+    Directory.CreateDirectory(Path.Combine(metaRoot, MusicCatalog.ApiHost, "release"));
+    File.WriteAllText(Path.Combine(metaRoot, MusicCatalog.ApiHost, "release", "155102851176075265.json"), "{not json");
+    using (var damaged = new MusicCatalog(new SafeHttp(), meta))
+    {
+        try { await damaged.ReleaseAsync("155102851176075265", new CancellationTokenSource(TimeSpan.FromMilliseconds(1)).Token); }
+        catch (Exception ex) when (ex is ProviderException or OperationCanceledException) { }
+        Check(!meta.Has("release", "155102851176075265"), "a damaged stored album is read as missing and removed, not a crash");
+    }
+}
+finally { if (Directory.Exists(metaRoot)) Directory.Delete(metaRoot, true); }
+
+Check(MusicArtCache.Type([0xFF, 0xD8, 0xFF, 0xE0]) == "image/jpeg" && MusicArtCache.Type([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0]) == "image/png"
+    && MusicArtCache.Type("RIFF0000WEBPVP8 "u8) == "image/webp" && MusicArtCache.Type("<svg onload=x>"u8) is null && MusicArtCache.Type("<html>"u8) is null,
+    "cover art is recognised by its first bytes; SVG and HTML are refused");
+var artRoot = Path.Combine(Path.GetTempPath(), "streamfin-art-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var art = new MusicArtCache(new SafeHttp(), Microsoft.Extensions.Logging.Abstractions.NullLogger<MusicArtCache>.Instance, artRoot);
+    Check(await art.GetAsync("https://tracks.monochrome.st/proxy/x/1.jpg", down: true, default) is null && !Directory.Exists(artRoot),
+        "while the catalog is down, a cover not kept is not fetched");
+}
+finally { if (Directory.Exists(artRoot)) Directory.Delete(artRoot, true); }
+
 Check(MusicRadio.NameKey("AC/DC") == MusicRadio.NameKey("acdc") && MusicRadio.NameKey("Simon & Garfunkel") == MusicRadio.NameKey("simon and garfunkel")
     && MusicRadio.NameKey("Beyoncé") != MusicRadio.NameKey("Beyonce"), "artist names compare without punctuation or case");
 const string Mbid = "a74b1b7f-71a5-4011-9441-d0b5e4122711";
