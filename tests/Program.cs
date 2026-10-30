@@ -453,6 +453,7 @@ try
         var stored = await offline.ReleaseAsync("155102851176075264", default);
         Check(stored.Title == "Stored" && stored.Tracks.Single().Title == "Kept" && offline.HasRelease("155102851176075264"),
             "a stored album answers at once, without waiting for the catalog");
+        Check(offline.KnownTrack("155102871061270528")?.Title == "Kept", "songs in a stored album are known by id, for queues");
     }
     Directory.CreateDirectory(Path.Combine(metaRoot, MusicCatalog.ApiHost, "release"));
     File.WriteAllText(Path.Combine(metaRoot, MusicCatalog.ApiHost, "release", "155102851176075265.json"), "{not json");
@@ -464,6 +465,49 @@ try
     }
 }
 finally { if (Directory.Exists(metaRoot)) Directory.Delete(metaRoot, true); }
+
+var streamInfo = new byte[42];
+"fLaC"u8.CopyTo(streamInfo);
+streamInfo[4] = 0x80;
+streamInfo[7] = 34;
+// 96 kHz, 2 channels, 24 bits: rate 0x17700 over 20 bits, then (channels - 1) and (bits - 1).
+streamInfo[18] = 0x17; streamInfo[19] = 0x70; streamInfo[20] = 0x0 << 4 | 1 << 1 | 1; streamInfo[21] = 0x7 << 4;
+Check(MusicGain.Format(streamInfo) == new FlacFormat(96000, 24, 2), "the FLAC header gives sample rate, bit depth and channels");
+Check(MusicGain.Format(streamInfo.AsSpan(0, 30)) is null && MusicGain.Format("OggS"u8.ToArray().Concat(new byte[40]).ToArray()) is null, "a short or non-FLAC header gives no format");
+MusicGain.Remember(streamInfo, "155102871061270599");
+Check(MusicGain.FormatFor("155102871061270599")?.SampleRate == 96000, "the format is kept per song even without ReplayGain tags");
+foreach (var key in new[] { "tr-155102851176075264-155102871061270528", "al-155102851176075264", "ar-155102851176075264" })
+    Check(MusicLibraryStore.IsRatingKey(key), "rating key " + key);
+foreach (var key in new[] { "tr-1-2", "al-../x", "pl-0123", "ar-155102851176075264\n", "", "x-155102851176075264" })
+    Check(!MusicLibraryStore.IsRatingKey(key), "invalid rating key refused " + key.Replace("\n", "\\n"));
+
+var polishRoot = Path.Combine(Path.GetTempPath(), "streamfin-polish-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var keeper = new MusicLibraryStore(polishRoot);
+    var listener = Guid.NewGuid();
+    var queued = new MusicTrack("155102871061270528", "Kept", [new("155102851176075265", "Artist")], "155102851176075264", null, 200000, null, false, 1, 1);
+    await keeper.UpdateAsync(listener, l =>
+    {
+        l.Ratings["al-155102851176075264"] = 4;
+        l.Ratings["../../etc"] = 5;
+        l.Ratings["ar-155102851176075265"] = 9;
+        l.Queue = new MusicQueue(Enumerable.Repeat(new MusicPlay(queued, "Album", DateTime.UtcNow), MusicLibraryStore.QueueLimit + 5).ToArray(),
+            "tr-155102851176075264-155102871061270528", -5, DateTime.UtcNow, new string('c', 500));
+        l.Bookmarks.Add(new MusicBookmark(new MusicPlay(queued, "Album", DateTime.UtcNow), 1000, new string('x', 500), DateTime.UtcNow, DateTime.UtcNow));
+    }, default);
+    var polished = await new MusicLibraryStore(polishRoot).ReadAsync(listener, default);
+    Check(polished.Ratings.Count == 1 && polished.Ratings["al-155102851176075264"] == 4, "ratings persist; bad keys and values are dropped");
+    Check(polished.Queue is { Entries.Count: MusicLibraryStore.QueueLimit, Position: 0, ChangedBy.Length: 200 } && polished.Changed > DateTime.UtcNow.AddMinutes(-1),
+        "the play queue persists, bounded, with the time the library changed");
+    Check(polished.Bookmarks.Single().Comment.Length == 200, "bookmarks persist with bounded text");
+    Check((await keeper.ReadAsync(Guid.NewGuid(), default)).Queue is null, "a play queue belongs to one user");
+    File.WriteAllText(Path.Combine(polishRoot, listener.ToString("N") + ".json"),
+        """{"Ratings":{"tr-1-2":3},"Queue":{"Entries":[{"Track":{"Id":"../x","Title":"x","Artists":[],"ReleaseId":"1"},"Album":"a","At":"2026-10-30T00:00:00Z"}],"Current":"<script>","Position":5,"Changed":"2026-10-30T00:00:00Z","ChangedBy":"x"}}""");
+    var tampered = await new MusicLibraryStore(polishRoot).ReadAsync(listener, default);
+    Check(tampered.Ratings.Count == 0 && tampered.Queue is { Entries.Count: 0, Current: null }, "a tampered library file loses its bad ratings and queue entries");
+}
+finally { if (Directory.Exists(polishRoot)) Directory.Delete(polishRoot, true); }
 
 Check(MusicArtCache.Type([0xFF, 0xD8, 0xFF, 0xE0]) == "image/jpeg" && MusicArtCache.Type([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0]) == "image/png"
     && MusicArtCache.Type("RIFF0000WEBPVP8 "u8) == "image/webp" && MusicArtCache.Type("<svg onload=x>"u8) is null && MusicArtCache.Type("<html>"u8) is null,
