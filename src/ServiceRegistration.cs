@@ -15,11 +15,13 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<AniListCatalog>();
         services.AddSingleton<TmdbCatalog>();
         services.AddSingleton<FlixSource>();
+        services.AddSingleton<MusicMetadataStore>();
         services.AddSingleton<MusicCatalog>();
         services.AddSingleton<MusicLyrics>();
         services.AddSingleton<MusicRadio>();
         services.AddSingleton<MusicMix>();
         services.AddSingleton<MusicCache>();
+        services.AddSingleton<MusicArtCache>();
         services.AddSingleton<SubsonicAuth>();
         services.AddSingleton(_ => new MusicLibraryStore());
         services.AddSingleton<MusicSaver>();

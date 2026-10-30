@@ -202,6 +202,13 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLi
         _ => null
     };
 
+    private async Task<(MusicTrack, string)?> KnownAsync(Guid user, string releaseId, string trackId, CancellationToken ct)
+    {
+        var library = await store.ReadAsync(user, ct);
+        return library.Plays.Concat(library.StarredTracks).Concat(library.Playlists.SelectMany(p => p.Entries))
+            .FirstOrDefault(p => p.Track.ReleaseId == releaseId && p.Track.Id == trackId && p.Track.Title.Length > 0) is { } play ? (play.Track, play.Album) : null;
+    }
+
     public static (string Release, string Track)? ParseTrackId(string id) => id.Split('/') is ["track", _, var release, var track]
         && MusicCatalog.IsId(release) && MusicCatalog.IsId(track) ? (release, track) : null;
 
@@ -212,10 +219,23 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLi
         var auth = await authorization.GetAuthorizationInfo(context);
         if (!auth.IsAuthenticated || !Plugin.Allows(auth.UserId) || !IsAvailable) throw new UnauthorizedAccessException("StreamFin is not enabled for this account.");
         if (ParseTrackId(id) is not var (releaseId, trackId)) throw new ProviderException("Invalid StreamFin track.");
-        var release = await catalog.ReleaseAsync(releaseId, ct);
-        var track = release.Tracks.FirstOrDefault(t => t.Id == trackId) ?? throw new ProviderException("This track is unavailable.");
         var user = auth.UserId;
-        var recording = MusicCatalog.PreferExplicit ? await catalog.ExplicitAsync(track, ct) : track;
+        MusicTrack track;
+        string album;
+        try
+        {
+            var release = await catalog.ReleaseAsync(releaseId, ct);
+            track = release.Tracks.FirstOrDefault(t => t.Id == trackId) ?? throw new ProviderException("This track is unavailable.");
+            (track, album) = (track with { Artwork = track.Artwork ?? release.Artwork }, release.Title);
+        }
+        // While the catalog is out, a song this user has played, starred or listed still plays from what they keep.
+        catch (Exception ex) when (ex is ProviderException or System.Text.Json.JsonException)
+        {
+            if (await KnownAsync(user, releaseId, trackId, ct) is not { } known) throw;
+            (track, album) = known;
+        }
+        // A few seconds for the explicit twin: Jellyfin's player waits on this answer before it starts.
+        var recording = MusicCatalog.PreferExplicit ? await catalog.ExplicitAsync(track, ct, TimeSpan.FromSeconds(4)) : track;
         // The upstream address is stable, so a refresh after an expired link is the same address again.
         IReadOnlyList<ResolvedVideo> resolved = [new ResolvedVideo(MusicCatalog.StreamUri(recording.Id), "FLAC", new Dictionary<string, string>(), false, Audio: true)];
         var source = await relay.MediaSourceAsync(user, resolved[0], "FLAC", _ => Task.FromResult(resolved), () => Plugin.Allows(user) && IsAvailable, ct);
@@ -223,7 +243,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLi
         // Most of the catalog is 16/44.1, but some masters are 24 bit up to 96 kHz; the probe knows which.
         if (source.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio) is { BitDepth: > 0, SampleRate: > 0 } audio)
             source.Name = $"FLAC · {audio.BitDepth} bit / {audio.SampleRate / 1000.0:0.#} kHz";
-        try { await store.RecordPlayAsync(user, track with { Artwork = track.Artwork ?? release.Artwork }, release.Title, ct); }
+        try { await store.RecordPlayAsync(user, track, album, ct); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logger.LogWarning("StreamFin could not save music history ({ErrorType})", ex.GetType().Name); }
         return [source];
     }

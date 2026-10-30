@@ -49,6 +49,9 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   also published as a clean edit, the edit is hidden and the original plays. Played songs
   are kept on the server (4 GB by default, **Song cache** in the settings, 0 turns it off),
   so skipping within a song and playing it again do not wait for the catalog.
+  The catalog goes down now and then. Albums, artists and covers it has answered for are kept
+  on disk and open at once, songs in the song cache keep playing, and songs you played,
+  starred or put in a playlist keep their stars, scrobbles and lyrics until it is back.
 - **Radio**: **Instant Mix** on an artist, album or song (and the **Radio** folder in channel
   views that show folders) mixes the artist's top tracks with those of similar artists, as [ListenBrainz](https://listenbrainz.org) listeners play them
   (the artist is found on [MusicBrainz](https://musicbrainz.org) by the ISRC of one of its

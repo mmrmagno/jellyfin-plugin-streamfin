@@ -28,3 +28,9 @@ public sealed class RateLimitedException(string message, TimeSpan? retryAfter) :
 {
     public TimeSpan? RetryAfter { get; } = retryAfter;
 }
+public sealed class CatalogDownException() : ProviderException("The music catalog is not responding right now. Songs played recently still work; try again in a few minutes.");
+// A source that answered with an error status; 5xx means the site itself is down or overloaded.
+public sealed class SourceStatusException(int status) : ProviderException($"Source returned HTTP {status}. Please try again later.")
+{
+    public int Status { get; } = status;
+}

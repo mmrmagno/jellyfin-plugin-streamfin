@@ -123,20 +123,20 @@ public sealed class SafeHttp : IDisposable
     }
 
     public async Task<string> TextAsync(Uri uri, CancellationToken ct, string? json = null, IReadOnlyDictionary<string, string>? headers = null,
-        bool open = false, IReadOnlyDictionary<string, string>? form = null)
-        => (await PageAsync(uri, ct, json, headers, open, form)).Text;
+        bool open = false, IReadOnlyDictionary<string, string>? form = null, TimeSpan? limit = null)
+        => (await PageAsync(uri, ct, json, headers, open, form, limit)).Text;
 
     // Also reports where redirects ended: embed players expect that page as the referrer.
     public async Task<(Uri Final, string Text)> PageAsync(Uri uri, CancellationToken ct, string? json = null, IReadOnlyDictionary<string, string>? headers = null,
-        bool open = false, IReadOnlyDictionary<string, string>? form = null)
+        bool open = false, IReadOnlyDictionary<string, string>? form = null, TimeSpan? limit = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        timeout.CancelAfter(limit ?? TimeSpan.FromSeconds(30));
         using var response = await OpenAsync(uri, false, timeout.Token, json: json, headers: headers, open: open, form: form);
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
             throw new RateLimitedException($"{uri.IdnHost} is rate limiting requests. Please try again in a minute.", RetryAfter(response));
         if (!response.IsSuccessStatusCode)
-            throw new ProviderException($"Source returned HTTP {(int)response.StatusCode}. Please try again later.");
+            throw new SourceStatusException((int)response.StatusCode);
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
         using var output = new MemoryStream();
         var buffer = new byte[16384];
@@ -150,17 +150,34 @@ public sealed class SafeHttp : IDisposable
     }
 
     // The music catalog answers short bursts (a probe, a player's range requests, a quick skip) with 429 and
-    // no Retry-After. A brief wait clears it, so a player is not handed the 429 as a broken file.
-    public static async Task<HttpResponseMessage> PatientAsync(Func<Task<HttpResponseMessage>> open, CancellationToken ct, int attempts = 3)
+    // no Retry-After. A brief wait clears it, so a player is not handed the 429 as a broken file. With outages,
+    // a 5xx (Cloudflare's 522 when the catalog is slow) or a failed connection is tried again the same way.
+    public static async Task<HttpResponseMessage> PatientAsync(Func<Task<HttpResponseMessage>> open, CancellationToken ct, int attempts = 3, bool outages = false)
     {
         for (var attempt = 1; ; attempt++)
         {
-            var response = await open();
-            if (response.StatusCode != HttpStatusCode.TooManyRequests || attempt >= attempts) return response;
+            HttpResponseMessage response;
+            try { response = await open(); }
+            catch (Exception ex) when (outages && attempt < attempts && (ex is HttpRequestException || ex is OperationCanceledException && !ct.IsCancellationRequested))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(attempt), ct);
+                continue;
+            }
+            var again = response.StatusCode == HttpStatusCode.TooManyRequests || outages && (int)response.StatusCode >= 500;
+            if (!again || attempt >= attempts) return response;
             var wait = RetryAfter(response) is { } after && after > TimeSpan.Zero && after <= TimeSpan.FromSeconds(5) ? after : TimeSpan.FromSeconds(attempt);
             response.Dispose();
             await Task.Delay(wait, ct);
         }
+    }
+
+    // A media request whose headers must arrive within the limit. The body then runs on ct alone: the limit's
+    // source is disposed on return, so its timer can no longer cut a long song.
+    public async Task<HttpResponseMessage> MediaAsync(Uri uri, TimeSpan limit, CancellationToken ct, string? range = null, bool head = false)
+    {
+        using var headers = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        headers.CancelAfter(limit);
+        return await OpenAsync(uri, true, headers.Token, range, head: head);
     }
 
     public static TimeSpan? RetryAfter(HttpResponseMessage response) => response.Headers.RetryAfter switch
