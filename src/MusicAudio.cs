@@ -180,6 +180,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
                 var json = await tools.RunAsync(YtDlp.SearchArguments(deno, $"{track.Artists[0].Name} - {track.Title}"), TimeSpan.FromSeconds(20), ct);
                 var best = Best(ParseSearch(json), track);
                 video = best?.Id ?? "";
+                if (best is null) logger.LogInformation("StreamFin music: YouTube has no copy of {Track} that matches its title, artist and length", track.Id);
                 // A song YouTube does not have is not searched for again for a while.
                 Matches.Set(track.Id, video, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = best is null ? TimeSpan.FromMinutes(30) : TimeSpan.FromDays(1) });
             }
@@ -246,9 +247,15 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         if (main.Length == 0 || !candidate.Contains(main, StringComparison.Ordinal)) return null;
         var artist = Normalize(track.Artists.FirstOrDefault()?.Name ?? "");
         var channel = Normalize(hit.Channel);
-        // Someone else's upload of the song (a cover, a fan edit) names neither the artist nor their channel.
-        if (artist.Length > 0 && !candidate.Contains(artist, StringComparison.Ordinal) && !channel.Contains(artist, StringComparison.Ordinal)) return null;
         var score = 0;
+        // Someone else's upload of the song (a cover, a fan edit) names neither the artist nor their channel. The one
+        // exception is YouTube's own album audio for releases by many artists, which sits on a shared "Release - Topic"
+        // style channel: it is taken only under the song's exact title and within 2 s.
+        if (artist.Length > 0 && !candidate.Contains(artist, StringComparison.Ordinal) && !channel.Contains(artist, StringComparison.Ordinal))
+        {
+            if (!channel.EndsWith(" topic", StringComparison.Ordinal) || candidate != title || Math.Abs(duration - track.DurationMs.Value / 1000.0) > 2) return null;
+            score -= 5;
+        }
         // YouTube's automatic "Artist - Topic" uploads are the album audio itself.
         if (channel == artist + " topic") score += 50;
         else if (artist.Length > 0 && (channel == artist || channel.Replace(" ", "") == artist.Replace(" ", "") + "vevo")) score += 25;
