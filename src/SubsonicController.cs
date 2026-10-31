@@ -1124,9 +1124,10 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         var id = One("id");
         MusicTrack track;
         try { track = (await TrackAsync(id)).Track; }
-        // A song kept on disk plays even when nothing describes it right now; only its length and name are unknown.
+        // The song itself comes from another address than its details, and on a bad day one answers while the other
+        // does not. It plays with only its length and name unknown; when it is not reachable either, that error shows.
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException
-            && ParseTrack(id) is var (releaseId, trackId) && songs.Has(trackId))
+            && ParseTrack(id) is var (releaseId, trackId))
         {
             track = new MusicTrack(trackId, "Song", [], releaseId, null, null, null, false, null, null);
         }
