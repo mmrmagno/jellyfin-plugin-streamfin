@@ -20,6 +20,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["subsonic"] = Targets.Subsonic,
     ["gain"] = Targets.Gain,
     ["radio"] = Targets.Radio,
+    ["ytdlp"] = Targets.YtDlp,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -48,6 +49,7 @@ static class Targets
     private static readonly Regex MediaTag = new($@"\A#EXT-X-MEDIA:(?:(?:URI=""p/\d+\.m3u8""|(?:GROUP-ID|NAME|LANGUAGE|CHANNELS)={Quoted}|(?:TYPE|DEFAULT|AUTOSELECT)={Plain})(?:,|\z))*\z");
     private static readonly Regex StreamTag = new($@"\A#EXT-X-STREAM-INF:(?:(?:(?:CODECS|AUDIO)={Quoted}|(?:BANDWIDTH|AVERAGE-BANDWIDTH|RESOLUTION|FRAME-RATE)={Plain})(?:,|\z))*\z");
     private static readonly Regex Variant = new(@"\Ap/\d+\.m3u8\z");
+    private static readonly Regex VideoId = new(@"\A[A-Za-z0-9_-]{11}\z");
     private static readonly Regex LanguageCode = new(@"\A(?:[a-z]{2}|und)\z");
     private static readonly byte[] HiAnimeKey = "otaku-embed-v1"u8.ToArray();
 
@@ -351,6 +353,20 @@ static class Targets
                 foreach (var a in artists) Clean(a.Name, "similar artist name");
                 Expect(artists.Zip(artists.Skip(1)).All(p => p.First.Score >= p.Second.Score), "similar artists are best first");
             });
+    }
+
+    public static void YtDlp(string json)
+    {
+        Guard(() =>
+        {
+            var hits = MusicAudio.ParseSearch(json);
+            Expect(hits.Count <= 20 && hits.All(h => VideoId.IsMatch(h.Id)), "YouTube results are bounded with valid video IDs");
+            foreach (var hit in hits) StreamFin.YtDlp.AudioArguments("/d", hit.Id);
+            foreach (var track in new[] { Song, Song with { Title = json.Length > 200 ? json[..200] : json, DurationMs = 225000 } })
+                if (MusicAudio.Best(hits, track) is { } best)
+                    Expect(hits.Contains(best) && best.Duration is double d && Math.Abs(d - track.DurationMs!.Value / 1000.0) <= 3, "a chosen YouTube copy has the song's length");
+            Expect(MusicAudio.Normalize(json).Length <= json.Length * 4 + 8, "normalised names stay bounded");
+        });
     }
 
     public static void Lyrics(string json)

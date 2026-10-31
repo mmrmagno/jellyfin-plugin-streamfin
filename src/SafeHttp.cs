@@ -59,13 +59,18 @@ public sealed class SafeHttp : IDisposable
         catch (UriFormatException) { throw new ProviderException("Source returned an unsupported destination."); }
     }
 
-    public static void Validate(Uri uri, bool media)
+    // Where yt-dlp and deno are published. Only the tool download may go there.
+    public static bool IsToolHost(string host) => host is "github.com" or "release-assets.githubusercontent.com" or "objects.githubusercontent.com";
+
+    public static void Validate(Uri uri, bool media, bool tools = false)
     {
         var host = Host(uri).ToLowerInvariant();
-        var site = IsKnownSite(host);
+        var site = IsKnownSite(host) || tools && IsToolHost(host);
         var heaven = media && AnimeHeavenSource.IsMediaHost(host);
         var cdn = media && (host == "vidcache.net" || host.EndsWith(".vidcache.net", StringComparison.Ordinal));
-        if (uri.Scheme != "https" || uri.UserInfo.Length > 0 || (!site && !cdn && !heaven)
+        // YouTube's audio comes from rotating hosts under this name; yt-dlp only hands out https ones.
+        var youtube = media && host.EndsWith(".googlevideo.com", StringComparison.Ordinal);
+        if (uri.Scheme != "https" || uri.UserInfo.Length > 0 || (!site && !cdn && !heaven && !youtube)
             || (!cdn && uri.Port != 443) || (cdn && uri.Port is not (443 or 8161 or 8162 or 8163 or 8164 or 8165 or 8166)))
             throw new ProviderException("Source returned an unsupported destination.");
     }
@@ -89,13 +94,13 @@ public sealed class SafeHttp : IDisposable
 
     public async Task<HttpResponseMessage> OpenAsync(Uri uri, bool media, CancellationToken ct,
         string? range = null, string? json = null, bool head = false, IReadOnlyDictionary<string, string>? headers = null,
-        bool open = false, IReadOnlyDictionary<string, string>? form = null)
+        bool open = false, IReadOnlyDictionary<string, string>? form = null, bool tools = false)
     {
         var originalHost = uri.IdnHost;
         for (var redirect = 0; redirect < 6; redirect++)
         {
             if (open) ValidateOpen(uri);
-            else Validate(uri, media);
+            else Validate(uri, media, tools);
             using var request = new HttpRequestMessage(head ? HttpMethod.Head : json is null && form is null ? HttpMethod.Get : HttpMethod.Post, uri);
             if (json is not null) request.Content = new StringContent(json, Encoding.UTF8, "application/json");
             else if (form is not null) request.Content = new FormUrlEncodedContent(form);

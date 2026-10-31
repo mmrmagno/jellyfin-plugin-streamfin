@@ -291,12 +291,62 @@ Check(gain == new ReplayGain(-5.83, -6.83, 0.979767, 1.0), "ReplayGain tags are 
 var truncated = Flac("REPLAYGAIN_TRACK_GAIN=-5.83 dB");
 Check(MusicGain.Parse(Flac("TITLE=Song")) is null && MusicGain.Parse(truncated[..^4]) is null && MusicGain.Parse(Flac("REPLAYGAIN_TRACK_GAIN=999 dB")) is null
     && MusicGain.Parse("ID3x"u8) is null, "ReplayGain: untagged, cut short, absurd values and non-FLAC give none");
-Check(MusicCache.Key(new Uri("https://tracks.monochrome.st/track/155102871061270528")) == "155102871061270528"
-    && MusicCache.Key(new Uri("http://tracks.monochrome.st/track/155102871061270528")) is null
-    && MusicCache.Key(new Uri("https://evil.example/track/155102871061270528")) is null
-    && MusicCache.Key(new Uri("https://tracks.monochrome.st/track/../../etc/passwd")) is null
-    && MusicCache.Key(new Uri("https://tracks.monochrome.st/track/155102871061270528/x")) is null
-    && MusicCache.Key(new Uri("https://tracks.monochrome.st/releases/155102871061270528")) is null, "the song cache only keeps catalog tracks, named by a valid id");
+byte[] flacHead = [.. "fLaC"u8, 0, 0, 0, 34], mp4Head = [0, 0, 0, 24, .. "ftypdash"u8];
+Check(MusicCache.Looks(flacHead, "flac") && MusicCache.Looks(mp4Head, "m4a") && !MusicCache.Looks("<html>  "u8, "flac")
+    && !MusicCache.Looks("<html>  "u8, "m4a") && !MusicCache.Looks(flacHead, "m4a") && !MusicCache.Looks(flacHead, "exe"), "the song cache keeps only real FLAC or MP4 files");
+var songRoot = Path.Combine(Path.GetTempPath(), "streamfin-songs-" + Guid.NewGuid().ToString("N"));
+try
+{
+    Directory.CreateDirectory(songRoot);
+    foreach (var name in new[] { "155102871061270528.m4a", "155102871061270528.flac", "155102871061270529.m4a", "155102871061270530.exe", "..flac", "155102871061270531.flac.part" })
+        File.WriteAllText(Path.Combine(songRoot, name), "x");
+    var diskCache = new MusicCache(new SafeHttp(), Microsoft.Extensions.Logging.Abstractions.NullLogger<MusicCache>.Instance, songRoot);
+    Check(diskCache.Kept("155102871061270528") == "flac" && diskCache.Kept("155102871061270529") == "m4a" && diskCache.Kept("155102871061270530") is null
+        && !File.Exists(Path.Combine(songRoot, "155102871061270528.m4a")) && !File.Exists(Path.Combine(songRoot, "155102871061270531.flac.part"))
+        && MusicCache.Container("155102871061270529") == "m4a", "the song cache reads both formats back, a FLAC replaces a lossy copy, other files are ignored");
+    using (diskCache.OpenComplete("155102871061270529", "flac")) Check(diskCache.OpenComplete("155102871061270529", "flac") is null, "a lossy copy is never handed out as FLAC");
+}
+finally { if (Directory.Exists(songRoot)) Directory.Delete(songRoot, true); }
+Check(SafeHttp.Allowed(new Uri("https://rr2---sn-qpbpu8-c0qr.googlevideo.com/videoplayback?expire=1"), true)
+    && !SafeHttp.Allowed(new Uri("https://rr2---sn-qpbpu8-c0qr.googlevideo.com/videoplayback"), false)
+    && !SafeHttp.Allowed(new Uri("http://rr2.googlevideo.com/videoplayback"), true) && !SafeHttp.Allowed(new Uri("https://googlevideo.com.evil.example/x"), true)
+    && !SafeHttp.Allowed(new Uri("https://rr2.googlevideo.com:8443/x"), true), "YouTube audio is fetched only over https from its own hosts");
+Check(!SafeHttp.Allowed(new Uri("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"), true)
+    && !SafeHttp.Allowed(new Uri("https://release-assets.githubusercontent.com/x"), false), "GitHub is reachable only for the tool download");
+Check(MusicAudio.IsAudioAddress(new Uri("https://rr1---sn-x.googlevideo.com/videoplayback?itag=140")) && !MusicAudio.IsAudioAddress(new Uri("https://www.youtube.com/watch?v=x"))
+    && !MusicAudio.IsAudioAddress(new Uri("file:///etc/passwd")), "a YouTube audio address must be on googlevideo");
+var sums = "e51e69e89489f199530f13d32a4342da3ddb2cf34842f364603a066db05afbf3  yt-dlp\nf5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d  yt-dlp_linux\nbad  yt-dlp_linux_aarch64\n";
+Check(YtDlp.Expected(sums, "yt-dlp_linux") == "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d" && YtDlp.Expected(sums, "yt-dlp_linux_aarch64") is null
+    && YtDlp.Expected(sums, "yt-dlp_linux.exe") is null && YtDlp.Expected("E890975BC2549807BBCC0B584FFAFDA72CC7C93349DD99C80483DD784F6C4609 *deno.zip", "deno.zip") == "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609",
+    "tool checksums are read for exactly the file asked for");
+var search = YtDlp.SearchArguments("/data/bin/deno", "-o /tmp/x\n --exec rm");
+Check(search[^2] == "--" && search[^1].StartsWith("ytsearch8:-o /tmp/x", StringComparison.Ordinal) && !search[^1].Contains('\n') && search.Contains("--ignore-config")
+    && search.Contains("--no-plugin-dirs") && search[search.IndexOf("--js-runtimes") + 1] == "deno:/data/bin/deno", "yt-dlp search text stays one argument after --");
+Check(YtDlp.AudioArguments("/d", "JhulBGMA7G4")[^1] == "https://www.youtube.com/watch?v=JhulBGMA7G4", "yt-dlp is asked for one video's audio");
+Reject(() => YtDlp.AudioArguments("/d", "--exec=x;rm"), "a YouTube video ID that is not one is refused");
+var hbfs = new MusicTrack("155102871061270528", "Harder, Better, Faster, Stronger", [new("155102851176075265", "Daft Punk")], "155102851176075264", null, 224693, null, false, 1, 4);
+var hits = MusicAudio.ParseSearch("""
+    {"entries":[
+      {"id":"gAjR4_CbPpQ","title":"Daft Punk - Harder, Better, Faster, Stronger (Official Video)","channel":"Daft Punk","duration":223},
+      {"id":"x84m3YyO2oU","title":"Daft Punk - Harder Better Faster Stronger (Official Live Video 2007)","channel":"Daft Punk","duration":225},
+      {"id":"K2cYWfq--Nw","title":"Daft Hands - Harder, Better, Faster, Stronger","channel":"Fr. Eckle Studios","duration":225},
+      {"id":"JhulBGMA7G4","title":"Harder, Better, Faster, Stronger","channel":"Daft Punk - Topic","duration":226},
+      {"id":"VeauURD-qLk","title":"Daft Punk Greatest Hits","channel":"Music EDM","duration":4275},
+      {"id":"bad id","title":"x","duration":224},
+      {"id":"yydNF8tuVmU","title":"Daft Punk - Harder, Better, Faster, Stronger (Official Audio)","channel":"Daft Punk","duration":"225"}
+    ]}
+    """);
+Check(hits.Count == 6 && hits.Single(h => h.Id == "yydNF8tuVmU").Duration is null, "YouTube search results are read, with bad IDs and odd durations dropped");
+Check(MusicAudio.Best(hits, hbfs)?.Id == "JhulBGMA7G4", "the artist's Topic upload wins over videos, live versions and covers");
+Check(MusicAudio.Best(hits.Where(h => h.Id != "JhulBGMA7G4").ToList(), hbfs)?.Id == "gAjR4_CbPpQ", "without one, the artist's own upload of the right length is chosen");
+Check(MusicAudio.Best([new("x84m3YyO2oU", "Daft Punk - Harder Better Faster Stronger (Live)", "Daft Punk", 225)], hbfs) is null, "a live version is not taken for the studio recording");
+Check(MusicAudio.Best([new("x84m3YyO2oU", "Harder, Better, Faster, Stronger (Live)", "Daft Punk - Topic", 225)], hbfs with { Title = "Harder, Better, Faster, Stronger (Live)" })?.Id == "x84m3YyO2oU",
+    "a live recording matches its live upload");
+Check(MusicAudio.Best([new("JhulBGMA7G4", "Harder, Better, Faster, Stronger", "Daft Punk - Topic", 229)], hbfs) is null, "a copy more than 3 s longer is not the same recording");
+Check(MusicAudio.Best([new("JhulBGMA7G4", "Something Else", "Daft Punk - Topic", 225)], hbfs) is null, "another song of the same length is not taken");
+Check(MusicAudio.Best([new("K2cYWfq--Nw", "Daft Hands - Harder, Better, Faster, Stronger", "Fr. Eckle Studios", 225)], hbfs) is null, "an upload that names neither the artist nor their channel is not taken");
+Check(MusicAudio.Normalize("Beyoncé & JAY-Z") == "beyonce and jay z" && MusicAudio.Normalize("Simon and Garfunkel") == "simon and garfunkel", "names compare without accents, case or punctuation");
+Check(MusicAudio.ParseSearch("[]").Count == 0 && MusicAudio.ParseSearch("""{"entries":{}}""").Count == 0, "odd search answers give no results");
 var tagged = Flac("REPLAYGAIN_TRACK_GAIN=-2.5");
 Check(MusicGain.AudioStart([.. tagged, 0xFF, 0xF8]) == tagged.Length && MusicGain.AudioStart(tagged[..^1]) is null && MusicGain.AudioStart("ID3x0000"u8) is null,
     "FLAC audio starts after the last metadata block; cut short or not FLAC gives none");

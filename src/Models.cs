@@ -7,7 +7,10 @@ public sealed record SourceTitle(string Id, string Title, int? Year = null);
 public sealed record SourceEpisode(string Id, decimal Number, string Title);
 public sealed record Subtitle(string Label, string Language, Uri Url);
 public sealed record ResolvedVideo(Uri Url, string Quality, IReadOnlyDictionary<string, string> Headers, bool HardcodedEnglishSubtitles,
-    bool Hls = false, IReadOnlyList<Subtitle>? Subtitles = null, bool Audio = false);
+    bool Hls = false, IReadOnlyList<Subtitle>? Subtitles = null, AudioTicket? Ticket = null)
+{
+    public bool Audio => Ticket is not null;
+}
 
 public interface IAnimeSource
 {

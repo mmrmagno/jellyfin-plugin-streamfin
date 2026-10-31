@@ -24,6 +24,13 @@ public sealed class Configuration : BasePluginConfiguration
     public bool MusicPreferExplicit { get; set; } = true;
     // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.
     public int MusicCacheMb { get; set; } = 4096;
+    // When no FLAC source answers, a song may play from a lossy one (YouTube's AAC) instead of failing.
+    public bool MusicAllowLossy { get; set; } = true;
+    // YouTube needs yt-dlp and deno on the server; this setting lets the plugin fetch and update them.
+    public bool MusicYouTube { get; set; }
+    // Empty means the copies the plugin keeps in its own data folder.
+    public string YtDlpPath { get; set; } = "";
+    public string DenoPath { get; set; } = "";
     // Starred albums are saved here as FLAC files for a normal music library; empty turns it off.
     public string MusicLibraryFolder { get; set; } = "";
     // Optional: Last.fm's similar artists when ListenBrainz has none.

@@ -16,7 +16,7 @@ namespace StreamFin;
 // Item IDs: artist/<id>, top/<artist>, radio/<artist>, album/<scope>/<release>, track/<scope>/<release>/<track>.
 // Jellyfin keys channel items by external ID, so the scope (where a listing found the item) keeps
 // an album shared by two artists, or a track both searched and played, from moving between folders.
-public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLibraryStore store, StreamRelay relay, IHttpContextAccessor contexts,
+public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, MusicRadio radio, MusicLibraryStore store, StreamRelay relay, IHttpContextAccessor contexts,
     IAuthorizationContext authorization, ILibraryManager library, ILogger<MusicChannel> logger)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
@@ -222,28 +222,36 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLi
         var user = auth.UserId;
         MusicTrack track;
         string album;
+        var known = await KnownAsync(user, releaseId, trackId, ct);
+        // Jellyfin's player gives up after a minute, and finding the audio may take most of it. A song this user
+        // already keeps does not wait long on a slow catalog for details it has.
+        using var details = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (known is not null) details.CancelAfter(TimeSpan.FromSeconds(8));
         try
         {
-            var release = await catalog.ReleaseAsync(releaseId, ct);
+            var release = await catalog.ReleaseAsync(releaseId, details.Token);
             track = release.Tracks.FirstOrDefault(t => t.Id == trackId) ?? throw new ProviderException("This track is unavailable.");
             (track, album) = (track with { Artwork = track.Artwork ?? release.Artwork }, release.Title);
         }
         // While the catalog is out, a song this user has played, starred or listed still plays from what they keep.
-        catch (Exception ex) when (ex is ProviderException or System.Text.Json.JsonException)
+        catch (Exception ex) when (ex is ProviderException or System.Text.Json.JsonException || ex is OperationCanceledException && !ct.IsCancellationRequested)
         {
             // Without that, the song's own address may still answer: Jellyfin then plays it instead of reporting
             // a format it cannot play, which is how an empty answer shows in its player.
-            (track, album) = await KnownAsync(user, releaseId, trackId, ct) ?? (new MusicTrack(trackId, "", [], releaseId, null, null, null, false, null, null), "");
+            (track, album) = known ?? (new MusicTrack(trackId, "", [], releaseId, null, null, null, false, null, null), "");
         }
         // A few seconds for the explicit twin: Jellyfin's player waits on this answer before it starts.
         var recording = MusicCatalog.PreferExplicit ? await catalog.ExplicitAsync(track, ct, TimeSpan.FromSeconds(4)) : track;
-        // The upstream address is stable, so a refresh after an expired link is the same address again.
-        IReadOnlyList<ResolvedVideo> resolved = [new ResolvedVideo(MusicCatalog.StreamUri(recording.Id), "FLAC", new Dictionary<string, string>(), false, Audio: true)];
-        var source = await relay.MediaSourceAsync(user, resolved[0], "FLAC", _ => Task.FromResult(resolved), () => Plugin.Allows(user) && IsAvailable, ct);
+        var ticket = await sources.ResolveAsync(recording, ct);
+        var name = ticket.Lossless ? "FLAC" : $"AAC {ticket.Kbps ?? 128} · YouTube";
+        // A refresh after an expired link asks the same source again: the player is partway through its file.
+        static ResolvedVideo Video(AudioTicket t) => new(t.Upstream, t.Lossless ? "FLAC" : "AAC", new Dictionary<string, string>(), false, Ticket: t);
+        var source = await relay.MediaSourceAsync(user, Video(ticket), name,
+            async token => [Video(await sources.ResolveAsync(recording, token, ticket.Source))], () => Plugin.Allows(user) && IsAvailable, ct);
         source.RunTimeTicks ??= recording.DurationMs is > 0 ? TimeSpan.FromMilliseconds(recording.DurationMs.Value).Ticks : null;
         // Most of the catalog is 16/44.1, but some masters are 24 bit up to 96 kHz; the probe knows which.
-        if (source.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio) is { BitDepth: > 0, SampleRate: > 0 } audio)
-            source.Name = $"FLAC · {audio.BitDepth} bit / {audio.SampleRate / 1000.0:0.#} kHz";
+        if (ticket.Lossless && source.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio) is { BitDepth: > 0, SampleRate: > 0 } stream)
+            source.Name = $"FLAC · {stream.BitDepth} bit / {stream.SampleRate / 1000.0:0.#} kHz";
         if (track.Title.Length > 0)
             try { await store.RecordPlayAsync(user, track, album, ct); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logger.LogWarning("StreamFin could not save music history ({ErrorType})", ex.GetType().Name); }
