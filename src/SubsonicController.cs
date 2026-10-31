@@ -18,7 +18,8 @@ namespace StreamFin;
 [ApiController]
 [Route("StreamFin/rest")]
 public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http, MusicCache songs,
-    MusicSaver saver, MusicRadio radio, MusicArtCache covers, IMediaEncoder encoder, ILogger<SubsonicController> logger) : ControllerBase
+    MusicSaver saver, MusicRadio radio, MusicArtCache covers, IMediaEncoder encoder, MediaBrowser.Controller.Drawing.IImageEncoder images,
+    ILogger<SubsonicController> logger) : ControllerBase
 {
     private const long FormLimit = 256 * 1024;
     // A song's FLAC header and size, kept from its first play so a later seek costs the catalog one request.
@@ -1003,13 +1004,21 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     {
         var id = One("id") ?? throw Missing("id");
         string? address = null;
+        MusicRelease? release = null;
         try
         {
             // Lists ask for a cover per album: what this user's library already knows costs the catalog nothing.
             if (ParseId(id, "al") is { } releaseId)
-                address = !catalog.HasRelease(releaseId) && (await AlbumsAsync(await store.ReadAsync(user.Id, Ct))).FirstOrDefault(a => a.Release.Id == releaseId) is { Release.Artwork: { } mine }
-                    ? mine : (await catalog.ReleaseAsync(releaseId, Ct)).Artwork;
-            else if (ParseTrack(id) is not null) address = (await TrackAsync(id)).Track.Artwork;
+            {
+                release = !catalog.HasRelease(releaseId) && (await AlbumsAsync(await store.ReadAsync(user.Id, Ct))).FirstOrDefault(a => a.Release.Id == releaseId)
+                    is { Release.Artwork: not null } mine ? mine.Release : await catalog.ReleaseAsync(releaseId, Ct);
+                address = release.Artwork;
+            }
+            else if (ParseTrack(id) is not null)
+            {
+                var (track, from) = await TrackAsync(id);
+                (address, release) = (track.Artwork, from.Tracks.Count > 0 ? from : null);
+            }
             else if (ParseId(id, "ar") is { } artistId) address = (await catalog.ArtistAsync(artistId, Ct)).Image;
             else if (ParsePlaylist(id) is { } playlistId)
             {
@@ -1018,8 +1027,13 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             }
         }
         catch (ProviderException) { throw NotFound("Cover art"); }
-        // The parsers only keep artwork on the catalog host; SafeHttp checks it again.
-        if (address is null || await covers.GetAsync(address, catalog.Down, Ct) is not var (path, type)) throw NotFound("Cover art");
+        // A saved album's own cover first, then the kept copy of the catalog's. The parsers only keep artwork on the
+        // catalog host; SafeHttp checks it again.
+        string? path = null, type = null;
+        if (release is not null && MusicSaver.SavedCover(release) is { } saved && MusicArtCache.TypeOf(saved) is { } savedType) (path, type) = (saved, savedType);
+        else if (address is not null && await covers.GetAsync(address, catalog.Down, Ct) is var (kept, keptType)) (path, type) = (kept, keptType);
+        if (path is null || type is null) throw NotFound("Cover art");
+        if (Int("size", 0, 0, 10_000) is > 0 and var size && await covers.ResizedAsync(path, size, images) is { } smaller) (path, type) = (smaller, "image/jpeg");
         FileStream file;
         try { file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16, useAsync: true); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw NotFound("Cover art"); }
