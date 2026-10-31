@@ -51,7 +51,7 @@ public sealed class SafeHttp : IDisposable
     // hostnames weekly, so those use the open policy below instead of a list.
     public static bool IsKnownSite(string host) => host is "www.animegg.org" or "animegg.org" or "graphql.anilist.co" or "animeheaven.me"
         or "zokoanime.video" or "api.themoviedb.org" or "flixhqz.net" or "flixhq.ws" or MusicLyrics.Host
-        or MusicRadio.MusicBrainzHost or MusicRadio.ListenBrainzHost or MusicRadio.LastFmHost || host == MusicCatalog.ApiHost;
+        or MusicRadio.MusicBrainzHost or MusicRadio.ListenBrainzHost or MusicRadio.LastFmHost or Deezer.Host or Deezer.ImageHost || host == MusicCatalog.ApiHost;
 
     private static string Host(Uri uri)
     {

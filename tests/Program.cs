@@ -7,6 +7,7 @@ using StreamFin;
 var count = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); Console.WriteLine("PASS: " + name); count++; }
 void Reject(Action action, string name) { try { action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
+Exception? Throws(Action action) { try { action(); } catch (Exception ex) { return ex; } return null; }
 void Contained(Action action, string name) { try { action(); } catch (ProviderException) { } Check(true, name); }
 async Task RejectAsync(Func<Task> action, string name) { try { await action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
 
@@ -258,6 +259,62 @@ foreach (var api in new[] { "http://tracks.monochrome.st", "https://tracks.monoc
     Check(MusicCatalog.ParseApi(api) is null, "unsafe music API address rejected " + api);
 Check(MusicCatalog.StreamUri("155102871061270528").AbsoluteUri == "https://tracks.monochrome.st/track/155102871061270528" && SafeHttp.Allowed(MusicCatalog.StreamUri("155102871061270528"), true), "music stream address is a known site");
 Check(!SafeHttp.Allowed(new Uri("http://tracks.monochrome.st/track/155102871061270528"), true) && !SafeHttp.Allowed(new Uri("https://tracks.monochrome.st.evil.example/track/1"), true), "music host match is exact and https only");
+foreach (var id in new[] { "dz0", "dz", "DZ1", "dz1234567890123456", "dz-1", "dz1/../2", "xdz1" }) Reject(() => MusicCatalog.ValidateId(id), "invalid Deezer ID " + id);
+Check(MusicCatalog.IsId("dz3135553") && !MusicCatalog.IsMonochrome("dz3135553") && MusicCatalog.IsMonochrome("155102871061270528"), "Deezer IDs sit beside the catalog's own");
+Reject(() => MusicCatalog.StreamUri("dz3135553"), "a Deezer song has no catalog stream of its own");
+Check(MusicCatalog.IsStream(MusicCatalog.StreamUri("155102871061270528")) && !MusicCatalog.IsStream(new Uri("https://tracks.monochrome.st/track/dz1"))
+    && !MusicCatalog.IsStream(new Uri("https://tracks.monochrome.st/track/155102871061270528?x=1")) && !MusicCatalog.IsStream(new Uri("https://evil.example/track/155102871061270528")),
+    "only the catalog's own FLAC address counts as a catalog stream");
+var deezerSearch = Deezer.ParseSearch("""
+{"tracks":{"data":[{"id":3135553,"readable":true,"title":"One <i>More</i> Time","duration":320,"explicit_lyrics":false,"md5_image":"5718f7c81c27e0b2417e2a4c45224f8a",
+   "artist":{"id":27,"name":"Daft Punk"},"album":{"id":302127,"title":"Discovery","md5_image":"5718f7c81c27e0b2417e2a4c45224f8a"}},
+  {"id":"3135554","title":"String id","album":{"id":302127}},{"id":1000000000000000,"title":"Too long","album":{"id":302127}},{"id":-1,"title":"Negative","album":{"id":302127}},{"id":3135555,"title":"No album"}],"total":4},
+ "albums":{"data":[{"id":302127,"title":"Discovery","md5_image":"../../evil","record_type":"compile","artist":{"id":27,"name":"Daft Punk"}}]},
+ "artists":{"data":[{"id":27,"name":"Daft Punk","picture_xl":"https://cdn-images.dzcdn.net/images/artist/638e69b9caaf9f9f3f8826febea7b543/1000x1000-000000-80-0-0.jpg"},
+  {"id":28,"name":"Elsewhere","picture_xl":"https://evil.example/images/artist/638e69b9caaf9f9f3f8826febea7b543/1.jpg"}]}}
+""");
+Check(deezerSearch.Tracks.Single() is { Id: "dz3135553", ReleaseId: "dz302127", Title: "One iMore/i Time", DurationMs: 320000 } t && t.Artists.Single() == new MusicArtistRef("dz27", "Daft Punk")
+    && t.Artwork == "https://cdn-images.dzcdn.net/images/cover/5718f7c81c27e0b2417e2a4c45224f8a/1000x1000-000000-80-0-0.jpg", "Deezer search tracks get prefixed IDs, seconds and rebuilt covers");
+Check(deezerSearch.Releases.Single() is { Id: "dz302127", Type: "COMPILATION", Artwork: null } && deezerSearch.Artists.Count == 2
+    && deezerSearch.Artists[0].Image!.StartsWith("https://cdn-images.dzcdn.net/images/artist/638e69b9", StringComparison.Ordinal) && deezerSearch.Artists[1].Image is null,
+    "Deezer covers come only from its image host, built from a plain hash");
+var deezerRelease = Deezer.ParseRelease("""
+{"album":{"id":302127,"title":"Discovery","md5_image":"5718f7c81c27e0b2417e2a4c45224f8a","label":"Daft Life","nb_tracks":3,"release_date":"2001-03-07","record_type":"album",
+  "contributors":[{"id":27,"name":"Daft Punk","role":"Main"},{"id":99,"name":"Guest","role":"Featured"}],"artist":{"id":27,"name":"Daft Punk"},
+  "tracks":{"data":[{"id":1,"title":"Embedded","artist":{"id":27,"name":"Daft Punk"}}]}},
+ "tracks":{"data":[{"id":3135556,"title":"Harder, Better, Faster, Stronger","isrc":"GBDUW0000059","duration":226,"track_position":4,"disk_number":1,"explicit_lyrics":true,"artist":{"id":27,"name":"Daft Punk"}},
+  {"id":3135553,"title":"One More Time","isrc":"bad","duration":320,"track_position":1,"disk_number":1,"artist":{"id":27,"name":"Daft Punk"}}]}}
+""");
+Check(deezerRelease is { Id: "dz302127", Label: "Daft Life", TrackCount: 3 } && deezerRelease.Date == new DateTime(2001, 3, 7, 0, 0, 0, DateTimeKind.Utc)
+    && deezerRelease.Artists.Select(a => a.Id).SequenceEqual(["dz27"]) && deezerRelease.Tracks.Select(t => t.Title).SequenceEqual(["One More Time", "Harder, Better, Faster, Stronger"])
+    && deezerRelease.Tracks.All(t => t.ReleaseId == "dz302127" && t.Artwork == deezerRelease.Artwork) && deezerRelease.Tracks[1] is { Isrc: "GBDUW0000059", Explicit: true, Number: 4 }
+    && deezerRelease.Tracks[0].Isrc is null, "Deezer release takes its full track list, ordered, main artists only, ISRCs checked");
+var deezerArtist = Deezer.ParseArtist("""
+{"artist":{"id":27,"name":"Daft Punk"},"top":{"data":[{"id":67238733,"title":"Lose Yourself to Dance","duration":353,"contributors":[{"id":27,"name":"Daft Punk"},{"id":103,"name":"Pharrell Williams"}],
+  "artist":{"id":27,"name":"Daft Punk"},"album":{"id":6575789,"md5_image":"311bba0fc112d15f72c8b5a65f0456c1"}}]},
+ "albums":{"data":[{"id":302127,"title":"Discovery","record_type":"album"},{"id":302127,"title":"Twice"},{"id":7,"title":"One More Time","record_type":"single"}]}}
+""");
+Check(deezerArtist.TopTracks.Single().Artists.Select(a => a.Name).SequenceEqual(["Daft Punk", "Pharrell Williams"]) && deezerArtist.Releases.Count == 2
+    && deezerArtist.Releases.All(r => r.Artists.Single().Id == "dz27") && deezerArtist.Releases[1].Type == "SINGLE", "Deezer artist page: top tracks credit everyone, albums credit the artist");
+Reject(() => Deezer.ParseArtist("""{"artist":{"id":"27","name":"x"}}"""), "Deezer artist without a numeric ID is rejected");
+Reject(() => Deezer.ParseRelease("[]"), "Deezer release must be an object");
+Check(MusicPaths.Album("/music", deezerRelease with { Id = "dz7" }, edition: true).EndsWith("Discovery (2001) [dz7]", StringComparison.Ordinal), "a short Deezer album ID still names a second edition");
+Deezer.Check("""{"data":[]}""");
+Check(Throws(() => Deezer.Check("""{"error":{"type":"Exception","message":"Quota limit exceeded","code":4}}""")) is RateLimitedException
+    && Throws(() => Deezer.Check("""{"error":{"code":800}}""")) is SourceStatusException { Status: 404 }
+    && Throws(() => Deezer.Check("""{"error":{"code":700}}""")) is SourceStatusException { Status: 503 }
+    && Throws(() => Deezer.Check("""{"error":{"type":"InvalidQueryException","code":600}}""")) is SourceStatusException { Status: 400 }
+    && Throws(() => Deezer.Check("""{"error":"odd"}""")) is SourceStatusException { Status: 400 } && Throws(() => Deezer.Check("[1]")) is SourceStatusException,
+    "Deezer errors sent as HTTP 200 become rate limits, missing items and outages");
+var deezerSong = deezerRelease.Tracks[1];
+var monoTwin = new MusicTrack("155102871061270535", "Harder, Better, Faster, Stronger", [new("153542153123926016", "Daft Punk")], "155102851176075264", null, 224693, "GBDUW0000059", false, 1, 4);
+Check(MusicCatalog.Twin(deezerSong, [deezerSong, monoTwin with { Id = "155102871061270536", Isrc = "XXX000000000" }, monoTwin])?.Id == monoTwin.Id, "a Deezer song finds the catalog's copy by ISRC first");
+Check(MusicCatalog.Twin(deezerSong with { Isrc = null }, [monoTwin with { Isrc = null, Title = "Harder Better Faster Stronger" }, monoTwin with { Id = "155102871061270537", Isrc = null, Explicit = true }])?.Id == "155102871061270537"
+    && MusicCatalog.Twin(deezerSong with { Isrc = null }, [monoTwin with { Isrc = null, DurationMs = 230000 }]) is null
+    && MusicCatalog.Twin(deezerSong with { Isrc = null }, [monoTwin with { Isrc = null, Artists = [new("153542153123926017", "Thomas Bangalter")] }]) is null
+    && MusicCatalog.Twin(deezerSong, [deezerSong]) is null, "without an ISRC the copy must match title, artist and length, and be the catalog's own");
+Check(SafeHttp.Allowed(new Uri("https://api.deezer.com/search?q=x"), false) && SafeHttp.Allowed(new Uri(deezerSearch.Tracks[0].Artwork!), false)
+    && !SafeHttp.Allowed(new Uri("https://e-cdns-images.dzcdn.net.evil.example/x.jpg"), false), "Deezer's API and image host are known sites");
 Check(MusicChannel.ParseTrackId("track/in-search/155102851176075264/155102871061270528") == ("155102851176075264", "155102871061270528")
     && MusicChannel.ParseTrackId("track/hit/155102851176075264/../x") is null && MusicChannel.ParseTrackId("album/search/155102851176075264") is null, "music track item IDs");
 var explicitTrack = new MusicTrack("154008128176787456", "Not Like Us", [new("153540612384100352", "Kendrick Lamar")], "154007968545771520", null, 274192, "USUG12400910", true, 1, 1);
@@ -505,6 +562,11 @@ try
             "a stored album answers at once, without waiting for the catalog");
         Check(offline.KnownTrack("155102871061270528")?.Title == "Kept", "songs in a stored album are known by id, for queues");
     }
+    const string deezerStored = """{"album":{"id":302127,"title":"From Deezer"},"tracks":{"data":[{"id":3135553,"title":"One More Time","duration":320}]}}""";
+    await meta.WriteAsync("release", "dz302127", deezerStored);
+    Check(File.Exists(Path.Combine(metaRoot, Deezer.Host, "release", "dz302127.json")), "Deezer answers are kept apart from the catalog's");
+    using (var offline = new MusicCatalog(new SafeHttp(), meta))
+        Check((await offline.ReleaseAsync("dz302127", default)).Tracks.Single().Id == "dz3135553" && offline.HasRelease("dz302127"), "a stored Deezer album answers through Deezer's parser");
     Directory.CreateDirectory(Path.Combine(metaRoot, MusicCatalog.ApiHost, "release"));
     File.WriteAllText(Path.Combine(metaRoot, MusicCatalog.ApiHost, "release", "155102851176075265.json"), "{not json");
     using (var damaged = new MusicCatalog(new SafeHttp(), meta))
@@ -526,9 +588,9 @@ Check(MusicGain.Format(streamInfo) == new FlacFormat(96000, 24, 2), "the FLAC he
 Check(MusicGain.Format(streamInfo.AsSpan(0, 30)) is null && MusicGain.Format("OggS"u8.ToArray().Concat(new byte[40]).ToArray()) is null, "a short or non-FLAC header gives no format");
 MusicGain.Remember(streamInfo, "155102871061270599");
 Check(MusicGain.FormatFor("155102871061270599")?.SampleRate == 96000, "the format is kept per song even without ReplayGain tags");
-foreach (var key in new[] { "tr-155102851176075264-155102871061270528", "al-155102851176075264", "ar-155102851176075264" })
+foreach (var key in new[] { "tr-155102851176075264-155102871061270528", "al-155102851176075264", "ar-155102851176075264", "tr-dz302127-dz3135553", "al-dz302127", "ar-dz27" })
     Check(MusicLibraryStore.IsRatingKey(key), "rating key " + key);
-foreach (var key in new[] { "tr-1-2", "al-../x", "pl-0123", "ar-155102851176075264\n", "", "x-155102851176075264" })
+foreach (var key in new[] { "tr-1-2", "al-../x", "pl-0123", "ar-155102851176075264\n", "", "x-155102851176075264", "tr-dz1", "al-dz1-dz2", "ar-dz0", "tr-dz1-dz2-dz3" })
     Check(!MusicLibraryStore.IsRatingKey(key), "invalid rating key refused " + key.Replace("\n", "\\n"));
 
 var polishRoot = Path.Combine(Path.GetTempPath(), "streamfin-polish-" + Guid.NewGuid().ToString("N"));

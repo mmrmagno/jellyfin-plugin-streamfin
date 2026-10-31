@@ -21,6 +21,7 @@ var targets = new Dictionary<string, Action<string>>(StringComparer.Ordinal)
     ["gain"] = Targets.Gain,
     ["radio"] = Targets.Radio,
     ["ytdlp"] = Targets.YtDlp,
+    ["deezer"] = Targets.Deezer,
 };
 if (args.Length == 0 || !targets.TryGetValue(args[0], out var target))
 {
@@ -264,8 +265,8 @@ static class Targets
     private static void Track(MusicTrack track)
     {
         Clean(track.Title, "music title");
-        Expect(MusicCatalog.IsId(track.Id) && MusicCatalog.IsId(track.ReleaseId), "music track IDs are numeric");
-        Expect(track.Artists.All(a => MusicCatalog.IsId(a.Id) && !a.Name.Contains('<') && !a.Name.Contains('>')), "music artists are clean");
+        Expect(MusicCatalog.IsMonochrome(track.Id) && MusicCatalog.IsMonochrome(track.ReleaseId), "music track IDs are numeric");
+        Expect(track.Artists.All(a => MusicCatalog.IsMonochrome(a.Id) && !a.Name.Contains('<') && !a.Name.Contains('>')), "music artists are clean");
         Expect(track.Artwork is null || track.Artwork.StartsWith("https://tracks.monochrome.st/proxy/", StringComparison.Ordinal), "music artwork stays on the catalog host");
         Expect(MusicCatalog.StreamUri(track.Id).IdnHost == "tracks.monochrome.st", "music stream stays on the catalog host");
     }
@@ -273,7 +274,7 @@ static class Targets
     private static void Release(MusicRelease release)
     {
         Clean(release.Title, "music release title");
-        Expect(MusicCatalog.IsId(release.Id), "music release ID is numeric");
+        Expect(MusicCatalog.IsMonochrome(release.Id), "music release ID is numeric");
         Expect(release.Tracks.All(t => t.ReleaseId == release.Id) || release.Tracks.Count == 0, "release tracks belong to the release");
         foreach (var track in release.Tracks) Track(track);
     }
@@ -297,6 +298,51 @@ static class Targets
             Clean(artist.Bio, "music artist biography");
             foreach (var track in artist.TopTracks) Track(track);
             foreach (var release in artist.Releases) Release(release);
+        });
+    }
+
+    private const string DeezerImages = "https://cdn-images.dzcdn.net/images/";
+
+    private static void DeezerTrack(MusicTrack track, string? release = null)
+    {
+        Clean(track.Title, "Deezer title");
+        Expect(StreamFin.Deezer.IsId(track.Id) && StreamFin.Deezer.IsId(track.ReleaseId) && (release is null || track.ReleaseId == release), "Deezer track IDs are prefixed and belong to their release");
+        Expect(track.Artists.All(a => StreamFin.Deezer.IsId(a.Id) && !a.Name.Contains('<') && !a.Name.Contains('>')), "Deezer artists are clean");
+        Expect(track.Artwork is null || track.Artwork.StartsWith(DeezerImages, StringComparison.Ordinal), "Deezer covers stay on its image host");
+        Expect(track.DurationMs is null or > 0, "Deezer durations are positive");
+        Expect(track.Isrc is null || Regex.IsMatch(track.Isrc, @"\A[A-Z0-9]{12}\z"), "Deezer ISRCs are well formed");
+        try
+        {
+            MusicCatalog.StreamUri(track.Id);
+            Expect(false, "a Deezer song never gets a catalog stream");
+        }
+        catch (ProviderException) { }
+    }
+
+    private static void DeezerRelease(MusicRelease release)
+    {
+        Clean(release.Title, "Deezer release title");
+        Expect(StreamFin.Deezer.IsId(release.Id) && (release.Artwork is null || release.Artwork.StartsWith(DeezerImages, StringComparison.Ordinal)), "Deezer release ID and cover");
+        foreach (var track in release.Tracks) DeezerTrack(track, release.Id);
+    }
+
+    public static void Deezer(string json)
+    {
+        Guard(() => StreamFin.Deezer.Check(json));
+        Guard(() =>
+        {
+            var results = StreamFin.Deezer.ParseSearch(json);
+            foreach (var track in results.Tracks) DeezerTrack(track);
+            foreach (var release in results.Releases) DeezerRelease(release);
+            Expect(results.Artists.All(a => StreamFin.Deezer.IsId(a.Id) && (a.Image is null || a.Image.StartsWith(DeezerImages, StringComparison.Ordinal))), "Deezer artists and pictures");
+        });
+        Guard(() => DeezerRelease(StreamFin.Deezer.ParseRelease(json)));
+        Guard(() =>
+        {
+            var artist = StreamFin.Deezer.ParseArtist(json);
+            Clean(artist.Name, "Deezer artist name");
+            foreach (var track in artist.TopTracks) DeezerTrack(track);
+            foreach (var release in artist.Releases) DeezerRelease(release);
         });
     }
 

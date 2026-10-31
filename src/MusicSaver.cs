@@ -39,7 +39,7 @@ public static class MusicPaths
     public static string Album(string root, MusicRelease release, bool edition = false)
     {
         var artist = Part(release.Artists.FirstOrDefault()?.Name ?? "Unknown artist");
-        var album = Part((release.Date is { } date ? $"{release.Title} ({date.Year})" : release.Title) + (edition ? $" [{release.Id[^6..]}]" : ""));
+        var album = Part((release.Date is { } date ? $"{release.Title} ({date.Year})" : release.Title) + (edition ? $" [{release.Id[^Math.Min(6, release.Id.Length)..]}]" : ""));
         return Inside(root, Path.Combine(root, artist, album));
     }
 
@@ -323,7 +323,8 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
 
     private async Task SongAsync(MusicTrack track, string path, IReadOnlyList<(string Key, string Value)> tags, CancellationToken ct)
     {
-        var upstream = MusicCatalog.StreamUri(track.Id);
+        // Deezer has no audio: a song found there is saved from the catalog's copy of the same recording.
+        var upstream = MusicCatalog.StreamUri(await catalog.TwinAsync(track, ct) ?? throw new ProviderException("The music catalog has no lossless copy of " + track.Title + "."));
         var part = path + ".part";
         try
         {

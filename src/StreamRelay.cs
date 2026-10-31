@@ -173,11 +173,11 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             songs.Warm(song);
             context.Response.Headers.CacheControl = "no-store";
             if (await songs.ServeAsync(context, song, range, () => Plugin.Allows(ticket.UserId) && ticket.Live())) return;
-            // A song kept on disk in a lossy format has no address to fall back to; it was evicted, so look again.
-            if (song.Source == "disk" && !song.Lossless) MusicAudio.Forget(song.TrackId);
+            // A song kept on disk with no address to fall back to was evicted, so look again.
+            if (song.Local) MusicAudio.Forget(song.TrackId);
         }
         // Reviewed anime hosts keep their strict rules; film players live on rotating hosts.
-        if (!(video.Ticket is { Source: "disk", Lossless: false })
+        if (!(video.Ticket is { Local: true })
             && await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true, audio: video.Ticket?.ContentType)) return;
         await ticket.Gate.WaitAsync(timeout.Token);
         try

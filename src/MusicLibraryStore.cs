@@ -42,9 +42,12 @@ public sealed class MusicLibraryStore
     public const int SaveLimit = 1000;
     public const int QueueLimit = 1000;
     public const int BookmarkLimit = 200;
-    public static bool IsRatingKey(string? id) => id is not null
-        && System.Text.RegularExpressions.Regex.IsMatch(id, @"\A(?:tr-[0-9]{15,20}-[0-9]{15,20}|al-[0-9]{15,20}|ar-[0-9]{15,20})\z",
-            System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    public static bool IsRatingKey(string? id) => id?.Split('-') switch
+    {
+        ["tr", var release, var track] => MusicCatalog.IsId(release) && MusicCatalog.IsId(track),
+        ["al" or "ar", var other] => MusicCatalog.IsId(other),
+        _ => false
+    };
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> gates = new();
     private readonly ConcurrentDictionary<Guid, MusicLibrary> loaded = new();
     private readonly ConcurrentDictionary<Guid, long> versions = new();

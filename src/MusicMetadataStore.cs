@@ -21,7 +21,8 @@ public sealed class MusicMetadataStore(ILogger<MusicMetadataStore> logger)
     // Kept per catalog address: another instance's answers are not this one's.
     private string? File(string? kind, string? id)
     {
-        if (kind is not ("release" or "artist") || !MusicCatalog.IsId(id) || Root is not { } root || MusicCatalog.ApiHost is not { Length: > 0 } host) return null;
+        if (kind is not ("release" or "artist") || !MusicCatalog.IsId(id) || Root is not { } root
+            || (Deezer.IsId(id) ? Deezer.Host : MusicCatalog.ApiHost) is not { Length: > 0 } host) return null;
         var path = Path.GetFullPath(Path.Combine(root, host, kind, id + ".json"));
         return path.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, StringComparison.Ordinal) ? path : null;
     }

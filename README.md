@@ -52,6 +52,10 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   The catalog goes down now and then. Albums, artists and covers it has answered for are kept
   on disk and open at once, songs in the song cache keep playing, and songs you played,
   starred or put in a playlist keep their stars, scrobbles and lyrics until it is back.
+  Meanwhile searches, albums and artists come from [Deezer](https://www.deezer.com)'s public
+  catalog: descriptions and covers only, no account, no audio. A song found there plays the
+  catalog's FLAC of the same recording (matched by ISRC) once the catalog answers again, or
+  YouTube's copy until then. Untick **Search Deezer when the catalog cannot** to turn it off.
   A song the catalog cannot send can play from YouTube instead. That is off by default: tick
   **Play from YouTube when the catalog cannot**. It picks the artist's own upload of the same
   length and plays it as AAC at about 128 kbps. That is not lossless, and the song's details say
@@ -79,6 +83,7 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
 | AnimeHeaven | Title search | Burned in |
 | FlixHQ (movies and TV) | Title and year | Usually a separate English track |
 | Monochrome (music) | Its own catalog IDs, with ISRCs | Not applicable |
+| Deezer (music catalog, when Monochrome cannot) | Its own IDs, with ISRCs; songs play from Monochrome by ISRC, or from YouTube | Not applicable |
 | YouTube (music, when Monochrome cannot) | Artist and title, same length within 3 s, the artist's own upload first | Not applicable |
 
 If a source fails or is missing an episode, go back and pick another one. The message says
@@ -152,6 +157,12 @@ FLAC file with byte ranges, so the plugin offers it for direct play. Jellyfin's 
 stream fetches it through the relay and hands the bytes to the player unchanged, with
 seeking. A transcode would follow whatever the client asks for, which is usually AAC or
 MP3, so the plugin avoids one.
+
+When the catalog takes longer than 6 seconds to search, the search goes to Deezer instead, and the
+same words keep getting Deezer's results for half an hour, so paging through them stays steady.
+Deezer's songs, albums and artists carry their own IDs (`dz` and a number), so nothing stored
+under a catalog ID changes. To play one, the plugin searches the catalog for the same ISRC (or
+the same title, artist and length) and streams that FLAC.
 
 When the catalog does not answer within 20 seconds and the YouTube fallback is on, the plugin
 asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) for the song instead. yt-dlp needs
