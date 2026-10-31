@@ -193,6 +193,8 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
         ? [.. Base(deno), "-f", "ba[ext=m4a]", "--print", "urls", "--", "https://www.youtube.com/watch?v=" + videoId]
         : throw new ProviderException("Invalid YouTube video.");
 
+    private static string Short(string line) => line.Length > 200 ? line[..200] : line;
+
     private static string Clean(string text)
     {
         var builder = new StringBuilder(Math.Min(text.Length, 200));
@@ -214,7 +216,9 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             // Its own home, so nothing from a user's yt-dlp or deno setup on this server takes part.
             var home = Path.Combine(folder, "home");
-            Directory.CreateDirectory(home);
+            // yt-dlp unpacks itself before it runs, and /tmp is often mounted noexec in containers.
+            var temp = Path.Combine(home, "tmp");
+            Directory.CreateDirectory(temp);
             // Nothing from Jellyfin's own environment (proxies, keys) is passed on.
             var path = Environment.GetEnvironmentVariable("PATH");
             start.Environment.Clear();
@@ -224,6 +228,7 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
             start.Environment["XDG_CONFIG_HOME"] = home;
             start.Environment["XDG_CACHE_HOME"] = home;
             start.Environment["DENO_DIR"] = Path.Combine(home, "deno");
+            start.Environment["TMPDIR"] = temp;
             using var process = new Process { StartInfo = start };
             try
             {
@@ -246,8 +251,11 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
                 var error = await errors;
                 if (process.ExitCode != 0)
                 {
-                    var line = error.Split('\n').LastOrDefault(l => l.StartsWith("ERROR", StringComparison.Ordinal)) ?? "";
-                    throw new ToolFailedException("YouTube could not find this song." + (line.Length > 0 ? " " + (line.Length > 200 ? line[..200] : line) : ""));
+                    var lines = error.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                    // No ERROR line means yt-dlp itself did not start properly, which is about the server, not the song.
+                    var line = lines.LastOrDefault(l => l.StartsWith("ERROR", StringComparison.Ordinal));
+                    throw new ToolFailedException(line is not null ? "YouTube could not find this song. " + Short(line)
+                        : "yt-dlp failed to run: " + Short(lines.LastOrDefault() ?? $"exit code {process.ExitCode}"));
                 }
                 return Encoding.UTF8.GetString(output.ToArray());
             }
