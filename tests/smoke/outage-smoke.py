@@ -57,11 +57,12 @@ def call(method, auth, raw=False, **params):
 
 # A slow catalog gets "answering slowly, try again" while the lookup carries on and is cached; apps retry.
 def patient(method, auth, **params):
-    for _ in range(4):
+    for _ in range(8):
         answer = call(method, auth, **params)
-        if answer['status'] == 'ok' or 'slowly' not in answer.get('error', {}).get('message', ''):
+        message = answer.get('error', {}).get('message', '')
+        if answer['status'] == 'ok' or not ('slowly' in message or 'not responding' in message):
             return answer
-        time.sleep(15)
+        time.sleep(20)
     return answer
 
 

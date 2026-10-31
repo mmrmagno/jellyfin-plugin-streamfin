@@ -231,8 +231,9 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLi
         // While the catalog is out, a song this user has played, starred or listed still plays from what they keep.
         catch (Exception ex) when (ex is ProviderException or System.Text.Json.JsonException)
         {
-            if (await KnownAsync(user, releaseId, trackId, ct) is not { } known) throw;
-            (track, album) = known;
+            // Without that, the song's own address may still answer: Jellyfin then plays it instead of reporting
+            // a format it cannot play, which is how an empty answer shows in its player.
+            (track, album) = await KnownAsync(user, releaseId, trackId, ct) ?? (new MusicTrack(trackId, "", [], releaseId, null, null, null, false, null, null), "");
         }
         // A few seconds for the explicit twin: Jellyfin's player waits on this answer before it starts.
         var recording = MusicCatalog.PreferExplicit ? await catalog.ExplicitAsync(track, ct, TimeSpan.FromSeconds(4)) : track;
@@ -243,8 +244,9 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicRadio radio, MusicLi
         // Most of the catalog is 16/44.1, but some masters are 24 bit up to 96 kHz; the probe knows which.
         if (source.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Audio) is { BitDepth: > 0, SampleRate: > 0 } audio)
             source.Name = $"FLAC · {audio.BitDepth} bit / {audio.SampleRate / 1000.0:0.#} kHz";
-        try { await store.RecordPlayAsync(user, track, album, ct); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logger.LogWarning("StreamFin could not save music history ({ErrorType})", ex.GetType().Name); }
+        if (track.Title.Length > 0)
+            try { await store.RecordPlayAsync(user, track, album, ct); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logger.LogWarning("StreamFin could not save music history ({ErrorType})", ex.GetType().Name); }
         return [source];
     }
 }
