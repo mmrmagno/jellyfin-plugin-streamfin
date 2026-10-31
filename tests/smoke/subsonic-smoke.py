@@ -92,7 +92,9 @@ try:
     assert len(call('getArtist', me, id=song['artistId'])['artist']['album']) > 3
     status, headers, body = call('getCoverArt', me, raw=True, id=song['albumId'])
     assert headers.get_content_type().startswith('image/') and len(body) > 1000
-    print('PASS: search, album, artist and cover art', flush=True)
+    status, headers, small = call('getCoverArt', me, raw=True, id=song['albumId'], size='64')
+    assert headers.get_content_type() == 'image/jpeg' and small[:3] == b'\xff\xd8\xff' and len(small) < len(body)
+    print('PASS: search, album, artist and cover art, also at the size an app asks for', flush=True)
 
     status, headers, body = call('stream', me, raw=True, id=song['id'], headers={'Range': 'bytes=0-65535'})
     assert status == 206 and headers.get_content_type() == 'audio/flac' and body[:4] == b'fLaC' and len(body) == 65536

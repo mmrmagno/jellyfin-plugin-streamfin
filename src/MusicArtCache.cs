@@ -39,7 +39,7 @@ public sealed class MusicArtCache(SafeHttp http, ILogger<MusicArtCache> logger)
     public async Task<(string Path, string Type)?> GetAsync(string address, bool down, CancellationToken ct)
     {
         if (File(address) is not { } path) return null;
-        if (Kept(path) is { } type) return (path, type);
+        if (TypeOf(path) is { } type) return (path, type);
         if (down) return null;
         var shared = fetching.GetOrAdd(path, name =>
         {
@@ -49,10 +49,11 @@ public sealed class MusicArtCache(SafeHttp http, ILogger<MusicArtCache> logger)
         });
         if (shared.IsCompleted) fetching.TryRemove(new KeyValuePair<string, Task>(path, shared));
         await shared.WaitAsync(ct);
-        return Kept(path) is { } fetched ? (path, fetched) : null;
+        return TypeOf(path) is { } fetched ? (path, fetched) : null;
     }
 
-    private static string? Kept(string path)
+    // The image type of a file by its first bytes, or null when it is not an image this serves.
+    public static string? TypeOf(string path)
     {
         try
         {
@@ -90,7 +91,7 @@ public sealed class MusicArtCache(SafeHttp http, ILogger<MusicArtCache> logger)
                     await output.WriteAsync(buffer.AsMemory(0, read), timeout.Token);
                 }
             }
-            if (Kept(temporary) is null) return;
+            if (TypeOf(temporary) is null) return;
             System.IO.File.Move(temporary, path, overwrite: true);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or ProviderException or UriFormatException or UnauthorizedAccessException
@@ -110,6 +111,49 @@ public sealed class MusicArtCache(SafeHttp http, ILogger<MusicArtCache> logger)
         }
     }
 
+    // Apps ask for covers at the size they show them. Sizes are rounded up to a few steps, so each cover has a handful
+    // of copies at most, made by Jellyfin's own image encoder a couple at a time.
+    private static readonly int[] Steps = [64, 128, 256, 512, 1024];
+    private readonly SemaphoreSlim resizes = new(2, 2);
+
+    // A copy of source no wider or taller than size, or null when the original should be sent as it is.
+    public async Task<string?> ResizedAsync(string source, int size, MediaBrowser.Controller.Drawing.IImageEncoder encoder)
+    {
+        if (Steps.FirstOrDefault(step => step >= size) is not (> 0 and var step) || Root is not { } root || !encoder.SupportsImageEncoding) return null;
+        var path = Path.Combine(root, Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(source))) + "-" + step);
+        if (TypeOf(path) is not null) return path;
+        if (!await resizes.WaitAsync(TimeSpan.FromSeconds(10))) return null;
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        // Jellyfin's encoder goes by the file's extension, which kept covers do not have.
+        var input = TypeOf(source) switch { "image/jpeg" => temporary + ".jpg", "image/png" => temporary + ".png", "image/webp" => temporary + ".webp", _ => null };
+        try
+        {
+            if (input is null) return null;
+            Directory.CreateDirectory(root);
+            System.IO.File.Copy(source, input);
+            var options = new MediaBrowser.Controller.Drawing.ImageProcessingOptions { MaxWidth = step, MaxHeight = step, Quality = 85,
+                SupportedOutputFormats = [MediaBrowser.Model.Drawing.ImageFormat.Jpg] };
+            var made = await Task.Run(() => encoder.EncodeImage(input, System.IO.File.GetLastWriteTimeUtc(source), temporary, false, null, 85, options,
+                MediaBrowser.Model.Drawing.ImageFormat.Jpg));
+            // The encoder hands back the original when it is already small enough.
+            if (made != temporary || TypeOf(temporary) is null) return null;
+            System.IO.File.Move(temporary, path, overwrite: true);
+            return path;
+        }
+        // Image libraries fail in many ways on odd files; the original cover still goes out.
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            logger.LogInformation("StreamFin cover art not resized ({ErrorType})", ex.GetType().Name);
+            return null;
+        }
+        finally
+        {
+            resizes.Release();
+            foreach (var leftover in new[] { temporary, input })
+                try { if (leftover is not null) System.IO.File.Delete(leftover); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
     public void Trim()
     {
         if (Root is not { } root || !Directory.Exists(root)) return;
@@ -118,7 +162,7 @@ public sealed class MusicArtCache(SafeHttp http, ILogger<MusicArtCache> logger)
             long total = 0;
             foreach (var file in new DirectoryInfo(root).EnumerateFiles().OrderByDescending(f => f.LastWriteTimeUtc))
             {
-                if (file.Name.EndsWith(".tmp", StringComparison.Ordinal)) { if (DateTime.UtcNow - file.LastWriteTimeUtc > TimeSpan.FromHours(1)) file.Delete(); continue; }
+                if (file.Name.Contains(".tmp", StringComparison.Ordinal)) { if (DateTime.UtcNow - file.LastWriteTimeUtc > TimeSpan.FromHours(1)) file.Delete(); continue; }
                 if ((total += file.Length) > ByteLimit) file.Delete();
             }
         }

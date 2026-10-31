@@ -286,6 +286,23 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         [".jpg"] = [0xff, 0xd8], [".png"] = [0x89, 0x50, 0x4e, 0x47], [".webp"] = "RIFF"u8.ToArray()
     };
 
+    // The cover a saved album keeps beside its songs, so apps show it without asking the catalog. Only a folder whose
+    // marker names this very release counts: another edition's cover may differ.
+    public static string? SavedCover(MusicRelease release)
+    {
+        if (Folder is not { } root) return null;
+        foreach (var folder in new[] { MusicPaths.Album(root, release), MusicPaths.Album(root, release, edition: true) })
+            try
+            {
+                var marker = Path.Combine(folder, Marker);
+                if (!File.Exists(marker) || new FileInfo(marker).Length > 64 || File.ReadAllText(marker).Trim() != release.Id) continue;
+                foreach (var extension in Images.Keys)
+                    if (Path.Combine(folder, "cover" + extension) is var path && File.Exists(path)) return path;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return null;
+    }
+
     private async Task CoverAsync(MusicRelease release, string folder, CancellationToken ct)
     {
         if (release.Artwork is not { } artwork || Path.GetExtension(new Uri(artwork).AbsolutePath) is not { } extension
