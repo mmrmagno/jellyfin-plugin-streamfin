@@ -402,6 +402,13 @@ Check(MusicAudio.Best([new("x84m3YyO2oU", "Harder, Better, Faster, Stronger (Liv
 Check(MusicAudio.Best([new("JhulBGMA7G4", "Harder, Better, Faster, Stronger", "Daft Punk - Topic", 229)], hbfs) is null, "a copy more than 3 s longer is not the same recording");
 Check(MusicAudio.Best([new("JhulBGMA7G4", "Something Else", "Daft Punk - Topic", 225)], hbfs) is null, "another song of the same length is not taken");
 Check(MusicAudio.Best([new("K2cYWfq--Nw", "Daft Hands - Harder, Better, Faster, Stronger", "Fr. Eckle Studios", 225)], hbfs) is null, "an upload that names neither the artist nor their channel is not taken");
+var ships = hbfs with { Title = "I Saw Three Ships", Artists = [new MusicArtistRef("1", "Shelley Marsh, Stan's Sister")], DurationMs = 61000 };
+Check(MusicAudio.Best([new("Thijstachi0", "I Saw Three Ships | South Park", "Thijstachio", 61), new("ReleaseTop1", "I Saw Three Ships", "Release - Topic", 61)], ships)?.Id == "ReleaseTop1",
+    "a song credited to a character plays YouTube's album audio for the release");
+Check(MusicAudio.Best([new("ReleaseTop1", "I Saw Three Ships", "Release - Topic", 64)], ships) is null, "album audio not naming the artist must be within 2 s");
+Check(MusicAudio.Best([new("ReleaseTop1", "I Saw Three Ships (Remastered)", "Release - Topic", 61)], ships) is null, "album audio not naming the artist must carry the exact title");
+Check(MusicAudio.Best([new("CoverTopic1", "Harder Better Faster Stronger", "Some Covers Band - Topic", 225), new("JhulBGMA7G4", "Harder, Better, Faster, Stronger", "Daft Punk - Topic", 225)], hbfs)?.Id == "JhulBGMA7G4",
+    "the artist's own Topic upload beats another Topic channel's copy");
 Check(MusicAudio.Normalize("Beyoncé & JAY-Z") == "beyonce and jay z" && MusicAudio.Normalize("Simon and Garfunkel") == "simon and garfunkel", "names compare without accents, case or punctuation");
 Check(MusicAudio.ParseSearch("[]").Count == 0 && MusicAudio.ParseSearch("""{"entries":{}}""").Count == 0, "odd search answers give no results");
 var tagged = Flac("REPLAYGAIN_TRACK_GAIN=-2.5");
