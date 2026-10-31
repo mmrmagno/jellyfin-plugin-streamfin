@@ -101,10 +101,12 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
     public async Task<bool> ServeAsync(HttpContext context, Uri upstream, string range, Func<bool> allowed)
     {
         if (Key(upstream) is not { } id || !Entries.TryGetValue(id, out var entry)) return false;
-        // A download that has just started knows its size within moments. Waiting for it beats a second catalog
-        // request for the same song: the player then reads the file as it fills.
+        // A download that has started learns the song's size as soon as the catalog answers, which on a bad day takes
+        // 20-40 s. Waiting for it (up to its own 45 s limit) beats a second request for the same song, which doubles
+        // the load on a struggling catalog: the player then reads the file as it fills. A failed download leaves
+        // the table at once, and the caller goes to the catalog itself.
         var size = Volatile.Read(ref entry.Size);
-        for (var i = 0; size <= 0 && i < 200 && Entries.TryGetValue(id, out var current) && ReferenceEquals(current, entry); i++)
+        for (var i = 0; size <= 0 && i < 1000 && Entries.TryGetValue(id, out var current) && ReferenceEquals(current, entry); i++)
         {
             await Task.Delay(50, context.RequestAborted);
             size = Volatile.Read(ref entry.Size);
