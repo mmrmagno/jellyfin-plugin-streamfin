@@ -272,7 +272,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         {
             if (!catalog.HasArtist(artistId))
             {
-                if (started++ < 2 && catalog.Spare && !catalog.Down) _ = WarmArtistAsync(artistId);
+                if (started++ < 2 && catalog.SpareFor(artistId) && !catalog.DownFor(artistId)) _ = WarmArtistAsync(artistId);
                 continue;
             }
             MusicArtistPage page;
@@ -341,7 +341,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         // has played here, otherwise an estimate from the length (lossless averages about 70% of CD rate).
         var duration = t.DurationMs is > 0 ? t.DurationMs.Value / 1000.0 : 0;
         var known = MusicCache.Size(t.Id) ?? (container == "flac"
-            ? FlacHeads.TryGetValue<FlacHead>(MusicCatalog.StreamUri(t.Id).AbsoluteUri, out var head) ? head?.Size : null
+            ? MusicCatalog.IsMonochrome(t.Id) && FlacHeads.TryGetValue<FlacHead>(MusicCatalog.StreamUri(t.Id).AbsoluteUri, out var head) ? head?.Size : null
             : MusicAudio.Known(t.Id)?.Size);
         node.Set("size", known ?? (duration > 0 ? (long)(duration * 1411 * 125 * 0.7) : null))
             .Set("bitRate", known is long bytes && duration > 0 ? (int)Math.Round(bytes * 8 / duration / 1000) : null);
@@ -393,7 +393,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     private async Task<(MusicTrack Track, MusicRelease Release)> TrackAsync(string? id)
     {
         if (ParseTrack(id ?? throw Missing("id")) is not var (releaseId, trackId)) throw NotFound("Song");
-        if (!catalog.HasRelease(releaseId) && catalog.Down && await KnownAsync(releaseId, trackId) is { } known) return known;
+        if (!catalog.HasRelease(releaseId) && catalog.DownFor(releaseId) && await KnownAsync(releaseId, trackId) is { } known) return known;
         Fetch(catalog.HasRelease(releaseId));
         MusicRelease release;
         try { release = await catalog.ReleaseAsync(releaseId, Ct); }
@@ -549,7 +549,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         {
             var cached = catalog.HasRelease(releaseId);
             var left = deadline - DateTime.UtcNow;
-            if (lookups++ >= 8 || !cached && (!catalog.Spare || catalog.Down || left <= TimeSpan.Zero)) break;
+            if (lookups++ >= 8 || !cached && (!catalog.SpareFor(releaseId) || catalog.DownFor(releaseId) || left <= TimeSpan.Zero)) break;
             try { titles[releaseId] = (await catalog.ReleaseAsync(releaseId, Ct).WaitAsync(cached ? Timeout.InfiniteTimeSpan : left, Ct)).Title; }
             catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or TimeoutException
                 or OperationCanceledException && !Ct.IsCancellationRequested) { break; }
@@ -697,7 +697,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
 
     private async Task<MusicRelease> StarredReleaseAsync(string releaseId)
     {
-        if (!catalog.HasRelease(releaseId) && catalog.Down && Albums(await store.ReadAsync(user.Id, Ct)).FirstOrDefault(a => a.Release.Id == releaseId) is { } mine
+        if (!catalog.HasRelease(releaseId) && catalog.DownFor(releaseId) && Albums(await store.ReadAsync(user.Id, Ct)).FirstOrDefault(a => a.Release.Id == releaseId) is { } mine
             && mine.Release.Title.Length > 0) return mine.Release;
         Fetch(catalog.HasRelease(releaseId));
         return await catalog.ReleaseAsync(releaseId, Ct);
@@ -705,7 +705,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
 
     private async Task<MusicArtistRef> StarredArtistAsync(string artistId)
     {
-        if (!catalog.HasArtist(artistId) && catalog.Down && Artists(await store.ReadAsync(user.Id, Ct)).FirstOrDefault(a => a.Id == artistId) is { Name.Length: > 0 } mine) return mine;
+        if (!catalog.HasArtist(artistId) && catalog.DownFor(artistId) && Artists(await store.ReadAsync(user.Id, Ct)).FirstOrDefault(a => a.Id == artistId) is { Name.Length: > 0 } mine) return mine;
         Fetch(catalog.HasArtist(artistId));
         var artist = await catalog.ArtistAsync(artistId, Ct);
         return new MusicArtistRef(artist.Id, artist.Name);
@@ -1038,7 +1038,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         // catalog host; SafeHttp checks it again.
         string? path = null, type = null;
         if (release is not null && MusicSaver.SavedCover(release) is { } saved && MusicArtCache.TypeOf(saved) is { } savedType) (path, type) = (saved, savedType);
-        else if (address is not null && await covers.GetAsync(address, catalog.Down, Ct) is var (kept, keptType)) (path, type) = (kept, keptType);
+        else if (address is not null && await covers.GetAsync(address, catalog.DownForArt(address), Ct) is var (kept, keptType)) (path, type) = (kept, keptType);
         if (path is null || type is null) throw NotFound("Cover art");
         if (Int("size", 0, 0, 10_000) is > 0 and var size && await covers.ResizedAsync(path, size, images) is { } smaller) (path, type) = (smaller, "image/jpeg");
         FileStream file;
@@ -1164,7 +1164,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             Response.Headers.Vary = "Origin";
             songs.Warm(ticket);
             if (await songs.ServeAsync(HttpContext, ticket, range, () => Plugin.Allows(user.Id) && SubsonicAuth.Enabled)) return null;
-            if (ticket is { Source: "disk", Lossless: false })
+            if (ticket.Local)
             {
                 MusicAudio.Forget(ticket.TrackId);
                 throw new SubsonicError(0, "This song was just removed from the server's cache. Play it again.");
@@ -1277,7 +1277,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
             string? from = null;
             // A song already on disk feeds FFmpeg from the file: no catalog request at all.
             await using var local = songs.OpenComplete(ticket.TrackId, ticket.Container);
-            if (local is null && ticket is { Source: "disk", Lossless: false }) throw new SubsonicError(0, "This song was just removed from the server's cache. Play it again.");
+            if (local is null && ticket.Local) throw new SubsonicError(0, "This song was just removed from the server's cache. Play it again.");
             // Only FLAC can start reading partway through; anything else is decoded from its start and trimmed.
             if (local is not null && ticket.Lossless)
             {

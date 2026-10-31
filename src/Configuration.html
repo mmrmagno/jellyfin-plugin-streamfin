@@ -23,6 +23,8 @@
       <div class="fieldDescription checkboxFieldDescription">When a song or album also exists as a clean edit, hide the edit and play the original.</div>
       <div class="inputContainer"><label class="inputLabel" for="musicApi">Music catalog address</label><input is="emby-input" type="url" id="musicApi" autocomplete="off" spellcheck="false" placeholder="https://tracks.monochrome.st">
         <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicDeezer"><span>Search Deezer when the catalog cannot</span></label>
+      <div class="fieldDescription checkboxFieldDescription">When the catalog is down or slow, searches, albums and artists come from Deezer's public catalog (descriptions only, no account). Its songs play from the catalog's copy of the same recording, or from YouTube.</div>
       <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
         <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicYouTube"><span>Play from YouTube when the catalog cannot</span></label>
@@ -113,6 +115,7 @@
             page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
             page.querySelector('#musicYouTube').checked = config.MusicYouTube === true;
             page.querySelector('#musicLossy').checked = config.MusicAllowLossy !== false;
+            page.querySelector('#musicDeezer').checked = config.MusicDeezer !== false;
             page.querySelector('#ytDlpPath').value = config.YtDlpPath || '';
             page.querySelector('#denoPath').value = config.DenoPath || '';
             page.querySelector('#musicFolder').value = config.MusicLibraryFolder || '';
@@ -164,6 +167,7 @@
             config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
             config.MusicYouTube = page.querySelector('#musicYouTube').checked;
             config.MusicAllowLossy = page.querySelector('#musicLossy').checked;
+            config.MusicDeezer = page.querySelector('#musicDeezer').checked;
             config.YtDlpPath = page.querySelector('#ytDlpPath').value.trim();
             config.DenoPath = page.querySelector('#denoPath').value.trim();
             config.MusicLibraryFolder = page.querySelector('#musicFolder').value.trim();

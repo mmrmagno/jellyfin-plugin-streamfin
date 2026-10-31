@@ -43,7 +43,7 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
 
     public static readonly string[] Containers = ["flac", "m4a"];
     private static bool Keepable(AudioTicket ticket) => MusicCatalog.IsId(ticket.TrackId) && Containers.Contains(ticket.Container)
-        && (ticket.Lossless ? ticket.Upstream == MusicCatalog.StreamUri(ticket.TrackId) : MusicAudio.IsAudioAddress(ticket.Upstream));
+        && (ticket.Lossless ? MusicCatalog.IsStream(ticket.Upstream) : MusicAudio.IsAudioAddress(ticket.Upstream));
 
     // What a song on this server is stored as, once its download has begun.
     public static string? Container(string trackId) => Entries.TryGetValue(trackId, out var entry) ? entry.Container : null;

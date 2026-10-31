@@ -46,11 +46,11 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
         var lists = new List<Queue<MusicTrack>> { new(Shuffle(artist.TopTracks, artist.Id).Take(Math.Max(3, count / (similar.Count + 1)))) };
         foreach (var other in similar)
         {
-            if (!catalog.HasArtist(other.Id) && !await RoomAsync(deadline, ct)) break;
+            if (!catalog.HasArtist(other.Id) && !await RoomAsync(other.Id, deadline, ct)) break;
             // One similar artist the catalog cannot load leaves a shorter mix, not none.
             try { lists.Add(new Queue<MusicTrack>(Shuffle((await catalog.ArtistAsync(other.Id, ct)).TopTracks, artist.Id).Take(5))); }
             catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or RegexMatchTimeoutException
-                or OperationCanceledException && !ct.IsCancellationRequested) { if (catalog.Down) break; }
+                or OperationCanceledException && !ct.IsCancellationRequested) { if (catalog.DownFor(other.Id)) break; }
         }
         var mix = new List<MusicTrack>();
         while (mix.Count < count * 2 && lists.Any(l => l.Count > 0))
@@ -59,10 +59,10 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
     }
 
     // The catalog budget is shared with people browsing, so a radio only uses it while half is free, waiting a little if not.
-    private async Task<bool> RoomAsync(DateTime deadline, CancellationToken ct)
+    private async Task<bool> RoomAsync(string? id, DateTime deadline, CancellationToken ct)
     {
-        if (DateTime.UtcNow > deadline || catalog.Down) return false;
-        while (!catalog.Spare)
+        if (DateTime.UtcNow > deadline || catalog.DownFor(id)) return false;
+        while (!catalog.SpareFor(id))
         {
             if (DateTime.UtcNow + TimeSpan.FromMilliseconds(500) > deadline) return false;
             await Task.Delay(500, ct);
@@ -74,7 +74,8 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
     // so a new shuffle on every request would pull songs out from under a queue someone is playing.
     private static IEnumerable<MusicTrack> Shuffle(IEnumerable<MusicTrack> tracks, string seed)
     {
-        var random = new Random((int)(long.Parse(seed, CultureInfo.InvariantCulture) % int.MaxValue) ^ DateOnly.FromDateTime(DateTime.UtcNow).DayNumber);
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(seed));
+        var random = new Random(BitConverter.ToInt32(hash) ^ DateOnly.FromDateTime(DateTime.UtcNow).DayNumber);
         return tracks.Select(t => (Key: random.Next(), Track: t)).ToArray().OrderBy(p => p.Key).Select(p => p.Track);
     }
 
@@ -104,7 +105,7 @@ public sealed class MusicRadio(SafeHttp http, MusicCatalog catalog) : IDisposabl
         var key = "catalog/" + NameKey(name);
         if (key == "catalog/") return (null, true);
         if (cache.TryGetValue<MusicArtistRef?>(key, out var known)) return (known, true);
-        if (!await RoomAsync(deadline, ct)) return (null, false);
+        if (!await RoomAsync(null, deadline, ct)) return (null, false);
         MusicArtistRef? match;
         try
         {

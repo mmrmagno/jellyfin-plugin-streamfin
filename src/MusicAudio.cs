@@ -13,6 +13,8 @@ namespace StreamFin;
 public sealed record AudioTicket(string TrackId, string Source, Uri Upstream, string Container, int? Kbps = null, long? Size = null, DateTimeOffset? Expires = null)
 {
     public bool Lossless => Container == "flac";
+    // A copy on this server's disk with no address to fetch it again from.
+    public bool Local => Upstream.IsFile;
     public string ContentType => MusicAudio.ContentType(Container);
 }
 
@@ -60,7 +62,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
             // A lossy copy kept from an outage gives way to the FLAC as soon as the catalog answers quickly again.
             if (container != "flac" && only is null && !catalog.Down
                 && await MonochromeAsync(track, true, ct, TimeSpan.FromSeconds(5)) is { } better) return Remember(better);
-            return new AudioTicket(track.Id, "disk", container == "flac" ? MusicCatalog.StreamUri(track.Id) : Placeholder(track.Id), container);
+            return new AudioTicket(track.Id, "disk", container == "flac" && catalog.KnownTwin(track.Id) is { } twin ? MusicCatalog.StreamUri(twin) : Placeholder(track.Id), container);
         }
         // A copy on disk that was since evicted may come from any source, as long as the format stays the same.
         if (only == "disk") only = null;
@@ -105,16 +107,25 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
     }
 
     // With YouTube behind it, the catalog proves it can send the song before it is chosen; on its own it is
-    // chosen as before, and the player waits on it as long as it takes.
+    // chosen as before, and the player waits on it as long as it takes. A song found through Deezer plays the
+    // catalog's copy of the same recording, when it has one.
     private async Task<AudioTicket?> MonochromeAsync(MusicTrack track, bool fallback, CancellationToken ct, TimeSpan? limit = null)
     {
-        var upstream = MusicCatalog.StreamUri(track.Id);
+        var started = DateTime.UtcNow;
+        var patience = limit ?? TimeSpan.FromSeconds(20);
+        string? id;
+        try { id = MusicCatalog.IsMonochrome(track.Id) ? track.Id : await catalog.TwinAsync(track, ct).WaitAsync(fallback ? patience : Timeout.InfiniteTimeSpan, ct); }
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or TimeoutException or OperationCanceledException) { return null; }
+        if (id is null) return null;
+        var upstream = MusicCatalog.StreamUri(id);
         var ticket = new AudioTicket(track.Id, "monochrome", upstream, "flac");
         if (!fallback) return ticket;
         if (!monochrome.Allow(DateTime.UtcNow)) return null;
+        var left = patience - (DateTime.UtcNow - started);
+        if (left < TimeSpan.FromSeconds(1)) return null;
         try
         {
-            using var response = await http.MediaAsync(upstream, limit ?? TimeSpan.FromSeconds(20), ct, "bytes=0-0");
+            using var response = await http.MediaAsync(upstream, left, ct, "bytes=0-0");
             if (response.StatusCode is HttpStatusCode.PartialContent or HttpStatusCode.OK)
             {
                 monochrome.Success();
