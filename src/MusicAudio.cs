@@ -94,6 +94,16 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
             : "This song cannot be played right now: the music catalog is not answering. Turning on the YouTube fallback in the StreamFin settings lets songs play anyway.");
     }
 
+    // A song kept lossy from an outage, fetched again as the catalog's FLAC when the catalog has it and answers
+    // quickly. True once that download is under way; the lossy copy plays until it is done.
+    public async Task<bool> UpgradeAsync(MusicTrack track, CancellationToken ct)
+    {
+        if (songs.Kept(track.Id) != "m4a" || MusicCache.Fetching(track.Id) || HasFailed(track.Id, "monochrome") || catalog.Down) return false;
+        if (await MonochromeAsync(track, true, ct, TimeSpan.FromSeconds(20)) is not { } flac) return false;
+        songs.Warm(flac);
+        return MusicCache.Fetching(track.Id);
+    }
+
     // A lossy copy kept on disk has no address of its own; this one is refused by every request policy.
     private static Uri Placeholder(string trackId) => new("file:///streamfin/" + trackId);
 

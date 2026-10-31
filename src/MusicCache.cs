@@ -26,6 +26,8 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
         public volatile bool Complete;
         public DateTime Used;
         public CancellationTokenSource? Stop;
+        // The lossy copy this FLAC download takes over from; it keeps serving until the FLAC is whole.
+        public Entry? Replaces { get; init; }
     }
 
     private static readonly ConcurrentDictionary<string, Entry> Entries = new();
@@ -48,6 +50,13 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
     // What a song on this server is stored as, once its download has begun.
     public static string? Container(string trackId) => Entries.TryGetValue(trackId, out var entry) ? entry.Container : null;
 
+    // Whether a song's download is under way.
+    public static bool Fetching(string trackId) => Entries.TryGetValue(trackId, out var entry) && !entry.Complete;
+
+    // The entry holding a format: the current one, or the lossy copy a running FLAC download replaces.
+    private static Entry? Holding(string trackId, string container) => Entries.TryGetValue(trackId, out var entry)
+        ? entry.Container == container ? entry : entry.Replaces is { Container: var old } replaced && old == container ? replaced : null : null;
+
     // The real size of a song once its download has begun, for apps that list it (Amperfy hides songs without one).
     public static long? Size(string trackId) => Entries.TryGetValue(trackId, out var entry) && entry.Size > 0 ? entry.Size : null;
 
@@ -58,8 +67,10 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
         lock (Gate)
         {
             Scan(root);
-            if (!Entries.ContainsKey(id) && DateTime.UtcNow < coolUntil) return;
-            if (Entries.TryGetValue(id, out var known))
+            Entries.TryGetValue(id, out var known);
+            // A song kept lossy from an outage is fetched again once the catalog's FLAC is on offer.
+            var upgrade = known is { Complete: true, Container: not "flac" } && ticket.Lossless;
+            if (known is not null && !upgrade)
             {
                 known.Used = DateTime.UtcNow;
                 // The file's age is what orders eviction after a restart.
@@ -70,6 +81,7 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                 }
                 return;
             }
+            if (DateTime.UtcNow < coolUntil) return;
             var running = Entries.Values.Where(e => !e.Complete).ToList();
             if (running.Count >= Downloads)
             {
@@ -77,7 +89,8 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                 if (running.Where(e => DateTime.UtcNow - e.Used > TimeSpan.FromSeconds(15)).MinBy(e => e.Used) is not { } idle) return;
                 idle.Stop?.Cancel();
             }
-            var entry = new Entry { Path = System.IO.Path.Combine(root, id + "." + ticket.Container), Container = ticket.Container, Used = DateTime.UtcNow, Stop = new CancellationTokenSource(TimeSpan.FromMinutes(15)) };
+            var entry = new Entry { Path = System.IO.Path.Combine(root, id + "." + ticket.Container), Container = ticket.Container, Used = DateTime.UtcNow,
+                Stop = new CancellationTokenSource(TimeSpan.FromMinutes(15)), Replaces = upgrade ? known : null };
             Entries[id] = entry;
             _ = Task.Run(() => DownloadAsync(id, upstream, entry));
         }
@@ -93,13 +106,13 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
     {
         if (Limit == 0 || Root is not { } root) return null;
         lock (Gate) Scan(root);
-        return Entries.TryGetValue(trackId, out var entry) && entry.Complete ? entry.Container : null;
+        return Entries.TryGetValue(trackId, out var entry) ? entry.Complete ? entry.Container : entry.Replaces?.Container : null;
     }
 
     // The finished file, for FFmpeg's input; null while it is still being fetched or holds another format.
     public FileStream? OpenComplete(string trackId, string container)
     {
-        if (!Entries.TryGetValue(trackId, out var entry) || !entry.Complete || entry.Container != container) return null;
+        if (Holding(trackId, container) is not { Complete: true } entry) return null;
         try
         {
             entry.Used = DateTime.UtcNow;
@@ -113,7 +126,7 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
     public async Task<bool> ServeAsync(HttpContext context, AudioTicket ticket, string range, Func<bool> allowed)
     {
         var id = ticket.TrackId;
-        if (!Entries.TryGetValue(id, out var entry) || entry.Container != ticket.Container) return false;
+        if (Holding(id, ticket.Container) is not { } entry) return false;
         // A download that has started learns the song's size as soon as the catalog answers, which on a bad day takes
         // 20-40 s. Waiting for it (up to its own 45 s limit) beats a second request for the same song, which doubles
         // the load on a struggling catalog: the player then reads the file as it fills. A failed download leaves
@@ -271,8 +284,14 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
         {
             if (!entry.Complete)
             {
-                Entries.TryRemove(new KeyValuePair<string, Entry>(id, entry));
+                if (entry.Replaces is { } old) Entries.TryUpdate(id, old, entry);
+                else Entries.TryRemove(new KeyValuePair<string, Entry>(id, entry));
                 try { File.Delete(part); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            else if (entry.Replaces is { } old)
+            {
+                Delete(old.Path);
+                logger.LogInformation("StreamFin music cache: {Id} is now kept as FLAC", id);
             }
             lock (Gate)
             {

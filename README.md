@@ -59,7 +59,10 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   A song the catalog cannot send can play from YouTube instead. That is off by default: tick
   **Play from YouTube when the catalog cannot**. It picks the artist's own upload of the same
   length and plays it as AAC at about 128 kbps. That is not lossless, and the song's details say
-  so. Untick **Allow lossy sources** to only ever play FLAC.
+  so. Untick **Allow lossy sources** to only ever play FLAC. A song kept from YouTube changes to
+  the FLAC once the catalog is back: the next time it plays, or in the background for starred
+  songs, songs in playlists and songs played more than once (Scheduled Tasks, **Upgrade kept
+  songs to FLAC**, hourly, a few songs at a time).
 - **Radio**: **Instant Mix** on an artist, album or song (and the **Radio** folder in channel
   views that show folders) mixes the artist's top tracks with those of similar artists, as [ListenBrainz](https://listenbrainz.org) listeners play them
   (the artist is found on [MusicBrainz](https://musicbrainz.org) by the ISRC of one of its
