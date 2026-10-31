@@ -121,7 +121,7 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         return count;
     }
 
-    private static IEnumerable<Guid> Users() => (Plugin.Instance?.Configuration.AllowedUserIds ?? []).Select(id => Guid.TryParse(id, out var g) ? g : Guid.Empty)
+    public static IEnumerable<Guid> Users() => (Plugin.Instance?.Configuration.AllowedUserIds ?? []).Select(id => Guid.TryParse(id, out var g) ? g : Guid.Empty)
         .Where(Plugin.Allows).Distinct();
 
     public override Task StartAsync(CancellationToken ct)
