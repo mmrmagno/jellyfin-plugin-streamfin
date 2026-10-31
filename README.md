@@ -52,6 +52,10 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   The catalog goes down now and then. Albums, artists and covers it has answered for are kept
   on disk and open at once, songs in the song cache keep playing, and songs you played,
   starred or put in a playlist keep their stars, scrobbles and lyrics until it is back.
+  A song the catalog cannot send can play from YouTube instead. That is off by default: tick
+  **Play from YouTube when the catalog cannot**. It picks the artist's own upload of the same
+  length and plays it as AAC at about 128 kbps. That is not lossless, and the song's details say
+  so. Untick **Allow lossy sources** to only ever play FLAC.
 - **Radio**: **Instant Mix** on an artist, album or song (and the **Radio** folder in channel
   views that show folders) mixes the artist's top tracks with those of similar artists, as [ListenBrainz](https://listenbrainz.org) listeners play them
   (the artist is found on [MusicBrainz](https://musicbrainz.org) by the ISRC of one of its
@@ -75,6 +79,7 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
 | AnimeHeaven | Title search | Burned in |
 | FlixHQ (movies and TV) | Title and year | Usually a separate English track |
 | Monochrome (music) | Its own catalog IDs, with ISRCs | Not applicable |
+| YouTube (music, when Monochrome cannot) | Artist and title, same length within 3 s, the artist's own upload first | Not applicable |
 
 If a source fails or is missing an episode, go back and pick another one. The message says
 which it was: HiAnime, for one, tells an episode it does not have apart from a change on its site.
@@ -148,8 +153,24 @@ stream fetches it through the relay and hands the bytes to the player unchanged,
 seeking. A transcode would follow whatever the client asks for, which is usually AAC or
 MP3, so the plugin avoids one.
 
+When the catalog does not answer within 20 seconds and the YouTube fallback is on, the plugin
+asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) for the song instead. yt-dlp needs
+[deno](https://deno.com) to read YouTube's player code. The plugin downloads both from their
+official GitHub releases into its own data folder. It checks each file against the SHA-256
+published in the same release and never runs a file that does not match. A scheduled task,
+**Update YouTube tools**, updates them daily. If you would rather install them yourself, set
+their paths in the settings. The audio address yt-dlp returns goes through the relay like any
+other.
+
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
-every outgoing request has to land on a public address. Nothing from the sites is ever run.
+every outgoing request has to land on a public address. Nothing from the sites is ever run,
+with one exception: when the YouTube fallback is on, yt-dlp runs YouTube's player code in
+deno to find the audio address. yt-dlp makes its own requests to YouTube, so those skip the
+plugin's address checks. The checksums come from the same GitHub release as the files, so they
+catch a broken or swapped download, but they do not prove who built it. Turning the fallback on
+means running each new yt-dlp and deno release as the Jellyfin user, a day after it comes out at
+most. The downloads are the glibc builds, which suit the official Jellyfin image; on Alpine, set
+the paths to your own.
 
 ## Building it
 

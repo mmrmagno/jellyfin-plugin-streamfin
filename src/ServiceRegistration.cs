@@ -21,6 +21,8 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<MusicRadio>();
         services.AddSingleton<MusicMix>();
         services.AddSingleton<MusicCache>();
+        services.AddSingleton<YtDlp>();
+        services.AddSingleton<MusicAudio>();
         services.AddSingleton<MusicArtCache>();
         services.AddSingleton<SubsonicAuth>();
         services.AddSingleton(_ => new MusicLibraryStore());

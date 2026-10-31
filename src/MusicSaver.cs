@@ -327,7 +327,7 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         var part = path + ".part";
         try
         {
-            await FetchAsync(upstream, part, ct);
+            await FetchAsync(track.Id, upstream, part, ct);
             await RetagAsync(part, tags, ct);
             // Never replace a file that is already there, whoever put it there.
             if (!File.Exists(path)) File.Move(part, path, overwrite: false);
@@ -335,9 +335,9 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         finally { Discard(part); }
     }
 
-    private async Task FetchAsync(Uri upstream, string part, CancellationToken ct)
+    private async Task FetchAsync(string trackId, Uri upstream, string part, CancellationToken ct)
     {
-        await using (var cached = songs.OpenComplete(upstream))
+        await using (var cached = songs.OpenComplete(trackId, "flac"))
             if (cached is not null)
             {
                 await using var file = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);

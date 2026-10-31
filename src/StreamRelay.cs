@@ -26,7 +26,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     public const string Header = "User-Agent";
     private readonly string secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     private readonly ConcurrentDictionary<string, Ticket> tickets = new();
-    // A track's FLAC never changes, and the catalog throttles bursts, so each one is probed once.
+    // A song's file from one source never changes, and the catalog throttles bursts, so each one is probed once.
     // Kept as JSON so every playback gets its own copy of the streams to adjust.
     private readonly MemoryCache audioProbes = new(new MemoryCacheOptions { SizeLimit = 5000 });
     private sealed record AudioProbe(string Streams, long? RunTimeTicks, int? Bitrate, long? Size, string? Container);
@@ -83,11 +83,12 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         // profile, which is often lossy.
         var media = new MediaSourceInfo
         {
-            Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Audio ? "flac" : resolved.Hls ? "hls" : "mp4", IsRemote = true,
+            Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Ticket?.Container ?? (resolved.Hls ? "hls" : "mp4"), IsRemote = true,
             Name = name, SupportsDirectPlay = resolved.Audio, SupportsDirectStream = resolved.Audio, SupportsTranscoding = true, SupportsProbing = true,
             RequiredHttpHeaders = new Dictionary<string, string> { [Header] = playback.Secret }
         };
-        if (resolved.Audio) return await ProbeAudioAsync(media, resolved.Url.AbsoluteUri, ct);
+        // YouTube's addresses change on every lookup, so probes are kept per song and format instead.
+        if (resolved.Ticket is { } song) return await ProbeAudioAsync(media, song.TrackId + ":" + song.Container, song.Container, ct);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
@@ -108,7 +109,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         return media;
     }
 
-    private async Task<MediaSourceInfo> ProbeAudioAsync(MediaSourceInfo media, string key, CancellationToken ct)
+    private async Task<MediaSourceInfo> ProbeAudioAsync(MediaSourceInfo media, string key, string container, CancellationToken ct)
     {
         if (!audioProbes.TryGetValue<AudioProbe>(key, out var probe))
         {
@@ -123,12 +124,12 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
                 probe = new AudioProbe(System.Text.Json.JsonSerializer.Serialize(audio), info.RunTimeTicks, info.Bitrate, info.Size, info.Container);
                 audioProbes.Set(key, probe, new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromDays(1) });
             }
-            // The catalog only serves FLAC, so a probe it throttled must not stop playback; the player reads the details itself.
+            // Each source sends one known format, so a probe it throttled must not stop playback; the player reads the details itself.
             // The plain description is kept a few minutes, so replaying a song whose probe failed does not wait again.
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
-                var plain = new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = "flac", Channels = 2, ChannelLayout = "stereo", IsDefault = true };
-                probe = new AudioProbe(System.Text.Json.JsonSerializer.Serialize(new List<MediaStream> { plain }), null, null, null, "flac");
+                var plain = new MediaStream { Type = MediaStreamType.Audio, Index = 0, Codec = container == "flac" ? "flac" : "aac", Channels = 2, ChannelLayout = "stereo", IsDefault = true };
+                probe = new AudioProbe(System.Text.Json.JsonSerializer.Serialize(new List<MediaStream> { plain }), null, null, null, container);
                 audioProbes.Set(key, probe, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5) });
             }
         }
@@ -136,7 +137,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         media.RunTimeTicks = probe.RunTimeTicks;
         media.Bitrate = probe.Bitrate;
         media.Size = probe.Size;
-        media.Container = probe.Container ?? "flac";
+        media.Container = probe.Container ?? container;
         return media;
     }
 
@@ -167,27 +168,33 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         // Keep the probed file. Jellyfin holds the stable loopback URL, so when the CDN link expires
         // (403/404/410) the episode is resolved again, once, and only another MP4 is accepted.
         var video = ticket.Video!;
-        if (video.Audio)
+        if (video.Ticket is { } song)
         {
-            songs.Warm(video.Url);
+            songs.Warm(song);
             context.Response.Headers.CacheControl = "no-store";
-            if (await songs.ServeAsync(context, video.Url, range, () => Plugin.Allows(ticket.UserId) && ticket.Live())) return;
+            if (await songs.ServeAsync(context, song, range, () => Plugin.Allows(ticket.UserId) && ticket.Live())) return;
+            // A song kept on disk in a lossy format has no address to fall back to; it was evicted, so look again.
+            if (song.Source == "disk" && !song.Lossless) MusicAudio.Forget(song.TrackId);
         }
         // Reviewed anime hosts keep their strict rules; film players live on rotating hosts.
-        if (await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true, audio: video.Audio)) return;
+        if (!(video.Ticket is { Source: "disk", Lossless: false })
+            && await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, retryable: true, audio: video.Ticket?.ContentType)) return;
         await ticket.Gate.WaitAsync(timeout.Token);
         try
         {
             if (ReferenceEquals(ticket.Video, video))
             {
+                if (video.Ticket is { } expired) MusicAudio.Forget(expired.TrackId);
                 var fresh = (await ticket.Resolve(timeout.Token))[0];
-                if (fresh.Hls) { context.Response.StatusCode = 502; return; }
+                // A song never changes format partway through: the player has already read part of the other one.
+                if (fresh.Hls || fresh.Ticket?.Container != video.Ticket?.Container) { context.Response.StatusCode = 502; return; }
                 ticket.Video = fresh;
             }
             video = ticket.Video!;
         }
         finally { ticket.Gate.Release(); }
-        await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, audio: video.Audio);
+        if (video.Ticket is { } local && songs.Kept(local.TrackId) == local.Container && await songs.ServeAsync(context, local, range, () => Plugin.Allows(ticket.UserId) && ticket.Live())) return;
+        await ProxyAsync(context, ticket, video.Url, video.Headers, range, open: !SafeHttp.Allowed(video.Url, true), timeout.Token, audio: video.Ticket?.ContentType);
     }
 
     public async Task ServeMasterAsync(HttpContext context, string id)
@@ -246,10 +253,10 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     }
 
     // Returns false, without writing anything, when a retryable request finds the link expired.
-    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false, bool audio = false)
+    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false, string? audio = null)
     {
         using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
-            head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open), ct, attempts: audio ? 3 : 1);
+            head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open), ct, attempts: audio is null ? 1 : 3);
         if (retryable && (int)response.StatusCode is 403 or 404 or 410) return false;
         context.Response.StatusCode = (int)response.StatusCode;
         context.Response.Headers.CacheControl = "no-store";
@@ -259,7 +266,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             else if (response.Headers.TryGetValues(name, out var values)) context.Response.Headers[name] = values.ToArray();
         }
         // Jellyfin's static stream passes this on to the client; the catalog labels FLAC as octet-stream.
-        if (audio && response.IsSuccessStatusCode) context.Response.ContentType = "audio/flac";
+        if (audio is not null && response.IsSuccessStatusCode) context.Response.ContentType = audio;
         if (HttpMethods.IsHead(context.Request.Method)) return true;
         await using var input = await response.Content.ReadAsStreamAsync(context.RequestAborted);
         var buffer = new byte[65536];
@@ -475,7 +482,12 @@ public sealed class StreamController(StreamRelay relay) : ControllerBase
     // FFmpeg cannot carry the user's Jellyfin session. These routes are loopback-only and additionally
     // require a random per-process header, an opaque ticket, and a still-authorized owner.
     [AllowAnonymous, HttpGet("{ticket}"), HttpHead("{ticket}")]
-    public Task Stream(string ticket) => relay.ServeFileAsync(HttpContext, ticket);
+    public async Task Stream(string ticket)
+    {
+        // Jellyfin's probe hangs up on purpose once it has read enough; that is not an error worth a log line.
+        try { await relay.ServeFileAsync(HttpContext, ticket); }
+        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested) { }
+    }
 
     [AllowAnonymous, HttpGet("{ticket}/master.m3u8"), HttpHead("{ticket}/master.m3u8")]
     public Task Master(string ticket) => relay.ServeMasterAsync(HttpContext, ticket);

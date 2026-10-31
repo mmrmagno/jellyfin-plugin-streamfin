@@ -25,6 +25,14 @@
         <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
         <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicYouTube"><span>Play from YouTube when the catalog cannot</span></label>
+      <div class="fieldDescription checkboxFieldDescription">When the catalog is down or slow, a song plays from YouTube's official audio instead (AAC, about 128 kbps, not lossless). This needs yt-dlp and deno on the server: StreamFin downloads both from their official GitHub releases into its data folder, checks each against its published SHA-256, and updates them daily (Scheduled Tasks, "Update YouTube tools").</div>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicLossy"><span>Allow lossy sources</span></label>
+      <div class="fieldDescription checkboxFieldDescription">Turn off to only ever play FLAC: a song the catalog cannot send then does not play.</div>
+      <div class="inputContainer"><label class="inputLabel" for="ytDlpPath">yt-dlp path (optional)</label><input is="emby-input" type="text" id="ytDlpPath" autocomplete="off" spellcheck="false">
+        <div class="fieldDescription">Use your own yt-dlp instead of the downloaded one. Leave empty to let StreamFin manage it.</div></div>
+      <div class="inputContainer"><label class="inputLabel" for="denoPath">deno path (optional)</label><input is="emby-input" type="text" id="denoPath" autocomplete="off" spellcheck="false">
+        <div class="fieldDescription">Use your own deno instead of the downloaded one. Leave empty to let StreamFin manage it.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="lastFmKey">Last.fm API key (optional)</label><input is="emby-input" type="password" id="lastFmKey" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Radio mixes an artist with similar ones, as ListenBrainz knows them. For artists ListenBrainz has no data on, a free key from last.fm/api is used as well.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="musicFolder">Music library folder</label><input is="emby-input" type="text" id="musicFolder" autocomplete="off" spellcheck="false" placeholder="/media/music/StreamFin">
@@ -103,6 +111,10 @@
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
             page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
             page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
+            page.querySelector('#musicYouTube').checked = config.MusicYouTube === true;
+            page.querySelector('#musicLossy').checked = config.MusicAllowLossy !== false;
+            page.querySelector('#ytDlpPath').value = config.YtDlpPath || '';
+            page.querySelector('#denoPath').value = config.DenoPath || '';
             page.querySelector('#musicFolder').value = config.MusicLibraryFolder || '';
             page.querySelector('#lastFmKey').value = config.LastFmApiKey || '';
             page.querySelector('#subsonicEnabled').checked = config.SubsonicEnabled === true;
@@ -150,6 +162,10 @@
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
             config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
             config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
+            config.MusicYouTube = page.querySelector('#musicYouTube').checked;
+            config.MusicAllowLossy = page.querySelector('#musicLossy').checked;
+            config.YtDlpPath = page.querySelector('#ytDlpPath').value.trim();
+            config.DenoPath = page.querySelector('#denoPath').value.trim();
             config.MusicLibraryFolder = page.querySelector('#musicFolder').value.trim();
             config.LastFmApiKey = page.querySelector('#lastFmKey').value.trim();
             config.AllowedUserIds = Array.from(page.querySelectorAll('#streamfinUsers input:checked'), input => input.value);
