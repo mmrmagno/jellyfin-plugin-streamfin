@@ -89,9 +89,13 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
             }
         }
         if (lossy && (backup ??= YouTubeAsync(track, stopYouTube.Token)) is { } search && await search is { } found) return Remember(found);
-        throw new ProviderException(lossy || !AllowLossy || !YtDlp.Wanted
+        throw new ProviderException(lossy || !AllowLossy
             ? "This song cannot be played right now: the music catalog is not answering and no other source has it."
-            : "This song cannot be played right now: the music catalog is not answering. Turning on the YouTube fallback in the StreamFin settings lets songs play anyway.");
+            : !YtDlp.Wanted
+            ? "This song cannot be played right now: the music catalog is not answering. Turning on the YouTube fallback in the StreamFin settings lets songs play anyway."
+            : YtDlp.Problem is { } problem
+            ? "This song cannot be played right now: the music catalog is not answering and YouTube is not working on this server. " + problem
+            : "This song cannot be played right now: the music catalog is not answering and YouTube is still being set up.");
     }
 
     // A song kept lossy from an outage, fetched again as the catalog's FLAC when the catalog has it and answers
