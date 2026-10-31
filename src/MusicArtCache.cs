@@ -75,7 +75,8 @@ public sealed class MusicArtCache(SafeHttp http, ILogger<MusicArtCache> logger)
         long size = 0;
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            // The catalog serves covers through the same slow front as songs: 20-40 s on a bad day.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             using var response = await http.OpenAsync(new Uri(address), false, timeout.Token);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength is > ImageLimit) return;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
