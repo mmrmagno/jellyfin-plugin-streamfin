@@ -57,6 +57,7 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
     public static bool IsStream(Uri uri) => Api is { } api && uri.Scheme == "https" && uri.IdnHost == api.IdnHost && uri.IsDefaultPort && uri.Query.Length == 0
         && uri.AbsolutePath.StartsWith("/track/", StringComparison.Ordinal) && IsMonochrome(uri.AbsolutePath["/track/".Length..]);
     public static bool Fallback => Plugin.Instance?.Configuration.MusicDeezer != false;
+    public static bool DeezerFirst => Plugin.Ordered(Plugin.Instance?.Configuration.MusicSearchOrder, "monochrome", "deezer")[0] == "deezer";
 
     // While the catalog searches slower than this, Deezer answers instead. The catalog's answer still lands in the
     // cache, but the same words keep getting Deezer's for a while, so paging through results stays consistent.
@@ -67,6 +68,12 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
         var text = query.Trim();
         if (text.Length is < 2 or > 100) return new MusicResults([], [], []);
         if (!Fallback) return await MonochromeSearchAsync(text, ct);
+        // Ranked first, Deezer answers every search, and the catalog only when Deezer cannot.
+        if (DeezerFirst)
+        {
+            try { return await DeezerSearchAsync(text, ct); }
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException && !ct.IsCancellationRequested) { return await MonochromeSearchAsync(text, ct); }
+        }
         var picked = $"{Revision}/picked/{text.ToLowerInvariant()}";
         Task<MusicResults>? first = null;
         if (!cache.TryGetValue(picked, out _) && (!Down || HasSearch(text)))

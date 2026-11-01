@@ -654,6 +654,10 @@ Check(MusicAudio.UseCatalog(null, true, true, false, true) && !MusicAudio.UseCat
     "with YouTube ready, a Monochrome that is not healthy is skipped at once");
 Check(!MusicAudio.UseCatalog(null, true, true, false, false) && !MusicAudio.UseCatalog(null, false, true, false, false) && !MusicAudio.UseCatalog("monochrome", false, true, false, false),
     "Monochrome switched off is never asked for a song");
+Check(Plugin.Ordered(["youtube", "nope", "youtube"], "monochrome", "youtube").SequenceEqual(new[] { "youtube", "monochrome" })
+    && Plugin.Ordered(null, "monochrome", "youtube").SequenceEqual(new[] { "monochrome", "youtube" }) && Plugin.Ordered(["tidal"], "monochrome").SequenceEqual(new[] { "monochrome" }),
+    "a saved source order drops unknown names and duplicates, and missing sources go last");
+Check(new Configuration().MusicPlayOrder.SequenceEqual(new[] { "monochrome", "youtube" }) && new Configuration().MusicSearchOrder[0] == "monochrome", "Monochrome is first by default");
 Check(new Configuration().MusicMonochrome && new Configuration().MusicDeezer && !new Configuration().MusicYouTube, "Monochrome and Deezer are on by default, YouTube off");
 var starting = new CatalogBreaker(probed: true);
 Check(starting.Checked(clock, "no answer in time") && starting.Status(clock) is { State: SourceHealth.Down } startup && startup.NextCheck == clock.AddSeconds(30),
