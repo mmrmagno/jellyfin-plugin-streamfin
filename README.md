@@ -55,11 +55,11 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   Meanwhile searches, albums and artists come from [Deezer](https://www.deezer.com)'s public
   catalog: descriptions and covers only, no account, no audio. A song found there plays the
   catalog's FLAC of the same recording (matched by ISRC) once the catalog answers again, or
-  YouTube's copy until then. Untick **Search Deezer when the catalog cannot** to turn it off.
+  YouTube's copy until then. Untick **Deezer** under **Find music with** to turn it off.
   A song the catalog cannot send can play from YouTube instead. That is off by default: tick
-  **Play from YouTube when the catalog cannot**. It picks the artist's own upload of the same
+  **YouTube** under **Play songs from**. It picks the artist's own upload of the same
   length and plays it as AAC at about 128 kbps. That is not lossless, and the song's details say
-  so. Untick **Allow lossy sources** to only ever play FLAC. A song kept from YouTube changes to
+  so. Untick YouTube to only ever play new songs as FLAC. A song kept from YouTube changes to
   the FLAC once the catalog is back: the next time it plays, or in the background for starred
   songs, songs in playlists and songs played more than once (Scheduled Tasks, **Upgrade kept
   songs to FLAC**, hourly, a few songs at a time). YouTube refuses many data centre addresses
@@ -191,9 +191,12 @@ plugin checks it again, after 30 seconds at first and then after longer pauses, 
 minutes. It is used again only after three quick answers in a row, 20 seconds apart. It is
 also checked once when Jellyfin starts, so a server that comes up during an outage knows at once.
 
-Under **Sources** in the settings, each source has its own switch, its live state, and a
-**Test now** button for Monochrome and YouTube. Switching Monochrome off stops songs playing
-from it, while its catalog still answers searches and albums.
+The settings have two ordered lists. **Play songs from** decides where a new song comes from,
+and **Find music with** where searches go first. The first source in each list that works wins,
+and the arrows change the order. Each source has its own switch, its live state, and Monochrome
+and YouTube have a **Test now** button. With YouTube first, a new song plays from YouTube and
+Monochrome is only asked when YouTube does not have it. Switching Monochrome off stops songs
+playing from it, while its catalog still answers searches and albums.
 
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
 every outgoing request has to land on a public address. Nothing from the sites is ever run,

@@ -1,7 +1,13 @@
 <!DOCTYPE html>
 <html><head><title>StreamFin</title></head><body>
-<div id="streamfinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+<div id="streamfinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,paper-icon-button-light">
   <div data-role="content"><div class="content-primary">
+    <style>
+      #streamfinConfig .streamfinOrder { padding-left: 1.5em; }
+      #streamfinConfig .streamfinOrder > li { margin-bottom: 1.5em; }
+      #streamfinConfig .streamfinRow { display: flex; align-items: center; gap: 0.25em; }
+      #streamfinConfig .streamfinRow .checkboxContainer, #streamfinConfig .streamfinName { flex: 1; margin: 0; }
+    </style>
     <h2>StreamFin</h2>
     <form id="streamfinForm">
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="streamfinEnabled"><span>Turn on StreamFin</span></label>
@@ -23,23 +29,37 @@
       <div class="fieldDescription checkboxFieldDescription">When a song or album also exists as a clean edit, hide the edit and play the original.</div>
       <div class="inputContainer"><label class="inputLabel" for="musicApi">Music catalog address</label><input is="emby-input" type="url" id="musicApi" autocomplete="off" spellcheck="false" placeholder="https://tracks.monochrome.st">
         <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
-      <h4>Sources</h4>
-      <div class="fieldDescription">The state of each source updates every 10 seconds while this page is open. Switches take effect when you press Save.</div>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicMonochrome"><span>Play from Monochrome</span></label>
-      <div class="fieldDescription checkboxFieldDescription">Lossless FLAC from the catalog above. Switched off, no song plays from it; its catalog still answers searches, albums and artists.</div>
-      <p id="healthMonochrome" role="status"></p>
-      <button is="emby-button" type="button" id="testMonochrome" class="raised" data-source="monochrome"><span>Test now</span></button>
-      <p id="testMonochromeResult" role="status"></p>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicDeezer"><span>Search Deezer when the catalog cannot</span></label>
-      <div class="fieldDescription checkboxFieldDescription">When the catalog is down or slow, searches, albums and artists come from Deezer's public catalog (descriptions only, no account). Its songs play from the catalog's copy of the same recording, or from YouTube.</div>
-      <p id="healthDeezer" role="status"></p>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicYouTube"><span>Play from YouTube when the catalog cannot</span></label>
-      <div class="fieldDescription checkboxFieldDescription">When the catalog is down or slow, a song plays from YouTube's official audio instead (AAC, about 128 kbps, not lossless). This needs yt-dlp and deno on the server: StreamFin downloads both from their official GitHub releases into its data folder, checks each against its published SHA-256, and updates them daily (Scheduled Tasks, "Update YouTube tools").</div>
-      <p id="healthYouTube" role="status"></p>
-      <button is="emby-button" type="button" id="testYouTube" class="raised" data-source="youtube"><span>Test now</span></button>
-      <p id="testYouTubeResult" role="status"></p>
-      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicLossy"><span>Allow lossy sources</span></label>
-      <div class="fieldDescription checkboxFieldDescription">Turn off to only ever play FLAC: a song the catalog cannot send then does not play.</div>
+      <h4>Play songs from</h4>
+      <div class="fieldDescription">The first source that has the song plays it; the arrows set the order. Songs played before always come from this server's disk first. The state of each source updates every 10 seconds; switches and order take effect when you press Save.</div>
+      <ol id="playOrder" class="streamfinOrder">
+        <li data-source="monochrome">
+          <div class="streamfinRow"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicMonochrome"><span>Monochrome: FLAC, lossless</span></label><button is="paper-icon-button-light" type="button" class="streamfinUp" title="Move up"><span class="material-icons keyboard_arrow_up" aria-hidden="true"></span></button><button is="paper-icon-button-light" type="button" class="streamfinDown" title="Move down"><span class="material-icons keyboard_arrow_down" aria-hidden="true"></span></button></div>
+          <div class="fieldDescription">From the catalog address above. When it is down or slow, the next source plays the song at once.</div>
+          <p id="healthMonochrome" role="status"></p>
+          <button is="emby-button" type="button" id="testMonochrome" class="raised" data-source="monochrome"><span>Test now</span></button>
+          <p id="testMonochromeResult" role="status"></p>
+        </li>
+        <li data-source="youtube">
+          <div class="streamfinRow"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicYouTube"><span>YouTube: AAC, about 128 kbps</span></label><button is="paper-icon-button-light" type="button" class="streamfinUp" title="Move up"><span class="material-icons keyboard_arrow_up" aria-hidden="true"></span></button><button is="paper-icon-button-light" type="button" class="streamfinDown" title="Move down"><span class="material-icons keyboard_arrow_down" aria-hidden="true"></span></button></div>
+          <div class="fieldDescription">YouTube's official audio, fetched whole into the song cache (a new song takes 15 to 20 seconds). Ranked first, Monochrome is only asked when YouTube does not have the song. This needs yt-dlp and deno on the server: StreamFin downloads both from their official GitHub releases into its data folder, checks each against its published SHA-256, and updates them daily (Scheduled Tasks, "Update YouTube tools").</div>
+          <p id="healthYouTube" role="status"></p>
+          <button is="emby-button" type="button" id="testYouTube" class="raised" data-source="youtube"><span>Test now</span></button>
+          <p id="testYouTubeResult" role="status"></p>
+        </li>
+      </ol>
+      <h4>Find music with</h4>
+      <div class="fieldDescription">Searches go to the first source. The next one answers when the first is down or takes longer than 6 seconds. Albums and artists always come from the source they were found in.</div>
+      <ol id="searchOrder" class="streamfinOrder">
+        <li data-source="monochrome">
+          <div class="streamfinRow"><span class="streamfinName">Monochrome catalog: always on</span><button is="paper-icon-button-light" type="button" class="streamfinUp" title="Move up"><span class="material-icons keyboard_arrow_up" aria-hidden="true"></span></button><button is="paper-icon-button-light" type="button" class="streamfinDown" title="Move down"><span class="material-icons keyboard_arrow_down" aria-hidden="true"></span></button></div>
+          <p id="healthMonochromeSearch" role="status"></p>
+        </li>
+        <li data-source="deezer">
+          <div class="streamfinRow"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicDeezer"><span>Deezer: descriptions only, no account</span></label><button is="paper-icon-button-light" type="button" class="streamfinUp" title="Move up"><span class="material-icons keyboard_arrow_up" aria-hidden="true"></span></button><button is="paper-icon-button-light" type="button" class="streamfinDown" title="Move down"><span class="material-icons keyboard_arrow_down" aria-hidden="true"></span></button></div>
+          <div class="fieldDescription">Its songs play from Monochrome's copy of the same recording, or from YouTube.</div>
+          <p id="healthDeezer" role="status"></p>
+        </li>
+      </ol>
       <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
         <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="ytDlpPath">yt-dlp path (optional)</label><input is="emby-input" type="text" id="ytDlpPath" autocomplete="off" spellcheck="false">
@@ -127,7 +147,8 @@
             page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
             page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
             page.querySelector('#musicYouTube').checked = config.MusicYouTube === true;
-            page.querySelector('#musicLossy').checked = config.MusicAllowLossy !== false;
+            applyOrder(page.querySelector('#playOrder'), config.MusicPlayOrder);
+            applyOrder(page.querySelector('#searchOrder'), config.MusicSearchOrder);
             page.querySelector('#musicDeezer').checked = config.MusicDeezer !== false;
             page.querySelector('#musicMonochrome').checked = config.MusicMonochrome !== false;
             page.querySelector('#ytDlpPath').value = config.YtDlpPath || '';
@@ -183,7 +204,10 @@
             config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
             config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
             config.MusicYouTube = page.querySelector('#musicYouTube').checked;
-            config.MusicAllowLossy = page.querySelector('#musicLossy').checked;
+            // Switching YouTube off is how to keep to FLAC now; songs already kept from it still play.
+            config.MusicAllowLossy = true;
+            config.MusicPlayOrder = Array.from(page.querySelector('#playOrder').children, item => item.dataset.source);
+            config.MusicSearchOrder = Array.from(page.querySelector('#searchOrder').children, item => item.dataset.source);
             config.MusicDeezer = page.querySelector('#musicDeezer').checked;
             config.MusicMonochrome = page.querySelector('#musicMonochrome').checked;
             config.YtDlpPath = page.querySelector('#ytDlpPath').value.trim();
@@ -210,6 +234,7 @@
           try {
             const result = await ApiClient.ajax({type: 'GET', url: ApiClient.getUrl('StreamFin/MusicHealth'), dataType: 'json'});
             lines.Monochrome.textContent = 'Monochrome: ' + (page.querySelector('#musicMonochrome').checked ? describe(result.Monochrome) : 'off');
+            page.querySelector('#healthMonochromeSearch').textContent = 'State: ' + describe(result.Monochrome);
             lines.Deezer.textContent = 'Deezer: ' + (page.querySelector('#musicDeezer').checked ? describe(result.Deezer) : 'off');
             lines.YouTube.textContent = 'YouTube: ' + (!page.querySelector('#musicYouTube').checked ? 'off' : describe(result.YouTube)
               + '. ' + (result.YouTubeProxy ? 'Through the proxy' : 'No proxy') + (result.YtDlpVersion ? ', yt-dlp ' + result.YtDlpVersion : '')
@@ -219,6 +244,24 @@
             lines.Deezer.textContent = ''; lines.YouTube.textContent = '';
           }
         }
+        function arrows(list) {
+          Array.from(list.children).forEach((item, index) => {
+            item.querySelector('.streamfinUp').disabled = index === 0;
+            item.querySelector('.streamfinDown').disabled = index === list.children.length - 1;
+          });
+        }
+        function applyOrder(list, order) {
+          (order || []).forEach(name => { const item = list.querySelector('li[data-source="' + name + '"]'); if (item) list.append(item); });
+          arrows(list);
+        }
+        page.querySelectorAll('.streamfinOrder').forEach(list => list.addEventListener('click', function (event) {
+          const button = event.target.closest('.streamfinUp, .streamfinDown');
+          if (!button) return;
+          const item = button.closest('li');
+          if (button.classList.contains('streamfinUp') && item.previousElementSibling) list.insertBefore(item, item.previousElementSibling);
+          else if (button.classList.contains('streamfinDown') && item.nextElementSibling) item.nextElementSibling.after(item);
+          arrows(list);
+        }));
         let healthTimer = null;
         page.addEventListener('viewhide', () => { clearInterval(healthTimer); healthTimer = null; });
         page.querySelectorAll('#testMonochrome, #testYouTube').forEach(button => button.addEventListener('click', async function () {

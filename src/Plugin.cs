@@ -24,6 +24,10 @@ public sealed class Configuration : BasePluginConfiguration
     public bool MusicPreferExplicit { get; set; } = true;
     // Off: no song plays from Monochrome's audio host; its catalog still answers searches, albums and artists.
     public bool MusicMonochrome { get; set; } = true;
+    // Where songs play from and where searches go first: the first that works wins. Unknown names are dropped and
+    // missing ones go last, so a source added in a later version joins at the end.
+    public string[] MusicPlayOrder { get; set; } = ["monochrome", "youtube"];
+    public string[] MusicSearchOrder { get; set; } = ["monochrome", "deezer"];
     // Deezer's public catalog answers searches, albums and artists while the music catalog cannot.
     public bool MusicDeezer { get; set; } = true;
     // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.
@@ -56,6 +60,7 @@ public sealed class Plugin : BasePlugin<Configuration>, IHasWebPages
     public override string Name => "StreamFin";
     public override string Description => "Anime, movies, TV and lossless music from online sources, as Jellyfin channels.";
     public IEnumerable<PluginPageInfo> GetPages() => [new() { Name = "streamfin", EmbeddedResourcePath = "StreamFin.Configuration.html" }];
+    public static string[] Ordered(string[]? saved, params string[] known) => (saved ?? []).Where(s => known.Contains(s)).Concat(known).Distinct().ToArray();
     public static bool Allows(Guid id) => id != Guid.Empty && Instance?.Configuration is { Enabled: true } c
         && c.AllowedUserIds.Any(value => Guid.TryParse(value, out var allowed) && allowed == id);
 }
