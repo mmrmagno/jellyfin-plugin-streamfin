@@ -649,9 +649,15 @@ settled.Checked(clock.AddSeconds(32), "HTTP 522");
 foreach (var second in new[] { 92, 112, 132 }) settled.Checked(clock.AddSeconds(second), null);
 for (var i = 0; i < 3; i++) settled.Failure(clock.AddSeconds(132).AddMinutes(31).AddSeconds(i));
 Check(settled.Status(clock.AddHours(1)).NextCheck == clock.AddSeconds(132 + 2 + 30).AddMinutes(31), "after 30 healthy minutes an outage starts over at 30 s");
-Check(MusicAudio.UseCatalog(null, true, true, false) && !MusicAudio.UseCatalog(null, true, false, false) && MusicAudio.UseCatalog(null, false, false, false)
-    && MusicAudio.UseCatalog("monochrome", false, false, false) && !MusicAudio.UseCatalog("youtube", true, true, false),
+Check(MusicAudio.UseCatalog(null, true, true, false, true) && !MusicAudio.UseCatalog(null, true, false, false, true) && MusicAudio.UseCatalog(null, false, false, false, true)
+    && MusicAudio.UseCatalog("monochrome", false, false, false, true) && !MusicAudio.UseCatalog("youtube", true, true, false, true),
     "with YouTube ready, a Monochrome that is not healthy is skipped at once");
+Check(!MusicAudio.UseCatalog(null, true, true, false, false) && !MusicAudio.UseCatalog(null, false, true, false, false) && !MusicAudio.UseCatalog("monochrome", false, true, false, false),
+    "Monochrome switched off is never asked for a song");
+Check(new Configuration().MusicMonochrome && new Configuration().MusicDeezer && !new Configuration().MusicYouTube, "Monochrome and Deezer are on by default, YouTube off");
+var starting = new CatalogBreaker(probed: true);
+Check(starting.Checked(clock, "no answer in time") && starting.Status(clock) is { State: SourceHealth.Down } startup && startup.NextCheck == clock.AddSeconds(30),
+    "one failed check at startup counts Monochrome as down at once");
 Check(await MonochromeProbe.CheckAsync(_ => Task.CompletedTask, _ => Task.FromResult(HttpStatusCode.PartialContent), default) is null
     && await MonochromeProbe.CheckAsync(_ => throw new SourceStatusException(522), null, default) == "HTTP 522"
     && await MonochromeProbe.CheckAsync(_ => Task.CompletedTask, _ => Task.FromResult((HttpStatusCode)502), default) == "audio HTTP 502"

@@ -22,6 +22,8 @@ public sealed class Configuration : BasePluginConfiguration
     // Empty means MusicCatalog.DefaultApi.
     public string MusicApiUrl { get; set; } = "";
     public bool MusicPreferExplicit { get; set; } = true;
+    // Off: no song plays from Monochrome's audio host; its catalog still answers searches, albums and artists.
+    public bool MusicMonochrome { get; set; } = true;
     // Deezer's public catalog answers searches, albums and artists while the music catalog cannot.
     public bool MusicDeezer { get; set; } = true;
     // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.

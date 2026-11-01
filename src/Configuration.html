@@ -18,20 +18,30 @@
       <div class="inputContainer"><label class="inputLabel" for="tmdbKey">TMDB API key</label><input is="emby-input" type="password" id="tmdbKey" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Make a free account on themoviedb.org, then go to Settings &gt; API. The short API key and the long read access token both work. The channel stays hidden until a key is set.</div></div>
       <h3>Music</h3>
-      <ul id="musicHealth" role="status"></ul>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicEnabled"><span>Show the Music channel</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicExplicit"><span>Prefer explicit versions</span></label>
       <div class="fieldDescription checkboxFieldDescription">When a song or album also exists as a clean edit, hide the edit and play the original.</div>
       <div class="inputContainer"><label class="inputLabel" for="musicApi">Music catalog address</label><input is="emby-input" type="url" id="musicApi" autocomplete="off" spellcheck="false" placeholder="https://tracks.monochrome.st">
         <div class="fieldDescription">Leave empty for the default. Lossless FLAC, CD quality or better. Only a plain https address is accepted.</div></div>
+      <h4>Sources</h4>
+      <div class="fieldDescription">The state of each source updates every 10 seconds while this page is open. Switches take effect when you press Save.</div>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicMonochrome"><span>Play from Monochrome</span></label>
+      <div class="fieldDescription checkboxFieldDescription">Lossless FLAC from the catalog above. Switched off, no song plays from it; its catalog still answers searches, albums and artists.</div>
+      <p id="healthMonochrome" role="status"></p>
+      <button is="emby-button" type="button" id="testMonochrome" class="raised" data-source="monochrome"><span>Test now</span></button>
+      <p id="testMonochromeResult" role="status"></p>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicDeezer"><span>Search Deezer when the catalog cannot</span></label>
       <div class="fieldDescription checkboxFieldDescription">When the catalog is down or slow, searches, albums and artists come from Deezer's public catalog (descriptions only, no account). Its songs play from the catalog's copy of the same recording, or from YouTube.</div>
-      <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
-        <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
+      <p id="healthDeezer" role="status"></p>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicYouTube"><span>Play from YouTube when the catalog cannot</span></label>
       <div class="fieldDescription checkboxFieldDescription">When the catalog is down or slow, a song plays from YouTube's official audio instead (AAC, about 128 kbps, not lossless). This needs yt-dlp and deno on the server: StreamFin downloads both from their official GitHub releases into its data folder, checks each against its published SHA-256, and updates them daily (Scheduled Tasks, "Update YouTube tools").</div>
+      <p id="healthYouTube" role="status"></p>
+      <button is="emby-button" type="button" id="testYouTube" class="raised" data-source="youtube"><span>Test now</span></button>
+      <p id="testYouTubeResult" role="status"></p>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicLossy"><span>Allow lossy sources</span></label>
       <div class="fieldDescription checkboxFieldDescription">Turn off to only ever play FLAC: a song the catalog cannot send then does not play.</div>
+      <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
+        <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="ytDlpPath">yt-dlp path (optional)</label><input is="emby-input" type="text" id="ytDlpPath" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Use your own yt-dlp instead of the downloaded one. Leave empty to let StreamFin manage it.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="denoPath">deno path (optional)</label><input is="emby-input" type="text" id="denoPath" autocomplete="off" spellcheck="false">
@@ -119,6 +129,7 @@
             page.querySelector('#musicYouTube').checked = config.MusicYouTube === true;
             page.querySelector('#musicLossy').checked = config.MusicAllowLossy !== false;
             page.querySelector('#musicDeezer').checked = config.MusicDeezer !== false;
+            page.querySelector('#musicMonochrome').checked = config.MusicMonochrome !== false;
             page.querySelector('#ytDlpPath').value = config.YtDlpPath || '';
             page.querySelector('#denoPath').value = config.DenoPath || '';
             page.querySelector('#youTubeProxy').value = config.YouTubeProxy || '';
@@ -145,6 +156,8 @@
             page.querySelector('#streamfinClearSearch').disabled = false;
             page.querySelector('#streamfinStatus').textContent = '';
             await Promise.all([renderSaves(), renderHealth()]);
+            clearInterval(healthTimer);
+            healthTimer = setInterval(renderHealth, 10000);
           } catch (error) {
             console.warn('StreamFin settings could not load:', error.message);
             page.querySelector('#streamfinStatus').textContent = 'Could not load settings. Reload this page before making changes.';
@@ -172,6 +185,7 @@
             config.MusicYouTube = page.querySelector('#musicYouTube').checked;
             config.MusicAllowLossy = page.querySelector('#musicLossy').checked;
             config.MusicDeezer = page.querySelector('#musicDeezer').checked;
+            config.MusicMonochrome = page.querySelector('#musicMonochrome').checked;
             config.YtDlpPath = page.querySelector('#ytDlpPath').value.trim();
             config.DenoPath = page.querySelector('#denoPath').value.trim();
             config.YouTubeProxy = page.querySelector('#youTubeProxy').value.trim();
@@ -186,25 +200,42 @@
           } finally { Dashboard.hideLoadingMsg(); }
         });
         function clockTime(value) { return new Date(value).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); }
+        function describe(health) {
+          if (health.State === 'Healthy') return 'healthy';
+          return (health.State === 'Recovering' ? 'recovering, down' : 'down') + ' since ' + clockTime(health.Since)
+            + (health.LastError ? ' (' + health.LastError + ')' : '') + (health.NextCheck ? ', next check ' + clockTime(health.NextCheck) : '');
+        }
         async function renderHealth() {
-          const list = page.querySelector('#musicHealth');
-          list.replaceChildren();
+          const lines = {Monochrome: page.querySelector('#healthMonochrome'), Deezer: page.querySelector('#healthDeezer'), YouTube: page.querySelector('#healthYouTube')};
           try {
             const result = await ApiClient.ajax({type: 'GET', url: ApiClient.getUrl('StreamFin/MusicHealth'), dataType: 'json'});
-            [['Monochrome', result.Monochrome], ['Deezer', result.Deezer], ['YouTube', result.YouTube]].forEach(([name, health]) => {
-              const item = document.createElement('li');
-              item.textContent = name + ': ' + (health.State === 'Healthy' ? 'healthy'
-                : (health.State === 'Recovering' ? 'recovering, down' : 'down') + ' since ' + clockTime(health.Since)
-                  + (health.LastError ? ' (' + health.LastError + ')' : '') + (health.NextCheck ? ', next check ' + clockTime(health.NextCheck) : ''))
-                + (name === 'YouTube' && result.YouTubeProblem ? '. ' + result.YouTubeProblem : '');
-              list.append(item);
-            });
+            lines.Monochrome.textContent = 'Monochrome: ' + (page.querySelector('#musicMonochrome').checked ? describe(result.Monochrome) : 'off');
+            lines.Deezer.textContent = 'Deezer: ' + (page.querySelector('#musicDeezer').checked ? describe(result.Deezer) : 'off');
+            lines.YouTube.textContent = 'YouTube: ' + (!page.querySelector('#musicYouTube').checked ? 'off' : describe(result.YouTube)
+              + '. ' + (result.YouTubeProxy ? 'Through the proxy' : 'No proxy') + (result.YtDlpVersion ? ', yt-dlp ' + result.YtDlpVersion : '')
+              + (result.YouTubeProblem ? '. ' + result.YouTubeProblem : ''));
           } catch {
-            const item = document.createElement('li');
-            item.textContent = 'Could not load the state of the music sources.';
-            list.append(item);
+            lines.Monochrome.textContent = 'Could not load the state of the music sources.';
+            lines.Deezer.textContent = ''; lines.YouTube.textContent = '';
           }
         }
+        let healthTimer = null;
+        page.addEventListener('viewhide', () => { clearInterval(healthTimer); healthTimer = null; });
+        page.querySelectorAll('#testMonochrome, #testYouTube').forEach(button => button.addEventListener('click', async function () {
+          const output = page.querySelector('#' + button.id + 'Result');
+          button.disabled = true;
+          output.textContent = 'Testing…';
+          try {
+            const result = await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('StreamFin/MusicHealth/Probe', {source: button.dataset.source}), dataType: 'json'});
+            output.textContent = !result.Ran ? result.Problem
+              : (result.Problem ? 'Failed: ' + result.Problem : 'Works') + ' (' + result.Seconds.toFixed(1) + ' s)';
+          } catch (error) {
+            output.textContent = error && error.status === 429 ? 'Wait a few seconds before testing again.' : 'The test could not run.';
+          } finally {
+            button.disabled = false;
+            await renderHealth();
+          }
+        }));
         const states = {queued: 'waiting', saving: 'saving', saved: 'saved', failed: 'failed'};
         async function renderSaves() {
           const status = page.querySelector('#musicSaveStatus');

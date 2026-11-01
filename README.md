@@ -188,8 +188,12 @@ and goes again. Three failures within two minutes, or three answers slower than 
 for audio), count it as down. From then on no click waits on it: new songs go straight to
 YouTube, and anything seen before comes from the copies the plugin keeps. In the background the
 plugin checks it again, after 30 seconds at first and then after longer pauses, up to 15
-minutes. It is used again only after three quick answers in a row, 20 seconds apart. The
-settings page shows the state of each source.
+minutes. It is used again only after three quick answers in a row, 20 seconds apart. It is
+also checked once when Jellyfin starts, so a server that comes up during an outage knows at once.
+
+Under **Sources** in the settings, each source has its own switch, its live state, and a
+**Test now** button for Monochrome and YouTube. Switching Monochrome off stops songs playing
+from it, while its catalog still answers searches and albums.
 
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
 every outgoing request has to land on a public address. Nothing from the sites is ever run,
