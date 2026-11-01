@@ -18,6 +18,7 @@
       <div class="inputContainer"><label class="inputLabel" for="tmdbKey">TMDB API key</label><input is="emby-input" type="password" id="tmdbKey" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Make a free account on themoviedb.org, then go to Settings &gt; API. The short API key and the long read access token both work. The channel stays hidden until a key is set.</div></div>
       <h3>Music</h3>
+      <ul id="musicHealth" role="status"></ul>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicEnabled"><span>Show the Music channel</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicExplicit"><span>Prefer explicit versions</span></label>
       <div class="fieldDescription checkboxFieldDescription">When a song or album also exists as a clean edit, hide the edit and play the original.</div>
@@ -143,7 +144,7 @@
             page.querySelector('#streamfinRefresh').disabled = false;
             page.querySelector('#streamfinClearSearch').disabled = false;
             page.querySelector('#streamfinStatus').textContent = '';
-            await renderSaves();
+            await Promise.all([renderSaves(), renderHealth()]);
           } catch (error) {
             console.warn('StreamFin settings could not load:', error.message);
             page.querySelector('#streamfinStatus').textContent = 'Could not load settings. Reload this page before making changes.';
@@ -184,6 +185,26 @@
             Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
           } finally { Dashboard.hideLoadingMsg(); }
         });
+        function clockTime(value) { return new Date(value).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); }
+        async function renderHealth() {
+          const list = page.querySelector('#musicHealth');
+          list.replaceChildren();
+          try {
+            const result = await ApiClient.ajax({type: 'GET', url: ApiClient.getUrl('StreamFin/MusicHealth'), dataType: 'json'});
+            [['Monochrome', result.Monochrome], ['Deezer', result.Deezer], ['YouTube', result.YouTube]].forEach(([name, health]) => {
+              const item = document.createElement('li');
+              item.textContent = name + ': ' + (health.State === 'Healthy' ? 'healthy'
+                : (health.State === 'Recovering' ? 'recovering, down' : 'down') + ' since ' + clockTime(health.Since)
+                  + (health.LastError ? ' (' + health.LastError + ')' : '') + (health.NextCheck ? ', next check ' + clockTime(health.NextCheck) : ''))
+                + (name === 'YouTube' && result.YouTubeProblem ? '. ' + result.YouTubeProblem : '');
+              list.append(item);
+            });
+          } catch {
+            const item = document.createElement('li');
+            item.textContent = 'Could not load the state of the music sources.';
+            list.append(item);
+          }
+        }
         const states = {queued: 'waiting', saving: 'saving', saved: 'saved', failed: 'failed'};
         async function renderSaves() {
           const status = page.querySelector('#musicSaveStatus');

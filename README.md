@@ -183,6 +183,14 @@ seconds to start; after that it plays from disk. yt-dlp comes as its unpacked bu
 starts twice as fast as the single file. The zip is checked before it is unpacked, and every
 file in it has to stay inside its folder.
 
+The catalog goes down for minutes at a time, and on a bad day it comes back for two minutes
+and goes again. Three failures within two minutes, or three answers slower than 8 seconds (5
+for audio), count it as down. From then on no click waits on it: new songs go straight to
+YouTube, and anything seen before comes from the copies the plugin keeps. In the background the
+plugin checks it again, after 30 seconds at first and then after longer pauses, up to 15
+minutes. It is used again only after three quick answers in a row, 20 seconds apart. The
+settings page shows the state of each source.
+
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
 every outgoing request has to land on a public address. Nothing from the sites is ever run,
 with one exception: when the YouTube fallback is on, yt-dlp runs YouTube's player code in
