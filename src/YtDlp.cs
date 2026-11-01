@@ -24,6 +24,7 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
     private static readonly Regex VideoId = new("^[A-Za-z0-9_-]{11}$", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     public static string? Problem { get; private set; }
+    public static string? Version { get; private set; }
     private static bool checkedTools;
     private static DateTime lastTry;
 
@@ -82,6 +83,7 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
             var version = (await RunAsync(["--version"], TimeSpan.FromSeconds(30), ct)).Trim();
             checkedTools = true;
             Problem = null;
+            Version = version.Length > 40 ? version[..40] : version;
             logger.LogInformation("StreamFin music: yt-dlp {Version} is ready for YouTube", version.Length > 40 ? version[..40] : version);
         }
         catch (Exception ex) when (ex is ProviderException or IOException or HttpRequestException or UnauthorizedAccessException or InvalidDataException

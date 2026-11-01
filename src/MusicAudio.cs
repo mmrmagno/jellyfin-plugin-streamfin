@@ -37,6 +37,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
 
     public SourceStatus YouTubeStatus(DateTime now) => youtube.Status(now);
 
+    public static bool MonochromeOn => Plugin.Instance?.Configuration.MusicMonochrome != false;
     public static bool AllowLossy => Plugin.Instance?.Configuration.MusicAllowLossy != false;
     public static string ContentType(string container) => container == "m4a" ? "audio/mp4" : "audio/flac";
 
@@ -63,7 +64,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
             // A lossy copy kept from an outage plays at once, and is replaced by the FLAC in the background once the
             // catalog sends it. A catalog that hangs without being marked down is asked once per song in 10 minutes,
             // so no play or seek waits on it.
-            if (container != "flac" && only is null && !catalog.Down && !HasFailed(track.Id, "upgrade"))
+            if (container != "flac" && only is null && MonochromeOn && !catalog.Down && !HasFailed(track.Id, "upgrade"))
             {
                 Failures.Set(track.Id + ":upgrade", true, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10) });
                 _ = Task.Run(async () =>
@@ -85,7 +86,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         var lossy = AllowLossy && YtDlp.Wanted && Searchable(track) && !HasFailed(track.Id, "youtube") && only is null or "youtube";
         if (lossy && !YtDlp.Ready) tools.Kick();
         lossy = lossy && YtDlp.Ready && youtube.Allow(DateTime.UtcNow);
-        var useCatalog = UseCatalog(only, lossy, health.Usable, HasFailed(track.Id, "monochrome"));
+        var useCatalog = UseCatalog(only, lossy, health.Usable, HasFailed(track.Id, "monochrome"), MonochromeOn);
         Task<AudioTicket?>? flac = useCatalog ? MonochromeAsync(track, lossy, budget.Token) : null;
         using var stopYouTube = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
         Task<AudioTicket?>? backup = null;
@@ -104,6 +105,8 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
             }
         }
         if (lossy && (backup ??= YouTubeAsync(track, stopYouTube.Token)) is { } search && await search is { } found) return Remember(found);
+        if (!MonochromeOn && !lossy)
+            throw new ProviderException("This song cannot be played right now: Monochrome is switched off in the StreamFin settings and YouTube cannot play it.");
         throw new ProviderException(lossy || !AllowLossy
             ? "This song cannot be played right now: the music catalog is not answering and no other source has it."
             : !YtDlp.Wanted
@@ -114,14 +117,40 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
     }
 
     // Whether to ask Monochrome for a song. With YouTube to fall back on, a Monochrome that is not healthy is skipped
-    // at once, with no head start to wait out.
-    public static bool UseCatalog(string? only, bool lossy, bool usable, bool failed) => only is null or "monochrome" && !(lossy && (!usable || failed));
+    // at once, with no head start to wait out. Switched off, it is never asked.
+    public static bool UseCatalog(string? only, bool lossy, bool usable, bool failed, bool on) => on && only is null or "monochrome" && !(lossy && (!usable || failed));
+
+    // A YouTube search for a well-known song, through the proxy when one is set: null when it works, otherwise why not.
+    public async Task<string?> TestYouTubeAsync(CancellationToken ct)
+    {
+        if (!YtDlp.Wanted) return "YouTube is switched off.";
+        if (!YtDlp.Ready || YtDlp.DenoFile is not { } deno)
+        {
+            tools.Kick();
+            return YtDlp.Problem ?? "The YouTube tools are still being set up.";
+        }
+        try
+        {
+            var hits = ParseSearch(await tools.RunAsync(YtDlp.SearchArguments(deno, "Daft Punk - One More Time", 1), TimeSpan.FromSeconds(20), ct));
+            youtube.Success(DateTime.UtcNow);
+            return hits.Count > 0 ? null : "YouTube answered but found nothing.";
+        }
+        catch (ToolFailedException ex)
+        {
+            youtube.Failure(DateTime.UtcNow, ex.Message);
+            return ex.Message;
+        }
+        catch (Exception ex) when (ex is ProviderException or JsonException or OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            return ex is ProviderException ? ex.Message : "YouTube did not answer in time.";
+        }
+    }
 
     // A song kept lossy from an outage, fetched again as the catalog's FLAC when the catalog has it and answers
     // quickly. True once that download is under way; the lossy copy plays until it is done.
     public async Task<bool> UpgradeAsync(MusicTrack track, CancellationToken ct)
     {
-        if (songs.Kept(track.Id) != "m4a" || MusicCache.Fetching(track.Id) || HasFailed(track.Id, "monochrome") || catalog.Down) return false;
+        if (!MonochromeOn || songs.Kept(track.Id) != "m4a" || MusicCache.Fetching(track.Id) || HasFailed(track.Id, "monochrome") || catalog.Down) return false;
         if (await MonochromeAsync(track, true, ct, TimeSpan.FromSeconds(20)) is not { } flac) return false;
         songs.Warm(flac);
         return MusicCache.Fetching(track.Id);
@@ -237,7 +266,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         // against YouTube: being busy or slow says nothing about whether it works.
         catch (Exception ex)
         {
-            if (ex is ToolFailedException) youtube.Failure(DateTime.UtcNow, "yt-dlp failed");
+            if (ex is ToolFailedException) youtube.Failure(DateTime.UtcNow, ex.Message);
             logger.LogInformation("StreamFin music: YouTube has no copy of {Track} ({Reason})", track.Id, ex is ProviderException ? ex.Message : ex.GetType().Name);
             return null;
         }

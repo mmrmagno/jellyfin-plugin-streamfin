@@ -200,6 +200,12 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
             {
                 // Each album shows up as soon as it is saved; a scan already running means another one after it.
                 if (scan) scan = !Scan();
+                // Albums are saved from Monochrome's audio; with it switched off they wait in the queue.
+                if (!MusicAudio.MonochromeOn)
+                {
+                    await wake.WaitAsync(TimeSpan.FromMinutes(5), stop);
+                    continue;
+                }
                 if ((next = await NextAsync(stop)) is not var (user, save))
                 {
                     await wake.WaitAsync(scan ? TimeSpan.FromMinutes(2) : TimeSpan.FromMinutes(30), stop);

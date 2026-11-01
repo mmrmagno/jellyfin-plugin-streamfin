@@ -74,11 +74,12 @@ public sealed class CatalogBreaker(int limit = 3, TimeSpan? window = null, TimeS
     public bool Failure(DateTime now, string cause = "no answer")
     {
         lock (gate) if (probed && state != SourceHealth.Healthy) return false;
-        return Failed(now, cause);
+        return Failed(now, cause, false);
     }
 
-    // The prober's check: null when it answered quickly enough, otherwise what went wrong.
-    public bool Checked(DateTime now, string? problem) => problem is null ? Passed(now) : Failed(now, problem);
+    // The prober's check: null when it answered quickly enough, otherwise what went wrong. A deliberate check that fails
+    // counts it as down at once, so a server that starts during an outage does not wait for three users to find out.
+    public bool Checked(DateTime now, string? problem) => problem is null ? Passed(now) : Failed(now, problem, true);
 
     public SourceStatus Status(DateTime now)
     {
@@ -100,7 +101,7 @@ public sealed class CatalogBreaker(int limit = 3, TimeSpan? window = null, TimeS
         return changed is not null;
     }
 
-    private bool Failed(DateTime now, string cause)
+    private bool Failed(DateTime now, string cause, bool atOnce)
     {
         var changed = false;
         TimeSpan wait;
@@ -110,7 +111,7 @@ public sealed class CatalogBreaker(int limit = 3, TimeSpan? window = null, TimeS
             if (state == SourceHealth.Healthy)
             {
                 if (now - first > window) (first, failures) = (now, 0);
-                if (++failures < limit) return false;
+                if (++failures < limit && !atOnce) return false;
                 step = step >= 0 && now - since < Settled ? Math.Min(step + 1, Backoff.Length - 1) : 0;
                 downSince = now;
             }
