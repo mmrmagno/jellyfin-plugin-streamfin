@@ -362,6 +362,18 @@ try
         && !File.Exists(Path.Combine(songRoot, "155102871061270528.m4a")) && !File.Exists(Path.Combine(songRoot, "155102871061270531.flac.part"))
         && MusicCache.Container("155102871061270529") == "m4a", "the song cache reads both formats back, a FLAC replaces a lossy copy, other files are ignored");
     using (diskCache.OpenComplete("155102871061270529", "flac")) Check(diskCache.OpenComplete("155102871061270529", "flac") is null, "a lossy copy is never handed out as FLAC");
+    var audio = new byte[4096];
+    mp4Head.CopyTo(audio);
+    var keptSize = await diskCache.KeepAsync("dz3129407", "m4a", (part, _) => File.WriteAllBytesAsync(part, audio), default);
+    Check(keptSize == 4096 && diskCache.Kept("dz3129407") == "m4a" && File.Exists(Path.Combine(songRoot, "dz3129407.m4a")) && !Directory.EnumerateFiles(Path.Combine(songRoot, "incoming")).Any()
+        && await diskCache.KeepAsync("dz3129407", "m4a", (_, _) => throw new Exception("fetched twice"), default) == 4096, "a song yt-dlp fetched is checked, kept and not fetched again");
+    await RejectAsync(() => diskCache.KeepAsync("dz3129408", "m4a", (part, _) => File.WriteAllTextAsync(part, "<html>Sign in to confirm</html>"), default), "a download that is not audio is refused");
+    await RejectAsync(() => diskCache.KeepAsync("dz3129409", "m4a", (_, _) => Task.CompletedTask, default), "a download that wrote nothing is refused");
+    await RejectAsync(() => diskCache.KeepAsync("dz3129410", "m4a", (part, _) => { File.WriteAllBytes(part, audio); throw new ToolFailedException("YouTube could not find this song."); }, default), "a failed yt-dlp run is reported");
+    await RejectAsync(() => diskCache.KeepAsync("../../etc/x", "m4a", (part, _) => File.WriteAllBytesAsync(part, audio), default), "a song id that is not one never names a file");
+    await RejectAsync(() => diskCache.KeepAsync("dz3129411", "exe", (part, _) => File.WriteAllBytesAsync(part, audio), default), "only known formats are kept");
+    Check(diskCache.Kept("dz3129408") is null && diskCache.Kept("dz3129410") is null && !Directory.EnumerateFiles(songRoot, "*", SearchOption.AllDirectories).Any(f => f.Contains("incoming") || f.EndsWith(".part")),
+        "nothing is left behind by a failed download");
 }
 finally { if (Directory.Exists(songRoot)) Directory.Delete(songRoot, true); }
 Check(SafeHttp.Allowed(new Uri("https://rr2---sn-qpbpu8-c0qr.googlevideo.com/videoplayback?expire=1"), true)
@@ -381,6 +393,68 @@ Check(search[^2] == "--" && search[^1].StartsWith("ytsearch8:-o /tmp/x", StringC
     && search.Contains("--no-plugin-dirs") && search[search.IndexOf("--js-runtimes") + 1] == "deno:/data/bin/deno", "yt-dlp search text stays one argument after --");
 Check(YtDlp.AudioArguments("/d", "JhulBGMA7G4")[^1] == "https://www.youtube.com/watch?v=JhulBGMA7G4", "yt-dlp is asked for one video's audio");
 Reject(() => YtDlp.AudioArguments("/d", "--exec=x;rm"), "a YouTube video ID that is not one is refused");
+var zipRoot = Path.Combine(Path.GetTempPath(), "streamfin-zip-" + Guid.NewGuid().ToString("N"));
+try
+{
+    Directory.CreateDirectory(zipRoot);
+    string MakeZip(string name, params (string Path, int Mode)[] entries)
+    {
+        var path = Path.Combine(zipRoot, name + ".zip");
+        using var zip = System.IO.Compression.ZipFile.Open(path, System.IO.Compression.ZipArchiveMode.Create);
+        foreach (var (entryPath, mode) in entries)
+        {
+            var entry = zip.CreateEntry(entryPath);
+            entry.ExternalAttributes = mode << 16;
+            if (!entryPath.EndsWith('/')) using (var w = new StreamWriter(entry.Open())) w.Write("#!" + entryPath);
+        }
+        return path;
+    }
+    var good = MakeZip("good", ("_internal/", 0x41ED), ("_internal/lib.so", 0x81ED), ("_internal/data.txt", 0x81A4), ("yt-dlp_linux", 0x81ED));
+    var into = Path.Combine(zipRoot, "good");
+    Directory.CreateDirectory(into);
+    await YtDlp.UnpackAsync(good, into, "yt-dlp_linux", default);
+    Check(File.Exists(Path.Combine(into, "yt-dlp")) && !File.Exists(Path.Combine(into, "yt-dlp_linux")) && File.Exists(Path.Combine(into, "_internal", "lib.so"))
+        && (OperatingSystem.IsWindows() || File.GetUnixFileMode(Path.Combine(into, "yt-dlp")).HasFlag(UnixFileMode.UserExecute) && !File.GetUnixFileMode(Path.Combine(into, "_internal", "data.txt")).HasFlag(UnixFileMode.UserExecute)
+        && !File.GetUnixFileMode(Path.Combine(into, "yt-dlp")).HasFlag(UnixFileMode.OtherRead)), "the yt-dlp folder unpacks with only its programs runnable and nothing for other users");
+    var bad = new (string Name, (string, int)[] Entries)[]
+    {
+        ("climb", [("yt-dlp_linux", 0x81ED), ("../escaped", 0x81A4)]),
+        ("inner climb", [("yt-dlp_linux", 0x81ED), ("_internal/../../escaped", 0x81A4)]),
+        ("absolute", [("yt-dlp_linux", 0x81ED), ("/tmp/escaped", 0x81A4)]),
+        ("backslash", [("yt-dlp_linux", 0x81ED), ("..\\escaped", 0x81A4)]),
+        ("link", [("yt-dlp_linux", 0x81ED), ("_internal/link", 0xA1FF)]),
+        ("device", [("yt-dlp_linux", 0x81ED), ("_internal/dev", 0x21A4)]),
+        ("dot", [("yt-dlp_linux", 0x81ED), ("./x", 0x81A4)]),
+        ("missing program", [("_internal/lib.so", 0x81ED)]),
+        ("twice", [("yt-dlp_linux", 0x81ED), ("yt-dlp_linux", 0x81ED)]),
+    };
+    foreach (var (name, entries) in bad)
+    {
+        var folder = Path.Combine(zipRoot, "out-" + name.Replace(' ', '-'));
+        Directory.CreateDirectory(folder);
+        var zipPath = MakeZip(name.Replace(' ', '-'), entries);
+        try { await YtDlp.UnpackAsync(zipPath, folder, "yt-dlp_linux", default); throw new Exception("FAIL: an unsafe yt-dlp download is refused: " + name); }
+        catch (Exception ex) when (ex is ProviderException or IOException) { Check(!File.Exists(Path.Combine(zipRoot, "escaped")) && !File.Exists("/tmp/escaped"), "an unsafe yt-dlp download is refused: " + name); }
+    }
+}
+finally { if (Directory.Exists(zipRoot)) Directory.Delete(zipRoot, true); }
+var download = YtDlp.DownloadArguments("/d", "JhulBGMA7G4", "dz1.m4a");
+Check(download[^2] == "--" && download[^1] == "https://www.youtube.com/watch?v=JhulBGMA7G4" && download[download.IndexOf("-o") + 1] == "dz1.m4a"
+    && download.Contains("--no-part") && download[download.IndexOf("--fixup") + 1] == "never" && download.Contains("--ignore-config"), "yt-dlp writes one song to exactly the file it is given");
+Reject(() => YtDlp.DownloadArguments("/d", "-o/etc/x--", "dz1.m4a"), "a YouTube video ID that is not one is never downloaded");
+foreach (var name in new[] { "/data/x.m4a", "~/x.m4a", "$HOME.m4a", "%(title)s.m4a", "../x.m4a", ".m4a", "-o.m4a", "" })
+    Reject(() => YtDlp.DownloadArguments("/d", "JhulBGMA7G4", name), "yt-dlp is only given a plain file name: " + name);
+foreach (var good in new[] { "http://gluetun:8888", "http://streamfin:s3cr3t@gluetun:8888", "socks5://10.0.0.2:1080", "socks5h://u:p@vpn.local:1080/", "http://[fd00::2]:8888" })
+    Check(YtDlp.Proxy(" " + good + " ") == good, "a YouTube proxy is accepted: " + YtDlp.Redact(good));
+foreach (var bad in new[] { "gluetun:8888", "https://gluetun:8888", "file:///etc/passwd", "http://gluetun", "http://gluetun:8888/path", "http://gluetun:8888?x=1", "http://a b:8888", "http://gluetun:8888\n--exec=rm", "--exec=rm", "http://u:p@:8888", "ftp://x:21" })
+    Reject(() => YtDlp.Proxy(bad), "a YouTube proxy that is not one is refused: " + YtDlp.Redact(bad).Replace("\n", "\\n"));
+Check(YtDlp.OneVideo("ERROR: [youtube] 7z3kVCiGfhk: Sign in to confirm your age. This video may be inappropriate for some users.") && YtDlp.OneVideo("ERROR: [youtube] x: Video unavailable")
+    && !YtDlp.OneVideo("ERROR: [youtube] x: Sign in to confirm you’re not a bot. This helps protect our community.") && !YtDlp.OneVideo("ERROR: Unable to connect to proxy"),
+    "an age gate or a removed video fails one song, a block on the server counts against YouTube");
+Check(YtDlp.ProxyConfig(" http://u:p@gluetun:8888 ") == "--proxy \"http://u:p@gluetun:8888\"\n", "the proxy reaches yt-dlp as one quoted value in its own file");
+Reject(() => YtDlp.ProxyConfig("http://gluetun:8888\" --exec \"rm"), "a proxy cannot add options to yt-dlp's file");
+Check(YtDlp.Redact("ERROR: Unable to connect to proxy http://streamfin:s3cr3t@gluetun:8888") == "ERROR: Unable to connect to proxy http://***@gluetun:8888"
+    && YtDlp.Redact("socks5://u:p@h:1 and http://x:y@z:2") == "socks5://***@h:1 and http://***@z:2", "a proxy password never reaches a message");
 var hbfs = new MusicTrack("155102871061270528", "Harder, Better, Faster, Stronger", [new("155102851176075265", "Daft Punk")], "155102851176075264", null, 224693, null, false, 1, 4);
 var hits = MusicAudio.ParseSearch("""
     {"entries":[
