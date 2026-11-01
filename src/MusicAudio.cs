@@ -23,7 +23,7 @@ public sealed record YouTubeHit(string Id, string Title, string Channel, double?
 // Finds where a song can play from right now, best first: this server's own copy, the catalog's FLAC, then YouTube.
 // A source that is down is skipped at once, and the whole search stays well inside the minute players and proxies
 // wait for an answer.
-public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache songs, YtDlp tools, ILogger<MusicAudio> logger)
+public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache songs, YtDlp tools, MonochromeHealth health, ILogger<MusicAudio> logger)
 {
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(40);
     // A healthy catalog answers in well under this; past it, YouTube starts looking in parallel.
@@ -33,8 +33,9 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
     private static readonly MemoryCache Failures = new(new MemoryCacheOptions { SizeLimit = 20000 });
     // Players ask for one song several times at once; they share a single YouTube lookup.
     private static readonly ConcurrentDictionary<string, Task<AudioTicket?>> Searching = new();
-    private readonly CatalogBreaker monochrome = new();
-    private readonly CatalogBreaker youtube = new();
+    private readonly CatalogBreaker youtube = new() { Name = "YouTube", Logger = logger };
+
+    public SourceStatus YouTubeStatus(DateTime now) => youtube.Status(now);
 
     public static bool AllowLossy => Plugin.Instance?.Configuration.MusicAllowLossy != false;
     public static string ContentType(string container) => container == "m4a" ? "audio/mp4" : "audio/flac";
@@ -84,7 +85,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         var lossy = AllowLossy && YtDlp.Wanted && Searchable(track) && !HasFailed(track.Id, "youtube") && only is null or "youtube";
         if (lossy && !YtDlp.Ready) tools.Kick();
         lossy = lossy && YtDlp.Ready && youtube.Allow(DateTime.UtcNow);
-        var useCatalog = only is null or "monochrome" && !(lossy && (catalog.Down || HasFailed(track.Id, "monochrome")));
+        var useCatalog = UseCatalog(only, lossy, health.Usable, HasFailed(track.Id, "monochrome"));
         Task<AudioTicket?>? flac = useCatalog ? MonochromeAsync(track, lossy, budget.Token) : null;
         using var stopYouTube = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
         Task<AudioTicket?>? backup = null;
@@ -112,6 +113,10 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
             : "This song cannot be played right now: the music catalog is not answering and YouTube is still being set up.");
     }
 
+    // Whether to ask Monochrome for a song. With YouTube to fall back on, a Monochrome that is not healthy is skipped
+    // at once, with no head start to wait out.
+    public static bool UseCatalog(string? only, bool lossy, bool usable, bool failed) => only is null or "monochrome" && !(lossy && (!usable || failed));
+
     // A song kept lossy from an outage, fetched again as the catalog's FLAC when the catalog has it and answers
     // quickly. True once that download is under way; the lossy copy plays until it is done.
     public async Task<bool> UpgradeAsync(MusicTrack track, CancellationToken ct)
@@ -130,6 +135,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         var lifetime = ticket.Expires is { } expires ? expires - DateTimeOffset.UtcNow - TimeSpan.FromMinutes(10) : TimeSpan.FromMinutes(10);
         if (lifetime > TimeSpan.Zero)
             Tickets.Set(ticket.TrackId, ticket, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = lifetime });
+        if (ticket.Source == "monochrome") health.LastTrack = ticket.Upstream;
         logger.LogInformation("StreamFin music: {Track} plays from {Source} ({Container})", ticket.TrackId, ticket.Source, ticket.Container);
         return ticket;
     }
@@ -148,23 +154,24 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         var upstream = MusicCatalog.StreamUri(id);
         var ticket = new AudioTicket(track.Id, "monochrome", upstream, "flac");
         if (!fallback) return ticket;
-        if (!monochrome.Allow(DateTime.UtcNow)) return null;
+        if (!health.Breaker.Allow(DateTime.UtcNow)) return null;
         var left = patience - (DateTime.UtcNow - started);
         if (left < TimeSpan.FromSeconds(1)) return null;
+        var asked = DateTime.UtcNow;
         try
         {
             using var response = await http.MediaAsync(upstream, left, ct, "bytes=0-0");
             if (response.StatusCode is HttpStatusCode.PartialContent or HttpStatusCode.OK)
             {
-                monochrome.Success();
+                health.Breaker.Success(DateTime.UtcNow, DateTime.UtcNow - asked, MonochromeProbe.AudioSlow);
                 return ticket;
             }
-            if ((int)response.StatusCode >= 500) monochrome.Failure(DateTime.UtcNow);
+            if ((int)response.StatusCode >= 500) health.Breaker.Failure(DateTime.UtcNow, "audio HTTP " + (int)response.StatusCode);
             return null;
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or ProviderException or OperationCanceledException)
         {
-            if (limit is null && (CatalogBreaker.IsOutage(ex, ct) || ex is OperationCanceledException)) monochrome.Failure(DateTime.UtcNow);
+            if (limit is null && (CatalogBreaker.IsOutage(ex, ct) || ex is OperationCanceledException)) health.Breaker.Failure(DateTime.UtcNow, "audio " + CatalogBreaker.Cause(ex));
             return null;
         }
     }
@@ -211,14 +218,14 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
                 if (Known(track.Id) is { Lossless: true }) return null;
                 var kept = await songs.KeepAsync(track.Id, "m4a", (part, token) => tools.RunAsync(YtDlp.DownloadArguments(deno, video, Path.GetFileName(part)), Fetching(track), token,
                     Path.GetDirectoryName(part)), ct);
-                youtube.Success();
+                youtube.Success(DateTime.UtcNow);
                 return new AudioTicket(track.Id, "youtube", Placeholder(track.Id), "m4a", track.DurationMs is > 0 ? (int)Math.Round(kept * 8.0 / track.DurationMs.Value) : 128, kept);
             }
             var output = await tools.RunAsync(YtDlp.AudioArguments(deno, video), TimeSpan.FromSeconds(25), ct);
             var url = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
             if (url is null || !Uri.TryCreate(url, UriKind.Absolute, out var upstream) || !IsAudioAddress(upstream))
                 throw new ProviderException("YouTube gave an unexpected audio address.");
-            youtube.Success();
+            youtube.Success(DateTime.UtcNow);
             var query = Query(upstream);
             long? size = long.TryParse(query.GetValueOrDefault("clen"), NumberStyles.None, CultureInfo.InvariantCulture, out var clen) && clen is > 0 and <= MusicCache.SongLimit ? clen : null;
             double? seconds = double.TryParse(query.GetValueOrDefault("dur"), NumberStyles.Float, CultureInfo.InvariantCulture, out var dur) && dur > 0 ? dur : null;
@@ -230,7 +237,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         // against YouTube: being busy or slow says nothing about whether it works.
         catch (Exception ex)
         {
-            if (ex is ToolFailedException) youtube.Failure(DateTime.UtcNow);
+            if (ex is ToolFailedException) youtube.Failure(DateTime.UtcNow, "yt-dlp failed");
             logger.LogInformation("StreamFin music: YouTube has no copy of {Track} ({Reason})", track.Id, ex is ProviderException ? ex.Message : ex.GetType().Name);
             return null;
         }

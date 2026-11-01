@@ -593,20 +593,70 @@ try
 }
 finally { if (Directory.Exists(musicStoreRoot)) Directory.Delete(musicStoreRoot, true); }
 
-var breaker = new CatalogBreaker(3, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(20));
 var clock = new DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc);
+var breaker = new CatalogBreaker(3, TimeSpan.FromSeconds(30));
 breaker.Failure(clock);
 breaker.Failure(clock.AddSeconds(1));
-Check(!breaker.IsOpen(clock.AddSeconds(1)) && breaker.Allow(clock.AddSeconds(1)), "two catalog failures do not count it as down");
-Check(breaker.Failure(clock.AddSeconds(2)) && breaker.IsOpen(clock.AddSeconds(3)) && !breaker.Allow(clock.AddSeconds(3)), "the third failure in a row counts the catalog as down");
-Check(breaker.Allow(clock.AddSeconds(23)) && !breaker.Allow(clock.AddSeconds(24)), "while down, one request per period checks whether it is back");
-Check(!breaker.Failure(clock.AddSeconds(25)) && !breaker.Allow(clock.AddSeconds(30)), "a failed check keeps it down without logging the outage again");
-Check(breaker.Success() && !breaker.IsOpen(clock.AddSeconds(31)) && breaker.Allow(clock.AddSeconds(31)), "one answer brings the catalog back");
-var spread = new CatalogBreaker(3, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(20));
+Check(breaker.Usable(clock.AddSeconds(1)) && breaker.Allow(clock.AddSeconds(1)), "two catalog failures do not count it as down");
+Check(breaker.Failure(clock.AddSeconds(2)) && !breaker.Usable(clock.AddSeconds(3)) && !breaker.Allow(clock.AddSeconds(3)), "the third failure in a row counts the catalog as down");
+Check(breaker.Status(clock.AddSeconds(3)) is { State: SourceHealth.Down, LastError: "no answer" } downStatus && downStatus.NextCheck == clock.AddSeconds(32), "the first pause is 30 s");
+Check(breaker.Allow(clock.AddSeconds(32)) && !breaker.Allow(clock.AddSeconds(33)), "while down, one request per pause checks whether it is back");
+Check(!breaker.Failure(clock.AddSeconds(34)) && breaker.Status(clock.AddSeconds(34)).NextCheck == clock.AddSeconds(94), "a failed check keeps it down and doubles the pause");
+Check(breaker.Success(clock.AddSeconds(95)) && breaker.Status(clock.AddSeconds(95)).State == SourceHealth.Recovering && breaker.Usable(clock.AddSeconds(95)),
+    "an answer starts recovery, and an unprobed source lets requests through meanwhile");
+Check(!breaker.Success(clock.AddSeconds(96)) && breaker.Success(clock.AddSeconds(97)) && breaker.Status(clock.AddSeconds(97)).State == SourceHealth.Healthy,
+    "three answers in a row make it healthy again");
+var spread = new CatalogBreaker(3, TimeSpan.FromSeconds(30));
 spread.Failure(clock);
 spread.Failure(clock.AddSeconds(10));
 spread.Failure(clock.AddSeconds(45));
-Check(!spread.IsOpen(clock.AddSeconds(46)), "failures spread over minutes do not count the catalog as down");
+Check(spread.Usable(clock.AddSeconds(46)), "failures spread over minutes do not count the catalog as down");
+var sluggish = new CatalogBreaker();
+for (var i = 0; i < 3; i++) sluggish.Success(clock.AddSeconds(i), TimeSpan.FromSeconds(20));
+Check(sluggish.Status(clock.AddSeconds(3)) is { State: SourceHealth.Down, LastError: "answered after 20 s" }, "answers slower than 8 s count as failures");
+var heads = new CatalogBreaker();
+for (var i = 0; i < 3; i++) heads.Success(clock.AddSeconds(i), TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(5));
+var calls = new CatalogBreaker();
+for (var i = 0; i < 3; i++) calls.Success(clock.AddSeconds(i), TimeSpan.FromSeconds(6));
+Check(!heads.Usable(clock.AddSeconds(3)) && calls.Usable(clock.AddSeconds(3)), "an audio head is held to 5 s, a catalog call to 8 s");
+var probed = new CatalogBreaker(probed: true);
+for (var i = 0; i < 3; i++) probed.Failure(clock.AddSeconds(i));
+var pauses = new List<int>();
+var at = clock.AddSeconds(2);
+for (var i = 0; i < 7; i++)
+{
+    var next = probed.Status(at).NextCheck!.Value;
+    pauses.Add((int)(next - at).TotalSeconds);
+    at = next;
+    if (i < 6) probed.Checked(at, "HTTP 522");
+}
+Check(pauses.SequenceEqual(new[] { 30, 60, 120, 300, 600, 900, 900 }), "the pause between checks grows from 30 s to 15 min");
+Check(!probed.Allow(at.AddHours(1)) && !probed.Due(at.AddHours(1)), "user requests never check a probed source");
+Check(!probed.Success(at) && !probed.Failure(at) && probed.Status(at).State == SourceHealth.Down, "only the prober's checks move a probed source that is down");
+Check(probed.Checked(at, null) && !probed.Usable(at) && !probed.Allow(at) && probed.Status(at).NextCheck == at.AddSeconds(20),
+    "a good check starts recovery, and users still wait for two more 20 s apart");
+Check(!probed.Checked(at.AddSeconds(20), null) && probed.Checked(at.AddSeconds(40), "HTTP 522") && probed.Status(at.AddSeconds(40)).NextCheck == at.AddSeconds(40 + 900),
+    "a failure while recovering goes back down at the next pause");
+probed.Checked(at.AddSeconds(940), null);
+probed.Checked(at.AddSeconds(960), null);
+Check(probed.Checked(at.AddSeconds(980), null) && probed.Usable(at.AddSeconds(980)) && probed.Allow(at.AddSeconds(980)), "three good checks make a probed source healthy");
+var back = at.AddSeconds(980);
+for (var i = 0; i < 3; i++) probed.Failure(back.AddMinutes(5).AddSeconds(i));
+Check(probed.Status(back.AddMinutes(6)).NextCheck == back.AddMinutes(5).AddSeconds(2 + 900), "going down again soon after keeps the long pause");
+var settled = new CatalogBreaker(probed: true);
+for (var i = 0; i < 3; i++) settled.Failure(clock.AddSeconds(i));
+settled.Checked(clock.AddSeconds(32), "HTTP 522");
+foreach (var second in new[] { 92, 112, 132 }) settled.Checked(clock.AddSeconds(second), null);
+for (var i = 0; i < 3; i++) settled.Failure(clock.AddSeconds(132).AddMinutes(31).AddSeconds(i));
+Check(settled.Status(clock.AddHours(1)).NextCheck == clock.AddSeconds(132 + 2 + 30).AddMinutes(31), "after 30 healthy minutes an outage starts over at 30 s");
+Check(MusicAudio.UseCatalog(null, true, true, false) && !MusicAudio.UseCatalog(null, true, false, false) && MusicAudio.UseCatalog(null, false, false, false)
+    && MusicAudio.UseCatalog("monochrome", false, false, false) && !MusicAudio.UseCatalog("youtube", true, true, false),
+    "with YouTube ready, a Monochrome that is not healthy is skipped at once");
+Check(await MonochromeProbe.CheckAsync(_ => Task.CompletedTask, _ => Task.FromResult(HttpStatusCode.PartialContent), default) is null
+    && await MonochromeProbe.CheckAsync(_ => throw new SourceStatusException(522), null, default) == "HTTP 522"
+    && await MonochromeProbe.CheckAsync(_ => Task.CompletedTask, _ => Task.FromResult((HttpStatusCode)502), default) == "audio HTTP 502"
+    && await MonochromeProbe.CheckAsync(_ => Task.CompletedTask, _ => Task.FromResult(HttpStatusCode.NotFound), default) == "gone"
+    && await MonochromeProbe.CheckAsync(_ => throw new RateLimitedException("x", null), null, default) is null, "a check reports what went wrong, and a 429 is not an outage");
 Check(CatalogBreaker.IsOutage(new SourceStatusException(522), default) && CatalogBreaker.IsOutage(new HttpRequestException(), default)
     && CatalogBreaker.IsOutage(new TaskCanceledException(), default) && !CatalogBreaker.IsOutage(new SourceStatusException(404), default)
     && !CatalogBreaker.IsOutage(new RateLimitedException("x", null), default), "timeouts, lost connections and 5xx are outages; 404 and 429 are not");

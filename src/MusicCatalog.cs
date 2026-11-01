@@ -16,7 +16,7 @@ public sealed record MusicResults(IReadOnlyList<MusicTrack> Tracks, IReadOnlyLis
 
 // Lossless catalog: Monochrome's tracks API. Search and release JSON, and GET /track/<id> answers
 // with the FLAC itself (16/44.1, some masters 24 bit; byte ranges, immutable), so a stream needs no resolving step.
-public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null, ILogger<MusicCatalog>? logger = null) : IDisposable
+public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null, ILogger<MusicCatalog>? logger = null, MonochromeHealth? health = null) : IDisposable
 {
     public const string DefaultApi = "https://tracks.monochrome.st/";
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 8000 });
@@ -24,8 +24,8 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
     // scrobble of a song from a search then needs no lookup of its whole album.
     private readonly MemoryCache tracks = new(new MemoryCacheOptions { SizeLimit = 20_000 });
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<object>> loading = new();
-    private readonly Origin mono = new("music catalog", 20, TimeSpan.FromSeconds(10));
-    private readonly Origin deezer = new("Deezer catalog", 40, TimeSpan.FromSeconds(5));
+    private readonly Origin mono = new(20, TimeSpan.FromSeconds(10), (health ?? new MonochromeHealth(probed: false)).Breaker);
+    private readonly Origin deezer = new(40, TimeSpan.FromSeconds(5), new CatalogBreaker { Name = "Deezer catalog", Logger = logger });
     // Refreshes of stored copies run behind the answer; two at most, and only while foreground calls have room.
     private readonly SemaphoreSlim refreshes = new(2, 2);
     // On a bad day the catalog answers after 20-30 s and Cloudflare gives up at about 40 s with a 522. A call may
@@ -124,8 +124,9 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
     private bool HasSearch(string text) => Known("search/" + text.Trim().ToLowerInvariant());
     private bool Known(string key) => cache.TryGetValue($"{Revision}/{key}", out _) || cache.TryGetValue(Stale(key), out _);
     private string Stale(string key) => $"stale/{Revision}/{ApiHost}/{key}";
-    // Counted as down after a few failures in a row; lookups then use stored copies or fail at once.
+    // Not healthy: down, or not yet answering quickly for long enough. Lookups then use stored copies or fail at once.
     public bool Down => mono.Down;
+    public SourceStatus DeezerStatus(DateTime now) => deezer.Breaker.Status(now);
     // Whether lookups of this ID would wait on a catalog counted as down.
     // No ID means a search, which Deezer answers while the catalog is down.
     public bool DownFor(string? id) => id is null ? mono.Down && (!Fallback || deezer.Down) : Deezer.IsId(id) ? deezer.Down : mono.Down;
@@ -319,16 +320,21 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
 
     // One place answers come from, with its own call budget, outage breaker and limit on calls in flight (the
     // budget limits how often calls start; with 20 s answers that alone would let them pile up).
-    private sealed class Origin(string name, int budget, TimeSpan period) : IDisposable
+    private sealed class Origin(int budget, TimeSpan period, CatalogBreaker breaker) : IDisposable
     {
-        public string Name { get; } = name;
         public RateWindow Window { get; } = new(budget, period);
-        public CatalogBreaker Breaker { get; } = new();
+        public CatalogBreaker Breaker { get; } = breaker;
         public SemaphoreSlim Flight { get; } = new(6, 6);
-        public bool Down => Breaker.IsOpen(DateTime.UtcNow);
+        public bool Down => !Breaker.Usable(DateTime.UtcNow);
         public bool Spare => Window.Free(DateTime.UtcNow) > budget / 2;
         public void Dispose() => Flight.Dispose();
     }
+
+    // The prober's check takes one call from the same budget as everything else, and is skipped while it is spent.
+    public bool ProbeBudget() => mono.Window.Reserve(DateTime.UtcNow, TimeSpan.Zero) is not null;
+
+    public Task ProbeAsync(CancellationToken ct) => http.TextAsync(new Uri(Api ?? throw new ProviderException("The music API address is invalid."),
+        "search/artists?q=daft%20punk&limit=1"), ct, limit: MonochromeProbe.ApiSlow + TimeSpan.FromSeconds(2));
 
     private Task<string> QueryAsync(Origin origin, string path)
         => QueryAsync(origin, new Uri(Api ?? throw new ProviderException("The music API address is invalid. Check it under Dashboard → Plugins → StreamFin."), path));
@@ -353,11 +359,12 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
             origin.Flight.Release();
             throw new CatalogDownException();
         }
+        var started = DateTime.UtcNow;
         try
         {
             var text = await http.TextAsync(uri, CancellationToken.None, limit: CallLimit);
             if (origin == deezer) Deezer.Check(text);
-            if (origin.Breaker.Success()) logger?.LogInformation("StreamFin {Origin} answers again", origin.Name);
+            origin.Breaker.Success(DateTime.UtcNow, DateTime.UtcNow - started);
             return text;
         }
         catch (RateLimitedException)
@@ -368,9 +375,7 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
         catch (SourceStatusException ex) when (ex.Status is 404 or 410) { throw new ProviderException("The music catalog no longer has this."); }
         catch (Exception ex) when (CatalogBreaker.IsOutage(ex, CancellationToken.None))
         {
-            if (origin.Breaker.Failure(DateTime.UtcNow))
-                logger?.LogWarning("StreamFin {Origin} is not responding ({Cause}); serving stored copies until it is back", origin.Name,
-                    ex is SourceStatusException status ? "HTTP " + status.Status : ex.GetType().Name);
+            origin.Breaker.Failure(DateTime.UtcNow, CatalogBreaker.Cause(ex));
             throw new CatalogDownException();
         }
         finally { origin.Flight.Release(); }
