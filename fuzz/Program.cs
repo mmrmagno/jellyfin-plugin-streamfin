@@ -412,6 +412,15 @@ static class Targets
                 if (MusicAudio.Best(hits, track) is { } best)
                     Expect(hits.Contains(best) && best.Duration is double d && Math.Abs(d - track.DurationMs!.Value / 1000.0) <= 3, "a chosen YouTube copy has the song's length");
             Expect(MusicAudio.Normalize(json).Length <= json.Length * 4 + 8, "normalised names stay bounded");
+            var line = json.Length > 300 ? json[..300] : json;
+            string? proxy = null;
+            try { proxy = StreamFin.YtDlp.Proxy(line); }
+            catch (ProviderException) { }
+            if (proxy is not null)
+                Expect(!proxy.Any(char.IsWhiteSpace) && !proxy.StartsWith('-') && !proxy.Contains('?') && !proxy.Contains('#')
+                    && (!proxy.Contains('@') || StreamFin.YtDlp.Redact(proxy).Contains("://***@", StringComparison.Ordinal)),
+                    "an accepted YouTube proxy is one plain address, and its password is redacted");
+            Expect(StreamFin.YtDlp.Redact("x http://user:secret@host:1 " + line).StartsWith("x http://***@host:1 ", StringComparison.Ordinal), "a proxy password never survives redaction");
         });
     }
 

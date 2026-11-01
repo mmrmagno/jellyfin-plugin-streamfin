@@ -33,6 +33,7 @@ public sealed class Configuration : BasePluginConfiguration
     // Empty means the copies the plugin keeps in its own data folder.
     public string YtDlpPath { get; set; } = "";
     public string DenoPath { get; set; } = "";
+    public string YouTubeProxy { get; set; } = "";
     // Starred albums are saved here as FLAC files for a normal music library; empty turns it off.
     public string MusicLibraryFolder { get; set; } = "";
     // Optional: Last.fm's similar artists when ListenBrainz has none.

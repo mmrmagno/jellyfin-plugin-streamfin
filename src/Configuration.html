@@ -35,6 +35,8 @@
         <div class="fieldDescription">Use your own yt-dlp instead of the downloaded one. Leave empty to let StreamFin manage it.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="denoPath">deno path (optional)</label><input is="emby-input" type="text" id="denoPath" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Use your own deno instead of the downloaded one. Leave empty to let StreamFin manage it.</div></div>
+      <div class="inputContainer"><label class="inputLabel" for="youTubeProxy">YouTube proxy (optional)</label><input is="emby-input" type="password" id="youTubeProxy" autocomplete="off" spellcheck="false" placeholder="http://user:password@vpn:8888">
+        <div class="fieldDescription">YouTube refuses many data centre addresses ("Sign in to confirm you're not a bot"). Every YouTube search and download then goes through this proxy instead, for example a VPN container next to Jellyfin: http or socks5, with a host and port. Nothing else StreamFin fetches uses it. Needs the song cache.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="lastFmKey">Last.fm API key (optional)</label><input is="emby-input" type="password" id="lastFmKey" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Radio mixes an artist with similar ones, as ListenBrainz knows them. For artists ListenBrainz has no data on, a free key from last.fm/api is used as well.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="musicFolder">Music library folder</label><input is="emby-input" type="text" id="musicFolder" autocomplete="off" spellcheck="false" placeholder="/media/music/StreamFin">
@@ -118,6 +120,7 @@
             page.querySelector('#musicDeezer').checked = config.MusicDeezer !== false;
             page.querySelector('#ytDlpPath').value = config.YtDlpPath || '';
             page.querySelector('#denoPath').value = config.DenoPath || '';
+            page.querySelector('#youTubeProxy').value = config.YouTubeProxy || '';
             page.querySelector('#musicFolder').value = config.MusicLibraryFolder || '';
             page.querySelector('#lastFmKey').value = config.LastFmApiKey || '';
             page.querySelector('#subsonicEnabled').checked = config.SubsonicEnabled === true;
@@ -170,6 +173,7 @@
             config.MusicDeezer = page.querySelector('#musicDeezer').checked;
             config.YtDlpPath = page.querySelector('#ytDlpPath').value.trim();
             config.DenoPath = page.querySelector('#denoPath').value.trim();
+            config.YouTubeProxy = page.querySelector('#youTubeProxy').value.trim();
             config.MusicLibraryFolder = page.querySelector('#musicFolder').value.trim();
             config.LastFmApiKey = page.querySelector('#lastFmKey').value.trim();
             config.AllowedUserIds = Array.from(page.querySelectorAll('#streamfinUsers input:checked'), input => input.value);

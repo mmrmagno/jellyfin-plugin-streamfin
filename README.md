@@ -62,7 +62,10 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   so. Untick **Allow lossy sources** to only ever play FLAC. A song kept from YouTube changes to
   the FLAC once the catalog is back: the next time it plays, or in the background for starred
   songs, songs in playlists and songs played more than once (Scheduled Tasks, **Upgrade kept
-  songs to FLAC**, hourly, a few songs at a time).
+  songs to FLAC**, hourly, a few songs at a time). YouTube refuses many data centre addresses
+  ("Sign in to confirm you're not a bot"). If your server's is one, set **YouTube proxy** to an
+  http or socks5 proxy with another address, such as a VPN container next to Jellyfin
+  (`http://user:password@vpn:8888`). Only YouTube goes through it.
 - **Radio**: **Instant Mix** on an artist, album or song (and the **Radio** folder in channel
   views that show folders) mixes the artist's top tracks with those of similar artists, as [ListenBrainz](https://listenbrainz.org) listeners play them
   (the artist is found on [MusicBrainz](https://musicbrainz.org) by the ISRC of one of its
@@ -173,14 +176,19 @@ asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) for the song instead. yt-dlp nee
 official GitHub releases into its own data folder. It checks each file against the SHA-256
 published in the same release and never runs a file that does not match. A scheduled task,
 **Update YouTube tools**, updates them daily. If you would rather install them yourself, set
-their paths in the settings. The audio address yt-dlp returns goes through the relay like any
-other.
+their paths in the settings. yt-dlp downloads the song itself into the song cache, and it plays
+from there. Behind a proxy, the audio address YouTube hands out only works inside the yt-dlp run
+that asked for it, so nothing else could fetch it. A new song from YouTube takes 15 to 20
+seconds to start; after that it plays from disk. yt-dlp comes as its unpacked build, which
+starts twice as fast as the single file. The zip is checked before it is unpacked, and every
+file in it has to stay inside its folder.
 
 The relay is not a general proxy. It only accepts its own tickets, only from loopback, and
 every outgoing request has to land on a public address. Nothing from the sites is ever run,
 with one exception: when the YouTube fallback is on, yt-dlp runs YouTube's player code in
 deno to find the audio address. yt-dlp makes its own requests to YouTube, so those skip the
-plugin's address checks. The checksums come from the same GitHub release as the files, so they
+plugin's address checks. With a YouTube proxy set, every yt-dlp request goes through it, and its
+password never appears in a log or message. The checksums come from the same GitHub release as the files, so they
 catch a broken or swapped download, but they do not prove who built it. Turning the fallback on
 means running each new yt-dlp and deno release as the Jellyfin user, a day after it comes out at
 most. The downloads are the glibc builds, which suit the official Jellyfin image; on Alpine, set

@@ -44,6 +44,7 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
     private long Limit => fixedRoot is null ? Capacity : 64L * 1024 * 1024;
 
     public static readonly string[] Containers = ["flac", "m4a"];
+    private const string Incoming = "incoming";
     private static bool Keepable(AudioTicket ticket) => MusicCatalog.IsId(ticket.TrackId) && Containers.Contains(ticket.Container)
         && (ticket.Lossless ? MusicCatalog.IsStream(ticket.Upstream) : MusicAudio.IsAudioAddress(ticket.Upstream));
 
@@ -68,6 +69,13 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
         {
             Scan(root);
             Entries.TryGetValue(id, out var known);
+            // A YouTube copy still being fetched gives way when the catalog's FLAC turns up after all.
+            if (known is { Complete: false, Container: not "flac", Replaces: null } && ticket.Lossless)
+            {
+                known.Stop?.Cancel();
+                Entries.TryRemove(new KeyValuePair<string, Entry>(id, known));
+                known = null;
+            }
             // A song kept lossy from an outage is fetched again once the catalog's FLAC is on offer.
             var upgrade = known is { Complete: true, Container: not "flac" } && ticket.Lossless;
             if (known is not null && !upgrade)
@@ -93,6 +101,65 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                 Stop = new CancellationTokenSource(TimeSpan.FromMinutes(15)), Replaces = upgrade ? known : null };
             Entries[id] = entry;
             _ = Task.Run(() => DownloadAsync(id, upstream, entry));
+        }
+    }
+
+    // Whether songs can be kept here at all.
+    public bool Keeps => Limit > 0 && Root is not null;
+
+    // A whole song fetched by another program straight into the cache (yt-dlp, whose YouTube addresses only work
+    // inside its own run). It is checked like any download, then kept and served from disk. Returns its size.
+    public async Task<long> KeepAsync(string id, string container, Func<string, CancellationToken, Task> fetch, CancellationToken ct)
+    {
+        if (Limit == 0 || Root is not { } root || !MusicCatalog.IsId(id) || !Containers.Contains(container)) throw new ProviderException("Songs are not kept on this server.");
+        Entry entry;
+        lock (Gate)
+        {
+            Scan(root);
+            if (Entries.TryGetValue(id, out var known))
+            {
+                if (!known.Complete) throw new ProviderException("This song is already being fetched.");
+                if (known.Container != container) throw new ProviderException("This song is already kept in another format.");
+                known.Used = DateTime.UtcNow;
+                return known.Size;
+            }
+            entry = new Entry { Path = System.IO.Path.Combine(root, id + "." + container), Container = container, Used = DateTime.UtcNow,
+                Stop = CancellationTokenSource.CreateLinkedTokenSource(ct) };
+            Entries[id] = entry;
+        }
+        // yt-dlp treats a name ending in ".part" as its own and drops it, so it writes under the final name into a
+        // folder of its own, which is emptied at startup.
+        var part = System.IO.Path.Combine(root, Incoming, id + "." + container);
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(part)!);
+            Delete(part);
+            await fetch(part, entry.Stop!.Token);
+            var info = new FileInfo(part);
+            if (!info.Exists || info.Length is <= 8 or > SongLimit) throw new ProviderException("YouTube sent no usable audio for this song.");
+            var magic = new byte[8];
+            await using (var check = new FileStream(part, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                if (await check.ReadAtLeastAsync(magic, 8, throwOnEndOfStream: false, ct) != 8 || !Looks(magic, container))
+                    throw new ProviderException("YouTube sent no usable audio for this song.");
+            File.Move(part, entry.Path, overwrite: true);
+            Volatile.Write(ref entry.Size, info.Length);
+            Volatile.Write(ref entry.Written, info.Length);
+            entry.Complete = true;
+            Trim();
+            return info.Length;
+        }
+        finally
+        {
+            if (!entry.Complete)
+            {
+                Entries.TryRemove(new KeyValuePair<string, Entry>(id, entry));
+                Delete(part);
+            }
+            lock (Gate)
+            {
+                entry.Stop?.Dispose();
+                entry.Stop = null;
+            }
         }
     }
 
@@ -370,6 +437,8 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                 }
                 else if (name.EndsWith(".part", StringComparison.Ordinal)) Delete(path);
             }
+            var incoming = System.IO.Path.Combine(root, Incoming);
+            if (Directory.Exists(incoming)) foreach (var path in Directory.EnumerateFiles(incoming)) Delete(path);
             Trim();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logger.LogWarning("StreamFin music cache could not be read ({ErrorType})", ex.GetType().Name); }

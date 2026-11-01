@@ -59,9 +59,19 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
     {
         if (only is null or "disk" && songs.Kept(track.Id) is { } container && (container == "flac" || AllowLossy))
         {
-            // A lossy copy kept from an outage gives way to the FLAC as soon as the catalog answers quickly again.
-            if (container != "flac" && only is null && !catalog.Down
-                && await MonochromeAsync(track, true, ct, TimeSpan.FromSeconds(5)) is { } better) return Remember(better);
+            // A lossy copy kept from an outage plays at once, and is replaced by the FLAC in the background once the
+            // catalog sends it. A catalog that hangs without being marked down is asked once per song in 10 minutes,
+            // so no play or seek waits on it.
+            if (container != "flac" && only is null && !catalog.Down && !HasFailed(track.Id, "upgrade"))
+            {
+                Failures.Set(track.Id + ":upgrade", true, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10) });
+                _ = Task.Run(async () =>
+                {
+                    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    try { await UpgradeAsync(track, limit.Token); }
+                    catch (Exception ex) when (ex is ProviderException or HttpRequestException or IOException or OperationCanceledException) { }
+                }, CancellationToken.None);
+            }
             return new AudioTicket(track.Id, "disk", container == "flac" && catalog.KnownTwin(track.Id) is { } twin ? MusicCatalog.StreamUri(twin) : Placeholder(track.Id), container);
         }
         // A copy on disk that was since evicted may come from any source, as long as the format stays the same.
@@ -82,6 +92,10 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         {
             await Task.WhenAny(flac, Task.Delay(Head, budget.Token).ContinueWith(_ => { }, TaskScheduler.Default));
             if (!flac.IsCompleted && lossy) backup = YouTubeAsync(track, stopYouTube.Token);
+            // Whichever answers first plays, so a catalog that hangs costs nothing once YouTube has the song; the
+            // FLAC still wins whenever it is there.
+            if (backup is not null && await Task.WhenAny(flac, backup) == backup && !flac.IsCompleted && await backup is { } early)
+                return Remember(early);
             if (await flac is { } ticket)
             {
                 stopYouTube.Cancel();
@@ -162,7 +176,7 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         // The shared lookup runs on its own clock, so one player hanging up does not cancel it for the others.
         var search = Searching.GetOrAdd(track.Id, id => Task.Run(async () =>
         {
-            using var own = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+            using var own = new CancellationTokenSource(TimeSpan.FromSeconds(40) + Fetching(track));
             try { return await FindAsync(track, own.Token); }
             finally { Searching.TryRemove(id, out _); }
         }));
@@ -170,11 +184,15 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         catch (OperationCanceledException) { return null; }
     }
 
+    // A whole song through a VPN: about a second a minute of audio, with room for a slow day.
+    private static TimeSpan Fetching(MusicTrack track) => TimeSpan.FromSeconds(Math.Clamp(30 + (track.DurationMs ?? 0) / 1000 / 4, 30, 150));
+
     private async Task<AudioTicket?> FindAsync(MusicTrack track, CancellationToken ct)
     {
         if (YtDlp.DenoFile is not { } deno) return null;
         try
         {
+            if (!songs.Keeps && YtDlp.ProxySetting is not null) throw new ProviderException("The YouTube proxy needs the song cache, which is turned off in the StreamFin settings.");
             if (!Matches.TryGetValue<string>(track.Id, out var video))
             {
                 var json = await tools.RunAsync(YtDlp.SearchArguments(deno, $"{track.Artists[0].Name} - {track.Title}"), TimeSpan.FromSeconds(20), ct);
@@ -185,6 +203,17 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
                 Matches.Set(track.Id, video, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = best is null ? TimeSpan.FromMinutes(30) : TimeSpan.FromDays(1) });
             }
             if (video is not { Length: > 0 }) return null;
+            // yt-dlp keeps the song itself and it plays from disk: behind a proxy, the address it would hand over only
+            // works inside its own run. Without a song cache the address is played directly, as before.
+            if (songs.Keeps)
+            {
+                // The catalog's FLAC may have answered while YouTube was searched; then the song is not fetched twice.
+                if (Known(track.Id) is { Lossless: true }) return null;
+                var kept = await songs.KeepAsync(track.Id, "m4a", (part, token) => tools.RunAsync(YtDlp.DownloadArguments(deno, video, Path.GetFileName(part)), Fetching(track), token,
+                    Path.GetDirectoryName(part)), ct);
+                youtube.Success();
+                return new AudioTicket(track.Id, "youtube", Placeholder(track.Id), "m4a", track.DurationMs is > 0 ? (int)Math.Round(kept * 8.0 / track.DurationMs.Value) : 128, kept);
+            }
             var output = await tools.RunAsync(YtDlp.AudioArguments(deno, video), TimeSpan.FromSeconds(25), ct);
             var url = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
             if (url is null || !Uri.TryCreate(url, UriKind.Absolute, out var upstream) || !IsAudioAddress(upstream))
