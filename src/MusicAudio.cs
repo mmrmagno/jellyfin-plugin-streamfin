@@ -159,6 +159,18 @@ public sealed class MusicAudio(SafeHttp http, MusicCatalog catalog, MusicCache s
         }
     }
 
+    // A favourite fetched as FLAC ahead of time, or its lossy copy replaced, while Monochrome answers quickly. True once
+    // that download is under way.
+    public async Task<bool> PrepareAsync(MusicTrack track, CancellationToken ct)
+    {
+        var kept = songs.Kept(track.Id);
+        if (kept == "m4a") return await UpgradeAsync(track, ct);
+        if (kept is not null || !MonochromeOn || YouTubeFirst || MusicCache.Fetching(track.Id) || HasFailed(track.Id, "monochrome") || catalog.Down) return false;
+        if (await MonochromeAsync(track, true, ct, TimeSpan.FromSeconds(20)) is not { } flac) return false;
+        songs.Warm(flac);
+        return MusicCache.Fetching(track.Id);
+    }
+
     // A song kept lossy from an outage, fetched again as the catalog's FLAC when the catalog has it and answers
     // quickly. True once that download is under way; the lossy copy plays until it is done.
     public async Task<bool> UpgradeAsync(MusicTrack track, CancellationToken ct)

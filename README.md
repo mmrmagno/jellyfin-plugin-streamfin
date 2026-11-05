@@ -61,8 +61,11 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   length and plays it as AAC at about 128 kbps. That is not lossless, and the song's details say
   so. Untick YouTube to only ever play new songs as FLAC. A song kept from YouTube changes to
   the FLAC once the catalog is back: the next time it plays, or in the background for starred
-  songs, songs in playlists and songs played more than once (Scheduled Tasks, **Upgrade kept
-  songs to FLAC**, hourly, a few songs at a time). YouTube refuses many data centre addresses
+  songs, songs in playlists and songs played more than once. Those favourites are also kept in
+  the song cache as FLAC ahead of time, whenever Monochrome answers, up to half the cache
+  (Scheduled Tasks, **Keep favourite songs ready**, hourly and each time Monochrome is back, one
+  song at a time). While a song plays, the next one in the app's play queue or on the album is
+  fetched too, so it starts at once (**Get the next song ready**). YouTube refuses many data centre addresses
   ("Sign in to confirm you're not a bot"). If your server's is one, set **YouTube proxy** to an
   http or socks5 proxy with another address, such as a VPN container next to Jellyfin
   (`http://user:password@vpn:8888`). Only YouTube goes through it.

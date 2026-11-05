@@ -16,7 +16,7 @@ namespace StreamFin;
 // Item IDs: artist/<id>, top/<artist>, radio/<artist>, album/<scope>/<release>, track/<scope>/<release>/<track>.
 // Jellyfin keys channel items by external ID, so the scope (where a listing found the item) keeps
 // an album shared by two artists, or a track both searched and played, from moving between folders.
-public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, MusicRadio radio, MusicLibraryStore store, StreamRelay relay, IHttpContextAccessor contexts,
+public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, MusicPrefetch prefetch, MusicRadio radio, MusicLibraryStore store, StreamRelay relay, IHttpContextAccessor contexts,
     IAuthorizationContext authorization, ILibraryManager library, ILogger<MusicChannel> logger)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
@@ -243,6 +243,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
         // A few seconds for the explicit twin: Jellyfin's player waits on this answer before it starts.
         var recording = MusicCatalog.PreferExplicit ? await catalog.ExplicitAsync(track, ct, TimeSpan.FromSeconds(4)) : track;
         var ticket = await sources.ResolveAsync(recording, ct);
+        prefetch.After(user, track);
         var name = ticket.Lossless ? "FLAC" : $"AAC {ticket.Kbps ?? 128} · YouTube";
         // A refresh after an expired link asks the same source again: the player is partway through its file.
         static ResolvedVideo Video(AudioTicket t) => new(t.Upstream, t.Lossless ? "FLAC" : "AAC", new Dictionary<string, string>(), false, Ticket: t);
