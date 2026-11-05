@@ -28,6 +28,8 @@ public sealed class Configuration : BasePluginConfiguration
     // missing ones go last, so a source added in a later version joins at the end.
     public string[] MusicPlayOrder { get; set; } = ["monochrome", "youtube"];
     public string[] MusicSearchOrder { get; set; } = ["monochrome", "deezer"];
+    // While a song plays, the next one is fetched into the song cache.
+    public bool MusicPrefetch { get; set; } = true;
     // Deezer's public catalog answers searches, albums and artists while the music catalog cannot.
     public bool MusicDeezer { get; set; } = true;
     // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.

@@ -349,6 +349,12 @@ var truncated = Flac("REPLAYGAIN_TRACK_GAIN=-5.83 dB");
 Check(MusicGain.Parse(Flac("TITLE=Song")) is null && MusicGain.Parse(truncated[..^4]) is null && MusicGain.Parse(Flac("REPLAYGAIN_TRACK_GAIN=999 dB")) is null
     && MusicGain.Parse("ID3x"u8) is null, "ReplayGain: untagged, cut short, absurd values and non-FLAC give none");
 byte[] flacHead = [.. "fLaC"u8, 0, 0, 0, 34], mp4Head = [0, 0, 0, 24, .. "ftypdash"u8];
+{
+    var now = DateTime.UtcNow;
+    var favourites = new HashSet<string> { "fav" };
+    var gone = new[] { ("fav", now.AddDays(-30)), ("old", now.AddDays(-2)), ("new", now) }.OrderBy(e => MusicCache.Order(e.Item1, e.Item2, favourites)).Select(e => e.Item1).ToArray();
+    Check(gone.SequenceEqual(["old", "new", "fav"]), "favourites kept ready make room only after every other song");
+}
 Check(MusicCache.Looks(flacHead, "flac") && MusicCache.Looks(mp4Head, "m4a") && !MusicCache.Looks("<html>  "u8, "flac")
     && !MusicCache.Looks("<html>  "u8, "m4a") && !MusicCache.Looks(flacHead, "m4a") && !MusicCache.Looks(flacHead, "exe"), "the song cache keeps only real FLAC or MP4 files");
 var songRoot = Path.Combine(Path.GetTempPath(), "streamfin-songs-" + Guid.NewGuid().ToString("N"));
@@ -658,6 +664,10 @@ Check(Plugin.Ordered(["youtube", "nope", "youtube"], "monochrome", "youtube").Se
     && Plugin.Ordered(null, "monochrome", "youtube").SequenceEqual(new[] { "monochrome", "youtube" }) && Plugin.Ordered(["tidal"], "monochrome").SequenceEqual(new[] { "monochrome" }),
     "a saved source order drops unknown names and duplicates, and missing sources go last");
 Check(new Configuration().MusicPlayOrder.SequenceEqual(new[] { "monochrome", "youtube" }) && new Configuration().MusicSearchOrder[0] == "monochrome", "Monochrome is first by default");
+var albumOrder = new[] { "1", "2", "3" }.Select(n => new MusicTrack("15510285117607526" + n, n, [], "155102851176075264", null, 1000, null, false, 1, int.Parse(n))).ToArray();
+Check(MusicPrefetch.Next(albumOrder, albumOrder[0].Id)?.Title == "2" && MusicPrefetch.Next(albumOrder, albumOrder[2].Id) is null && MusicPrefetch.Next(albumOrder, "x") is null,
+    "the song after one is the next in its list, and the last song has none");
+Check(new Configuration().MusicPrefetch, "the next song is got ready by default");
 Check(new Configuration().MusicMonochrome && new Configuration().MusicDeezer && !new Configuration().MusicYouTube, "Monochrome and Deezer are on by default, YouTube off");
 var starting = new CatalogBreaker(probed: true);
 Check(starting.Checked(clock, "no answer in time") && starting.Status(clock) is { State: SourceHealth.Down } startup && startup.NextCheck == clock.AddSeconds(30),

@@ -22,7 +22,8 @@ public sealed class MonochromeHealth(ILogger<MonochromeHealth>? logger = null, b
 // Checks Monochrome in the background: once at startup, then while it is down or recovering, at the pauses its health
 // asks for. A check is one small catalog call plus one byte of a song that played recently, each held to what a healthy
 // Monochrome manages.
-public sealed class MonochromeProbe(MonochromeHealth health, MusicCatalog catalog, SafeHttp http, ILogger<MonochromeProbe> logger) : BackgroundService
+public sealed class MonochromeProbe(MonochromeHealth health, MusicCatalog catalog, SafeHttp http, MediaBrowser.Model.Tasks.ITaskManager tasks, ILogger<MonochromeProbe> logger)
+    : BackgroundService
 {
     public static readonly TimeSpan ApiSlow = TimeSpan.FromSeconds(8);
     public static readonly TimeSpan AudioSlow = TimeSpan.FromSeconds(5);
@@ -71,7 +72,8 @@ public sealed class MonochromeProbe(MonochromeHealth health, MusicCatalog catalo
                 return response.StatusCode;
             }, ct);
             if (problem == "gone") (health.LastTrack, problem) = (null, null);
-            health.Breaker.Checked(DateTime.UtcNow, problem);
+            // Healthy again: favourites are fetched while it lasts, which on a bad day is only a few minutes.
+            if (health.Breaker.Checked(DateTime.UtcNow, problem) && health.Usable) tasks.QueueScheduledTask<MusicUpgradeTask>();
             return (problem, clock.Elapsed);
         }
         finally { running.Release(); }

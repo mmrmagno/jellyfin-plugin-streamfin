@@ -35,6 +35,8 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
     private static string? scanned;
     // After the catalog says "too many requests", new downloads wait instead of adding to it.
     private static DateTime coolUntil;
+    // Favourites kept ready: they make room only after every other song has.
+    private static IReadOnlySet<string> favoured = new HashSet<string>();
     private readonly string? fixedRoot;
 
     public MusicCache(SafeHttp http, ILogger<MusicCache> logger, string root) : this(http, logger) => fixedRoot = root;
@@ -106,6 +108,12 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
 
     // Whether songs can be kept here at all.
     public bool Keeps => Limit > 0 && Root is not null;
+    public long LimitBytes => Limit;
+
+    public void Favour(IEnumerable<string> trackIds)
+    {
+        lock (Gate) favoured = trackIds.ToHashSet();
+    }
 
     // A whole song fetched by another program straight into the cache (yt-dlp, whose YouTube addresses only work
     // inside its own run). It is checked like any download, then kept and served from disk. Returns its size.
@@ -388,12 +396,14 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
-    // Oldest first, until the songs fit. A song played in the last minute stays, even over the limit.
+    public static (bool, DateTime) Order(string trackId, DateTime used, IReadOnlySet<string> favourites) => (favourites.Contains(trackId), used);
+
+    // Oldest first, favourites last, until the songs fit. A song played in the last minute stays, even over the limit.
     private void Trim()
     {
         lock (Gate)
         {
-            var kept = Entries.Where(e => e.Value.Complete).OrderBy(e => e.Value.Used).ToList();
+            var kept = Entries.Where(e => e.Value.Complete).OrderBy(e => Order(e.Key, e.Value.Used, favoured)).ToList();
             var total = kept.Sum(e => e.Value.Size);
             foreach (var (id, entry) in kept)
             {

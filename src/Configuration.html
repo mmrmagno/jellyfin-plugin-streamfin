@@ -61,7 +61,9 @@
         </li>
       </ol>
       <div class="inputContainer"><label class="inputLabel" for="musicCache">Song cache (MB)</label><input is="emby-input" type="number" id="musicCache" min="0" max="1000000" required>
-        <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. 0 turns it off.</div></div>
+        <div class="fieldDescription">Songs you play are kept on this server, so skipping within a song and playing it again are instant. The least recently played make room when it is full. Starred songs, songs in playlists and songs played more than once are kept ready as FLAC whenever Monochrome answers (up to half the cache), so they play even while it is down. 0 turns it off.</div></div>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicPrefetch"><span>Get the next song ready</span></label>
+      <div class="fieldDescription checkboxFieldDescription">While a song plays, the next one in the app's play queue (or on the album) is fetched into the song cache, so it starts at once. Needs the song cache.</div>
       <div class="inputContainer"><label class="inputLabel" for="ytDlpPath">yt-dlp path (optional)</label><input is="emby-input" type="text" id="ytDlpPath" autocomplete="off" spellcheck="false">
         <div class="fieldDescription">Use your own yt-dlp instead of the downloaded one. Leave empty to let StreamFin manage it.</div></div>
       <div class="inputContainer"><label class="inputLabel" for="denoPath">deno path (optional)</label><input is="emby-input" type="text" id="denoPath" autocomplete="off" spellcheck="false">
@@ -146,6 +148,7 @@
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
             page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
             page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
+            page.querySelector('#musicPrefetch').checked = config.MusicPrefetch !== false;
             page.querySelector('#musicYouTube').checked = config.MusicYouTube === true;
             applyOrder(page.querySelector('#playOrder'), config.MusicPlayOrder);
             applyOrder(page.querySelector('#searchOrder'), config.MusicSearchOrder);
@@ -203,6 +206,7 @@
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
             config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
             config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
+            config.MusicPrefetch = page.querySelector('#musicPrefetch').checked;
             config.MusicYouTube = page.querySelector('#musicYouTube').checked;
             // Switching YouTube off is how to keep to FLAC now; songs already kept from it still play.
             config.MusicAllowLossy = true;

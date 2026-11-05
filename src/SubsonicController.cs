@@ -17,7 +17,7 @@ namespace StreamFin;
 // catalog only describes tracks inside releases.
 [ApiController]
 [Route("StreamFin/rest")]
-public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicAudio sources, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http, MusicCache songs,
+public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, MusicAudio sources, MusicPrefetch prefetch, MusicLibraryStore store, MusicLyrics lyrics, SafeHttp http, MusicCache songs,
     MusicSaver saver, MusicRadio radio, MusicArtCache covers, IMediaEncoder encoder, MediaBrowser.Controller.Drawing.IImageEncoder images,
     ILogger<SubsonicController> logger) : ControllerBase
 {
@@ -1144,6 +1144,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         AudioTicket ticket;
         try { ticket = await sources.ResolveAsync(recording, Ct); }
         catch (ProviderException ex) { throw new SubsonicError(0, ex.Message); }
+        prefetch.After(user.Id, track);
         var upstream = ticket.Upstream;
         var flac = ticket.Lossless;
         var (format, kbps) = download ? (AudioFormat.Raw, 0) : Choose(One("format"), One("maxBitRate"), Plugin.Instance?.Configuration.SubsonicPreferLossless != false);
