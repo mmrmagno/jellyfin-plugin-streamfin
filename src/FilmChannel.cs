@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using System.Globalization;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Entities;
@@ -22,14 +23,14 @@ namespace StreamFin;
 // The scope (listing name) keeps one title from being moved between folders by Jellyfin;
 // the TMDB provider ID lets watch progress follow the title across listings.
 public sealed class FilmChannel(TmdbCatalog catalog, FlixSource flix, StreamRelay relay, IHttpContextAccessor contexts,
-    IAuthorizationContext authorization, ILibraryManager library, ILogger<FilmChannel> logger)
+    IAuthorizationContext authorization, ILibraryManager library, ILogger<FilmChannel> logger, VideoHealth health)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
     public const string ChannelName = "Movies & TV";
     public static bool IsAvailable => Plugin.Instance?.Configuration is { Enabled: true, FilmEnabled: true } && TmdbCatalog.HasKey;
     public string Name => ChannelName;
     public string Description => "StreamFin · Browse movies and TV and stream them online.";
-    public string DataVersion => "streamfin-film-1-" + IsAvailable + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
+    public string DataVersion => "streamfin-film-2-" + IsAvailable + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
     public string HomePageUrl => "https://github.com/mmrmagno/jellyfin-plugin-streamfin";
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
     public bool IsEnabledFor(string userId) => IsAvailable && Guid.TryParse(userId, out var id) && Plugin.Allows(id);
@@ -116,9 +117,10 @@ public sealed class FilmChannel(TmdbCatalog catalog, FlixSource flix, StreamRela
         }
         if (parts is ["list", var category, var pageText] && int.TryParse(pageText, out var page))
         {
-            var data = await catalog.BrowseAsync(category, page, ct);
+            // TMDB hands out 20 titles a call; a folder shows five calls' worth, loaded together.
+            var data = await Pages.LoadAsync(page, 5, 500, number => catalog.BrowseAsync(category, number, ct), d => d.Items, d => d.HasNext, f => (f.Kind, f.Id));
             var items = data.Items.Select((film, index) => { var item = Item(film, category); item.IndexNumber = index + 1; return item; }).ToList();
-            if (data.HasNext && page < 500) items.Add(Folder($"list/{category}/{page + 1}", $"Next page ({page + 1})"));
+            if (data.Next is { } next) items.Add(Folder($"list/{category}/{next}", $"More ({(next - 1) / 5 + 1})"));
             return Result(items);
         }
         if (parts is ["tv", var scope, var showText] && int.TryParse(showText, out var showId))
@@ -162,10 +164,65 @@ public sealed class FilmChannel(TmdbCatalog catalog, FlixSource flix, StreamRela
                 && season is > 0 and < 1000 && episode is > 0 and < 10000 => (await catalog.GetAsync(FilmKind.Tv, showId, ct), season, episode),
             _ => throw new ProviderException("Invalid StreamFin title.")
         };
-        var videos = await flix.ResolveAsync(target.Film, target.Season, target.Episode, ct);
         var user = auth.UserId;
+        var key = user.ToString("N") + id;
+        // Only a real start prepares the next episode, not opening an episode's page.
+        var starting = context.Request.Path.Value?.Contains("/PlaybackInfo", StringComparison.OrdinalIgnoreCase) == true;
+        if (AnimeChannel.PreparesNext && Ready.TryGetValue<MediaSourceInfo>(key, out var ready) && relay.Holds(ready!.Path))
+        {
+            if (starting) PrepareNext(user, id, target.Film, target.Season, target.Episode);
+            return [ready];
+        }
+        var source = await PlayAsync(user, target.Film, target.Season, target.Episode, ct);
+        if (starting) PrepareNext(user, id, target.Film, target.Season, target.Episode);
+        return [source];
+    }
+
+    // The next episode of a show, found and probed while one plays, as for anime: per user, kept half an hour.
+    private static readonly MemoryCache Ready = new(new MemoryCacheOptions { SizeLimit = 200 });
+    private static readonly SemaphoreSlim Preparing = new(1, 1);
+
+    private async Task<MediaSourceInfo> PlayAsync(Guid user, Film film, int? season, int? episode, CancellationToken ct)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        IReadOnlyList<ResolvedVideo> videos;
+        try { videos = await flix.ResolveAsync(film, season, episode, ct); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException or ProviderException)
+        {
+            health.Failed("flix", ex, ct);
+            throw;
+        }
         var subtitles = videos[0].Subtitles?.Count ?? 0;
-        return [await relay.MediaSourceAsync(user, videos[0], $"FlixHQ · {videos[0].Quality}" + (subtitles > 0 ? $" · {subtitles} subtitle tracks" : ""),
-            token => flix.ResolveAsync(target.Film, target.Season, target.Episode, token), () => Plugin.Allows(user) && IsAvailable, ct)];
+        var source = await relay.MediaSourceAsync(user, videos[0], $"FlixHQ · {videos[0].Quality}" + (subtitles > 0 ? $" · {subtitles} subtitle tracks" : ""),
+            token => flix.ResolveAsync(film, season, episode, token), () => Plugin.Allows(user) && IsAvailable, ct);
+        health.Started("flix", clock.Elapsed);
+        return source;
+    }
+
+    private void PrepareNext(Guid user, string id, Film film, int? season, int? episode)
+    {
+        if (!AnimeChannel.PreparesNext || season is not { } s || episode is not { } e || id.Split('/') is not ["ep", var scope, var show, _, _]) return;
+        _ = Task.Run(async () =>
+        {
+            if (!await Preparing.WaitAsync(0)) return;
+            using var limit = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            try
+            {
+                // The next in this season, else the first of the next season.
+                var (nextSeason, nextEpisode) = (await catalog.EpisodesAsync(film.Id, s, limit.Token)).Any(x => x.Number == e + 1) ? (s, e + 1)
+                    : (await catalog.SeasonsAsync(film.Id, limit.Token)).Any(x => x.Number == s + 1) ? (s + 1, 1) : (0, 0);
+                if (nextSeason == 0) return;
+                var key = user.ToString("N") + $"ep/{scope}/{show}/{nextSeason}/{nextEpisode}";
+                if (Ready.TryGetValue(key, out _)) return;
+                var prepared = await PlayAsync(user, film, nextSeason, nextEpisode, limit.Token);
+                Ready.Set(key, prepared, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(30) });
+            }
+            catch (Exception ex) when (ex is ProviderException or HttpRequestException or OperationCanceledException or IOException
+                or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException)
+            {
+                logger.LogInformation("StreamFin films: the next episode could not be got ready ({ErrorType})", ex.GetType().Name);
+            }
+            finally { Preparing.Release(); }
+        }, CancellationToken.None);
     }
 }

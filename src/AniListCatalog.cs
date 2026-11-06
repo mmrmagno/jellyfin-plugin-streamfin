@@ -13,6 +13,9 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 4000 });
     private readonly ConcurrentDictionary<string, Lazy<Task<string>>> inflight = new();
     private readonly RateWindow budget = new(25, TimeSpan.FromMinutes(1));
+    // Pages and titles seen before answer at once and refresh behind, while the budget has room.
+    private readonly FreshCache<CatalogPage> pages = new(p => p.Items.Count > 0, 1000, failed: ex => Refused(logger, ex));
+    private readonly FreshCache<Anime> titles = new(_ => true, 4000, failed: ex => Refused(logger, ex));
     // Typing a search fires a query per pause. Searches get part of the budget and never wait,
     // so browsing a page always has slots left.
     private readonly RateWindow searches = new(15, TimeSpan.FromMinutes(1));
@@ -45,9 +48,9 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
         var order = category == "search" ? "SEARCH_MATCH" : category == "az" ? "TITLE_ROMAJI" : "POPULARITY_DESC";
         var seasonal = category == "season" ? $",season:{season.Season},seasonYear:{season.Year}" : "";
         var query = "query($page:Int" + (category == "search" ? ",$search:String" : "") + "){Page(page:$page,perPage:30){pageInfo{hasNextPage}media(type:ANIME" + Filters + ",sort:" + order + seasonal + (category == "search" ? ",search:$search" : "") + "){" + Fields + "}}}";
-        try
+        async Task<CatalogPage> Load(CancellationToken token)
         {
-            using var document = await QueryAsync(query, new { page, search = search?.Trim() }, ct, category == "search");
+            using var document = await QueryAsync(query, new { page, search = search?.Trim() }, token, category == "search");
             var root = document.RootElement.GetProperty("data").GetProperty("Page");
             var items = root.GetProperty("media").EnumerateArray().Select(Parse).Where(IsAllowed).ToArray();
             foreach (var item in items) Remember(item);
@@ -56,6 +59,7 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
             Store(key, result, category == "search" ? TimeSpan.FromMinutes(30) : Lifetime);
             return result;
         }
+        try { return category == "search" ? await Load(ct) : await pages.GetAsync($"{Revision}/{key}", Lifetime, Load, ct, Spare); }
         catch (Exception ex) when (IsUpstreamFailure(ex) && cache.TryGetValue<CatalogPage>("stale/" + key, out var stale)) { return stale!; }
     }
 
@@ -63,15 +67,16 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
     {
         if (id <= 0) throw new ProviderException("Invalid anime identifier.");
         if (cache.TryGetValue<Anime>($"{Revision}/anime/{id}", out var found)) return found!;
-        try
+        async Task<Anime> Load(CancellationToken token)
         {
-            using var document = await QueryAsync("query($id:Int){Media(id:$id,type:ANIME){" + Fields + "}}", new { id }, ct);
+            using var document = await QueryAsync("query($id:Int){Media(id:$id,type:ANIME){" + Fields + "}}", new { id }, token);
             var node = document.RootElement.GetProperty("data").GetProperty("Media");
             if (node.ValueKind != JsonValueKind.Object) throw new ProviderException("This title is unavailable.");
             var anime = Parse(node);
             Remember(anime);
             return anime;
         }
+        try { return await titles.GetAsync($"{Revision}/{id}", TitleLifetime, Load, ct, Spare); }
         catch (Exception ex) when (IsUpstreamFailure(ex) && cache.TryGetValue<Anime>("stale/anime/" + id, out var stale)) { return stale!; }
     }
 
@@ -164,7 +169,16 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
             Number(node, "duration"), node.GetProperty("isAdult").GetBoolean(), node.GetProperty("genres").EnumerateArray().Select(g => g.GetString()!).ToArray(),
             Number(node, "idMal"), available);
     }
-    public void Dispose() => cache.Dispose();
+    // Refreshing what is already shown waits while fewer than a fifth of the minute's calls are left.
+    private bool Spare => budget.Free(DateTime.UtcNow) > 5;
+    private static void Refused(ILogger logger, Exception ex) => logger.LogInformation("StreamFin anime: refreshing a page in the background failed ({ErrorType})", ex.GetType().Name);
+
+    public void Dispose()
+    {
+        pages.Dispose();
+        titles.Dispose();
+        cache.Dispose();
+    }
 }
 
 // A sliding window of request slots. Reserve hands out the next free slot and reports how

@@ -36,12 +36,21 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
 
 ## What it does
 
-- **Anime**: Popular, This Season and A to Z, from AniList. Pick a title, a source, then
-  an episode. Japanese audio with English subtitles only, never a dub.
-- **Movies & TV**: Popular movies, Popular TV and Trending, from TMDB. Movies play
-  directly, shows open into seasons and episodes.
+- **Anime**: Popular, This Season and A to Z, from AniList, 90 titles a page. Pick a title, a source, then
+  an episode. Japanese audio with English subtitles only, never a dub. While an episode plays,
+  the next one is looked up in the background, so **Next episode** starts at once and stays on
+  the source you picked (playing a whole show goes through one source after another, never
+  mixed). When the source you picked cannot play an episode, the same episode plays from another
+  source that lists exactly this title with exactly one episode of that number.
+  StreamFin times how long each source takes to start an episode and notices when one stops
+  answering: a source that is down is skipped, checked again in the background until it works,
+  and the settings page shows each source's state and usual start time.
+- **Movies & TV**: Popular movies, Popular TV and Trending, from TMDB, 100 titles a page. Movies play
+  directly, shows open into seasons and episodes. While an episode plays, the next one is
+  looked up in the background, so it starts at once.
 - **Music**: lossless FLAC, CD quality (16 bit, 44.1 kHz) and on some albums 24 bit hi-res, from
-  [Monochrome](https://github.com/monochrome-music/monochrome)'s catalog. Search for an
+  [Monochrome](https://github.com/monochrome-music/monochrome)'s catalog. Browse **Popular
+  songs**, **Popular albums** and **Popular artists** from Deezer's charts, or search for an
   artist, album or song. Albums open as real album pages with numbered tracks, artists
   open into their top tracks, albums and singles, **Starred** holds what you star in a
   music app, and **Recently played** remembers what you listened to. The FLAC reaches the player as the catalog serves it, never transcoded.
@@ -65,7 +74,8 @@ source layer, added movies and TV while I was at it, and renamed it StreamFin.
   the song cache as FLAC ahead of time, whenever Monochrome answers, up to half the cache
   (Scheduled Tasks, **Keep favourite songs ready**, hourly and each time Monochrome is back, one
   song at a time). While a song plays, the next one in the app's play queue or on the album is
-  fetched too, so it starts at once (**Get the next song ready**). YouTube refuses many data centre addresses
+  fetched too, so it starts at once (**Get the next song ready**), and while songs come from
+  YouTube, opening an album fetches its first song. YouTube refuses many data centre addresses
   ("Sign in to confirm you're not a bot"). If your server's is one, set **YouTube proxy** to an
   http or socks5 proxy with another address, such as a VPN container next to Jellyfin
   (`http://user:password@vpn:8888`). Only YouTube goes through it.
@@ -167,6 +177,11 @@ stream fetches it through the relay and hands the bytes to the player unchanged,
 seeking. A transcode would follow whatever the client asks for, which is usually AAC or
 MP3, so the plugin avoids one.
 
+Pages you opened before show at once. Titles, episode lists and which source carries a show are
+kept, and once they are old a fresh copy loads in the background while the kept one is shown. A
+source that is down keeps showing its last answer for a day. The settings page has a **Test now**
+button for every source, which goes the whole way to a playable video or song.
+
 When the catalog takes longer than 6 seconds to search, the search goes to Deezer instead, and the
 same words keep getting Deezer's results for half an hour, so paging through them stays steady.
 Deezer's songs, albums and artists carry their own IDs (`dz` and a number), so nothing stored
@@ -233,7 +248,8 @@ third-party page is fuzzed on every pull request and for an hour every Sunday.
 The AnimeGG and AnimeHeaven adapters are adapted from the MIT-licensed
 [Seanime providers](https://github.com/Seanime-contributions/Seanime-Providers). The
 HiAnime flow follows what [ani-cli](https://github.com/pystardust/ani-cli) does, written
-from scratch. FlixHQ is a port of my own downloader. Icons are from Material Design Icons.
+from scratch. FlixHQ is a port of my own downloader. The anime source fallback, the queue fix and the
+Popular music folders started in [ItzDabbzz's fork](https://github.com/ItzDabbzz/jellyfin-plugin-streamfin). Icons are from Material Design Icons.
 Details in `THIRD_PARTY_NOTICES.txt`.
 
 StreamFin does not host anything. It plays what third-party sites already serve, and

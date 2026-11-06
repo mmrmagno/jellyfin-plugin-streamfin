@@ -69,9 +69,17 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
     public static string Slug(string title) => Regex.Replace(Regex.Replace(WebUtility.HtmlDecode(title).ToLowerInvariant().Replace("&", "and"),
         @"['’]", "", RegexOptions.None, TimeSpan.FromSeconds(1)), @"[^a-z0-9]+", "-", RegexOptions.None, TimeSpan.FromSeconds(1)).Trim('-');
 
+    // The settings page's test searches again rather than trusting a page found earlier.
+    public void Forget(Film film)
+    {
+        foreach (var site in new[] { Watch, Classic }) pages.Remove(PageKey(site, film));
+    }
+
+    private static string PageKey(Uri site, Film film) => $"{site.Host}/{film.Kind}/{film.Id}";
+
     private async Task<Uri?> FindAsync(Uri site, Film film, CancellationToken ct)
     {
-        var key = $"{site.Host}/{film.Kind}/{film.Id}";
+        var key = PageKey(site, film);
         if (pages.TryGetValue<Uri>(key, out var known)) return known;
         var html = await http.TextAsync(new Uri(site, "search?keyword=" + Uri.EscapeDataString(film.Title)), ct);
         var found = site == Watch ? MatchWatch(html, film) : MatchClassic(html, film);
