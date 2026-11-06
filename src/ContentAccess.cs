@@ -1,3 +1,4 @@
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 
@@ -43,4 +44,9 @@ public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalo
 public static class ChannelNavigation
 {
     public static readonly SemaphoreSlim Gate = new(1, 1);
+
+    // By the number the site gave ("12.5" recaps between 12 and 13), in the site's order otherwise.
+    public static IReadOnlyList<Episode> SiteEpisodes(IEnumerable<BaseItem> children) => children.OfType<Episode>()
+        .Select((e, index) => (e, index)).OrderBy(p => AnimeChannel.Number(p.e.Name) ?? p.e.IndexNumber ?? decimal.MaxValue).ThenBy(p => p.index)
+        .Select(p => p.e).ToArray();
 }

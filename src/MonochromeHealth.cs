@@ -118,8 +118,6 @@ public sealed record SourceTest(bool Ran, string? Problem, double Seconds);
 [Route("StreamFin/MusicHealth")]
 public sealed class MusicHealthController(MonochromeHealth health, MonochromeProbe probe, MusicCatalog catalog, MusicAudio audio) : ControllerBase
 {
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> LastTest = new();
-
     [HttpGet]
     public ActionResult<MusicHealthResponse> Get()
     {
@@ -133,9 +131,7 @@ public sealed class MusicHealthController(MonochromeHealth health, MonochromePro
     public async Task<ActionResult<SourceTest>> Probe([FromQuery] string source, CancellationToken ct)
     {
         if (source is not ("monochrome" or "youtube")) return BadRequest();
-        var now = DateTime.UtcNow;
-        var last = LastTest.GetOrAdd(source, DateTime.MinValue);
-        if (now - last < TimeSpan.FromSeconds(10) || !LastTest.TryUpdate(source, DateTime.MaxValue, last)) return StatusCode(429);
+        if (!TestLimit.TryStart(source)) return StatusCode(429);
         try
         {
             var clock = Stopwatch.StartNew();
@@ -144,6 +140,6 @@ public sealed class MusicHealthController(MonochromeHealth health, MonochromePro
                 ? Ok(new SourceTest(true, problem, took.TotalSeconds))
                 : Ok(new SourceTest(false, "A check is already running, or the catalog is busy. Try again in a moment.", 0));
         }
-        finally { LastTest[source] = DateTime.UtcNow; }
+        finally { TestLimit.End(source); }
     }
 }

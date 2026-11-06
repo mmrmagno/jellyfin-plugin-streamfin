@@ -23,8 +23,8 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
     public const string ChannelName = "Music";
     public static bool IsAvailable => Plugin.Instance?.Configuration is { Enabled: true, MusicEnabled: true } && MusicCatalog.Api is not null;
     public string Name => ChannelName;
-    public string Description => "StreamFin · Search artists and albums and stream them in lossless FLAC.";
-    public string DataVersion => "streamfin-music-1-" + IsAvailable + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
+    public string Description => "StreamFin · Browse the charts or search artists and albums, and stream them in lossless FLAC.";
+    public string DataVersion => "streamfin-music-2-" + MusicCatalog.Fallback + "-" + IsAvailable + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
     public string HomePageUrl => "https://github.com/mmrmagno/jellyfin-plugin-streamfin";
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
     public bool IsEnabledFor(string userId) => IsAvailable && Guid.TryParse(userId, out var id) && Plugin.Allows(id);
@@ -55,9 +55,16 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
     }
     private static string Kind(string type) => type switch { "SINGLE" => "Single", "EP" => "EP", "COMPILATION" => "Compilation", _ => "Album" };
 
-    public static ChannelItemInfo Artist(MusicArtistPage artist) => new()
+    // Jellyfin keeps one item per ID and moves it to whichever folder listed it last, so an artist in the charts
+    // gets its own ID (and its albums, top tracks and radio their own scope) apart from the same artist in Search
+    // results: dropping off the chart must not delete what a search found.
+    private const string Chart = "chart-";
+    private static string Unscoped(string id) => id.StartsWith(Chart, StringComparison.Ordinal) ? id[Chart.Length..] : id;
+
+    public static ChannelItemInfo Artist(MusicArtistPage artist) => Artist(artist, "");
+    private static ChannelItemInfo Artist(MusicArtistPage artist, string scope) => new()
     {
-        Id = $"artist/{artist.Id}", Name = artist.Name, Type = ChannelItemType.Folder, FolderType = ChannelFolderType.MusicArtist,
+        Id = scope.Length == 0 ? $"artist/{artist.Id}" : $"{scope}artist/{artist.Id}", Name = artist.Name, Type = ChannelItemType.Folder, FolderType = ChannelFolderType.MusicArtist,
         ImageUrl = artist.Image, Overview = artist.Bio, Tags = ["StreamFin"],
         ProviderIds = new Dictionary<string, string> { ["Custom"] = $"streamfin-artist-{artist.Id}" }
     };
@@ -107,10 +114,25 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
     private async Task<ChannelItemResult> BrowseAsync(string id, Guid user, CancellationToken ct)
     {
         if (id.EndsWith("/status", StringComparison.Ordinal)) return Result([]);
-        if (id.Length == 0) return Result([
-            Folder("search", "Search results", "Use Jellyfin's search (magnifying glass) to find artists, albums and songs online. What you find appears here."),
-            Folder("starred", "Starred", "Albums you mark as a favourite here, and albums and songs you star in a Subsonic app."),
-            Folder("recent", "Recently played")]);
+        if (id.Length == 0) return Result(RootItems(MusicCatalog.Fallback));
+        if (id is "popular/songs" or "popular/albums" or "popular/artists")
+        {
+            var popular = await catalog.PopularAsync(ct);
+            IEnumerable<ChannelItemInfo> items = id switch
+            {
+                "popular/artists" => popular.Artists.Select(artist => Artist(artist, Chart)).Select(Ranked),
+                "popular/albums" => popular.Releases.Select(release => Album(release, "popular")).Select(Ranked),
+                _ => (await catalog.ExplicitTracksAsync(popular.Tracks, ct)).Select((track, index) =>
+                {
+                    var item = Track(track, "popular");
+                    item.IndexNumber = index + 1;
+                    item.ParentIndexNumber = null;
+                    return item;
+                })
+            };
+            var listed = Result(items);
+            return listed.TotalRecordCount > 0 ? listed : Result([Folder(id + "/status", "The charts are not available right now. Try again later.")]);
+        }
         if (id == "search")
         {
             var parent = library.GetNewItemId(MusicSearch.FolderKey, typeof(Folder));
@@ -129,29 +151,30 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
             return Result(MusicLibraryStore.Recent(await store.ReadAsync(user, ct), 100).Select(play => Track(play.Track, "recent")));
         }
         var parts = id.Split('/');
-        if (parts is ["artist", var artistId])
+        if (parts is [var artistKind and ("artist" or Chart + "artist"), var artistId])
         {
+            var prefix = artistKind == "artist" ? "" : Chart;
             var artist = await catalog.ArtistAsync(artistId, ct);
             var items = new List<ChannelItemInfo>();
             if (artist.TopTracks.Count > 0)
             {
-                var top = Folder($"top/{artist.Id}", "Top tracks");
+                var top = Folder($"top/{prefix}{artist.Id}", "Top tracks");
                 top.ImageUrl = artist.Image;
                 items.Add(top);
-                var mix = Folder($"radio/{artist.Id}", "Radio", $"{artist.Name} and similar artists, mixed.");
+                var mix = Folder($"radio/{prefix}{artist.Id}", "Radio", $"{artist.Name} and similar artists, mixed.");
                 mix.ImageUrl = artist.Image;
                 items.Add(mix);
             }
             var releases = MusicCatalog.PreferExplicit ? await catalog.WithoutCleanCopiesAsync(artist.Releases, ct) : artist.Releases;
-            items.AddRange(releases.OrderBy(r => System.Array.IndexOf(ReleaseOrder, r.Type)).ThenByDescending(r => r.Date).Select(r => Album(r, artist.Id)));
+            items.AddRange(releases.OrderBy(r => System.Array.IndexOf(ReleaseOrder, r.Type)).ThenByDescending(r => r.Date).Select(r => Album(r, prefix + artist.Id)));
             return Result(items);
         }
         if (parts is ["top", var topId])
         {
-            var artist = await catalog.ArtistAsync(topId, ct);
+            var artist = await catalog.ArtistAsync(Unscoped(topId), ct);
             return Result((await catalog.ExplicitTracksAsync(artist.TopTracks, ct)).Select((track, index) =>
             {
-                var item = Track(track, "top-" + artist.Id);
+                var item = Track(track, "top-" + topId);
                 item.IndexNumber = index + 1;
                 item.ParentIndexNumber = null;
                 return item;
@@ -159,7 +182,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
         }
         if (parts is ["radio", var radioId])
         {
-            var mix = await radio.RadioAsync(radioId, 50, ct);
+            var mix = await radio.RadioAsync(Unscoped(radioId), 50, ct);
             if (mix.Count == 0) return Result([Folder(id + "/status", "No similar artists are known for this artist yet.")]);
             return Result(mix.Select((track, index) =>
             {
@@ -172,12 +195,34 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
         if (parts is ["album", var scope, var releaseId] && IsScope(scope))
         {
             var release = await catalog.ReleaseAsync(releaseId, ct);
+            if (user != Guid.Empty) prefetch.Opened(user, release);
             return Result(release.Tracks.Select(track => Track(track with { Artwork = track.Artwork ?? release.Artwork }, "in-" + scope, release.Artists)));
         }
         return Result([]);
     }
 
-    private static bool IsScope(string scope) => scope == "search" || MusicCatalog.IsId(scope);
+    private static bool IsScope(string scope) => scope is "search" or "popular" || MusicCatalog.IsId(Unscoped(scope));
+
+    // Jellyfin lists folders by name; a number keeps the chart order.
+    private static ChannelItemInfo Ranked(ChannelItemInfo item, int index)
+    {
+        item.IndexNumber = index + 1;
+        return item;
+    }
+
+    // Popular folders come from Deezer's charts, so they are only listed while Deezer is a source.
+    public static IEnumerable<ChannelItemInfo> RootItems(bool charts)
+    {
+        if (charts)
+        {
+            yield return Folder("popular/songs", "Popular songs", "What is being played most right now.");
+            yield return Folder("popular/albums", "Popular albums", "The albums in the charts right now.");
+            yield return Folder("popular/artists", "Popular artists", "The artists in the charts right now. Open one for albums, top tracks and radio.");
+        }
+        yield return Folder("search", "Search results", "Use Jellyfin's search (magnifying glass) to find artists, albums and songs online. What you find appears here.");
+        yield return Folder("starred", "Starred", "Albums you mark as a favourite here, and albums and songs you star in a Subsonic app.");
+        yield return Folder("recent", "Recently played");
+    }
 
     // Search results are library items made by MusicSearch; describe them again so Jellyfin keeps them.
     private static ChannelItemInfo? Restore(BaseItem item) => item switch

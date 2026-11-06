@@ -17,6 +17,10 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<FlixSource>();
         services.AddSingleton<MusicMetadataStore>();
         services.AddSingleton(provider => new MonochromeHealth(provider.GetService<Microsoft.Extensions.Logging.ILogger<MonochromeHealth>>()));
+        services.AddSingleton<VideoHealth>();
+        services.AddSingleton<VideoChecks>();
+        services.AddSingleton<VideoProbe>();
+        services.AddHostedService(provider => provider.GetRequiredService<VideoProbe>());
         services.AddSingleton<MonochromeProbe>();
         services.AddHostedService(provider => provider.GetRequiredService<MonochromeProbe>());
         services.AddSingleton<MusicCatalog>();

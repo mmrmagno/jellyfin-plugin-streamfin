@@ -346,6 +346,11 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
     private Task<string> QueryAsync(Origin origin, string path)
         => QueryAsync(origin, new Uri(Api ?? throw new ProviderException("The music API address is invalid. Check it under Dashboard → Plugins → StreamFin."), path));
 
+    // Deezer's charts, for browsing without a search: one call for songs, albums and artists, kept half an hour.
+    public Task<MusicResults> PopularAsync(CancellationToken ct) => !Fallback
+        ? Task.FromResult(new MusicResults([], [], []))
+        : CachedAsync(deezer, "dz/chart", TimeSpan.FromMinutes(30), () => QueryAsync(deezer, new Uri(Deezer.Api, "chart/0?limit=50")), Deezer.ParseSearch, null, null, ct);
+
     // Deezer spreads what the catalog sends in one answer over several calls; they run together and are joined
     // into one JSON object, each part checked to be an object of its own first. query is appended to every path.
     private async Task<string> DeezerAsync(string query, params (string Name, string Path)[] parts)

@@ -80,6 +80,86 @@ var unrelated = await SourceRegistry.MatchAsync(new FakeSource((_, _) => Task.Fr
 Check(unrelated.Titles.Count == 0, "unrelated promoted titles cannot become source matches");
 var failure = await SourceRegistry.MatchAsync(new FakeSource((_, _) => throw new HttpRequestException("upstream failure")), ordinary, default);
 Check(failure.Error is not null && failure.Titles.Count == 0, "one provider failure becomes a source-specific status");
+{
+    var both = new Configuration { Enabled = true, ZokoEnabled = false, AnimeGgEnabled = true, AnimeHeavenEnabled = true };
+    var video = new ResolvedVideo(new Uri("https://example.org/v.mp4"), "720p", new Dictionary<string, string>(), true);
+    var broken = new SiteFake("animegg", [new("gg", "Example")], [new("gg-3", 3, "Three")], _ => throw new ProviderException("down"));
+    var working = new SiteFake("animeheaven", [new("ah", "Example")], [new("ah-2", 2, "Two"), new("ah-3", 3, "Three")], id => [video]);
+    var registry = new SourceRegistry([broken, working]);
+    var played = await registry.ResolveWithFallbackAsync(ordinary, 3, "gg-3", default, both);
+    Check(played.Key == "animeheaven:ah-3", "an episode the chosen site cannot play comes from another site with the same title and number");
+    await RejectAsync(() => registry.ResolveWithFallbackAsync(ordinary, null, "gg-3", default, both), "without a known episode number no other site is tried");
+    await RejectAsync(() => registry.ResolveWithFallbackAsync(ordinary, 3, "gg-3", default, new Configuration { Enabled = true, AnimeGgEnabled = true, AnimeHeavenEnabled = true, AnimeProviderFallback = false }), "the fallback can be switched off");
+    var twoTitles = new SiteFake("animeheaven", [new("ah", "Example"), new("ah2", "Example")], [new("ah-3", 3, "Three")], id => [video]);
+    await RejectAsync(() => new SourceRegistry([broken, twoTitles]).ResolveWithFallbackAsync(ordinary, 3, "gg-3", default, both), "two sites' titles of the same name are never guessed between");
+    Check((await registry.ResolveWithFallbackAsync(ordinary, 2, "animeheaven:ah-2", default, both)).Key == "animeheaven:ah-2", "the chosen site plays when it can");
+    await RejectAsync(() => registry.ResolveWithFallbackAsync(ordinary, 3, "sp-3", default, both), "an episode of a special or another season listed beside the title never falls back");
+    await RejectAsync(() => registry.ResolveWithFallbackAsync(ordinary, 0, "gg-3", default, both), "an episode without a real number never falls back");
+    await RejectAsync(() => registry.ResolveWithFallbackAsync(ordinary, 3, "gg-3", default, both, listedExact: false), "a site folder listed as a loose match never falls back");
+    Check((await registry.ResolveWithFallbackAsync(ordinary, 3, "zz-3", default, both, listedExact: true)).Key == "animeheaven:ah-3", "a listing that showed the exact title is enough while the chosen site is down");
+    Check(SourceRegistry.IsExact(new("x", "EXAMPLE", 2026), ordinary) && !SourceRegistry.IsExact(new("x", "Example", 2019), ordinary) && !SourceRegistry.IsExact(new("x", "Example 2"), ordinary),
+        "an exact title has the same name and, when given, the same year");
+}
+{
+    var now = DateTimeOffset.UtcNow;
+    using var fresh = new FreshCache<string>(v => v.Length > 0, clock: () => now);
+    var loads = 0;
+    Task<string> Load(CancellationToken _) { loads++; return Task.FromResult("v" + loads); }
+    Check(await fresh.GetAsync("k", TimeSpan.FromMinutes(5), Load, default) == "v1" && await fresh.GetAsync("k", TimeSpan.FromMinutes(5), Load, default) == "v1" && loads == 1,
+        "a known answer is reused while it is fresh");
+    now += TimeSpan.FromMinutes(6);
+    var old = await fresh.GetAsync("k", TimeSpan.FromMinutes(5), Load, default);
+    for (var i = 0; i < 50 && loads < 2; i++) await Task.Delay(10);
+    await Task.Delay(20);
+    Check(old == "v1" && loads == 2 && await fresh.GetAsync("k", TimeSpan.FromMinutes(5), Load, default) == "v2", "an expired answer comes back at once while a fresh one loads behind it");
+    now += TimeSpan.FromMinutes(6);
+    var lastGood = await fresh.GetAsync("k", TimeSpan.FromMinutes(5), _ => throw new HttpRequestException("down"), default);
+    await Task.Delay(50);
+    Check(lastGood == "v2" && await fresh.GetAsync("k", TimeSpan.FromMinutes(5), _ => throw new HttpRequestException("down"), default) == "v2",
+        "a failed refresh keeps the last good answer");
+    await RejectAsync(() => fresh.GetAsync("new", TimeSpan.FromMinutes(5), _ => throw new ProviderException("down"), default), "a first load that fails is reported");
+}
+{
+    Task<(int[] Items, bool More)> Page(int n) => n == 3 ? throw new HttpRequestException("down") : Task.FromResult((new[] { n * 10, n * 10 + 1, 11 }, n < 9));
+    var three = await Pages.LoadAsync(1, 2, 100, Page, p => p.Items, p => p.More, x => x);
+    Check(three.Items.SequenceEqual([10, 11, 20, 21]) && three.Next == 3, "a folder joins several pages, lists a title once and continues after them");
+    var broken = await Pages.LoadAsync(2, 3, 100, Page, p => p.Items, p => p.More, x => x);
+    Check(broken.Items.SequenceEqual([20, 21, 11]) && broken.Next == 3, "a later page that fails ends the folder there, to be tried again");
+    var end = await Pages.LoadAsync(8, 5, 100, Page, p => p.Items, p => p.More, x => x);
+    Check(end.Items.Count == 5 && end.Next is null, "the last page ends the folder");
+    await RejectAsync(() => Pages.LoadAsync(3, 2, 100, n => n == 3 ? throw new ProviderException("down") : Page(n), p => p.Items, p => p.More, x => x), "a first page that fails fails the folder");
+}
+{
+    var video = new VideoHealth();
+    video.Started("animegg", TimeSpan.FromSeconds(30));
+    video.Started("zoko", TimeSpan.FromSeconds(2));
+    Check(video.Fastest(new[] { "animegg", "animeheaven", "zoko" }, x => x).SequenceEqual(["zoko", "animegg", "animeheaven"]), "the quickest site is tried first, untimed sites after the timed ones");
+    for (var i = 0; i < 5; i++) video.Failed("animeheaven", new ProviderException("This episode is not on the site."), default);
+    Check(video.Usable("animeheaven"), "an episode missing from a site never counts against the site");
+    for (var i = 0; i < 3; i++) video.Failed("zoko", new HttpRequestException("no connection"), default);
+    Check(!video.Usable("zoko") && video.Fastest(new[] { "zoko", "animegg" }, x => x).First() == "animegg" && video.Describe("zoko")!.Contains("not answering"),
+        "a site that keeps failing to answer counts as down and goes last");
+    video.Breaker("zoko").Checked(DateTime.UtcNow, null);
+    Check(!video.Usable("zoko"), "a site back from an outage is used again only after several good checks");
+    var broken = new SiteFake("animegg", [new("gg", "Example")], [new("gg-3", 3, "Three")], _ => throw new HttpRequestException("down"));
+    var working = new SiteFake("animeheaven", [new("ah", "Example")], [new("ah-3", 3, "Three")], _ => [new ResolvedVideo(new Uri("https://example.org/v.mp4"), "720p", new Dictionary<string, string>(), true)]);
+    var down = new VideoHealth();
+    for (var i = 0; i < 3; i++) down.Failed("animegg", new HttpRequestException("no connection"), default);
+    var played = await new SourceRegistry([broken, working], down).ResolveWithFallbackAsync(ordinary, 3, "gg-3", default,
+        new Configuration { Enabled = true, AnimeGgEnabled = true, AnimeHeavenEnabled = true }, listedExact: true);
+    Check(played.Key == "animeheaven:ah-3", "a site known to be down is skipped straight to another that has the episode");
+    var slow = new VideoHealth();
+    for (var i = 0; i < 5; i++) slow.Started("animegg", TimeSpan.FromSeconds(90));
+    Check(slow.Usable("animegg"), "a site that is only slow is never counted as down");
+    var tested = new VideoHealth();
+    tested.Checked("zoko", new VideoCheck("HTTP 502", true), manual: true);
+    tested.Checked("animegg", new VideoCheck("search: a well-known title was not found", false), manual: false);
+    Check(tested.Usable("zoko") && tested.Usable("animegg"), "one failed manual test, or a test title gone from a site, does not take a working site down");
+    for (var i = 0; i < 3; i++) tested.Failed("zoko", new HttpRequestException("no connection"), default);
+    var key = tested.Key;
+    for (var i = 0; i < 3; i++) tested.Started("zoko", TimeSpan.FromSeconds(2));
+    Check(tested.Usable("zoko") && tested.Key != key, "episodes that play bring a site back, and listings are made again when it comes back");
+}
 using (var cancelled = new CancellationTokenSource())
 {
     cancelled.Cancel();
@@ -667,6 +747,7 @@ Check(new Configuration().MusicPlayOrder.SequenceEqual(new[] { "monochrome", "yo
 var albumOrder = new[] { "1", "2", "3" }.Select(n => new MusicTrack("15510285117607526" + n, n, [], "155102851176075264", null, 1000, null, false, 1, int.Parse(n))).ToArray();
 Check(MusicPrefetch.Next(albumOrder, albumOrder[0].Id)?.Title == "2" && MusicPrefetch.Next(albumOrder, albumOrder[2].Id) is null && MusicPrefetch.Next(albumOrder, "x") is null,
     "the song after one is the next in its list, and the last song has none");
+Check(MusicPrefetch.Next([albumOrder[0], albumOrder[1], albumOrder[0], albumOrder[2]], albumOrder[0].Id) is null, "a song listed twice has no guessed next song");
 Check(new Configuration().MusicPrefetch, "the next song is got ready by default");
 Check(new Configuration().MusicMonochrome && new Configuration().MusicDeezer && !new Configuration().MusicYouTube, "Monochrome and Deezer are on by default, YouTube off");
 var starting = new CatalogBreaker(probed: true);
@@ -897,6 +978,15 @@ if (args.Contains("--hls-live"))
     Check(!showLive[0].Hls || await FirstSegmentAsync(showLive[0], "FlixHQ South Park S01E01") >= 0, "live FlixHQ episode resolves");
 }
 Console.WriteLine($"{count} checks passed.");
+
+sealed class SiteFake(string id, IReadOnlyList<SourceTitle> titles, IReadOnlyList<SourceEpisode> episodes, Func<string, IReadOnlyList<ResolvedVideo>> resolve) : IAnimeSource
+{
+    public string Id => id;
+    public string Name => id;
+    public Task<IReadOnlyList<SourceTitle>> SearchAsync(string title, CancellationToken ct) => Task.FromResult(titles);
+    public Task<IReadOnlyList<SourceEpisode>> EpisodesAsync(string seriesId, Anime anime, CancellationToken ct) => Task.FromResult(episodes);
+    public Task<IReadOnlyList<ResolvedVideo>> ResolveAsync(string episodeId, CancellationToken ct) => Task.FromResult(resolve(episodeId));
+}
 
 sealed class FakeSource(Func<string, CancellationToken, Task<IReadOnlyList<SourceTitle>>> search) : IAnimeSource
 {

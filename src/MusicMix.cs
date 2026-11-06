@@ -21,7 +21,7 @@ public sealed class MusicMix(ILibraryManager library, IChannelManager channels, 
         if (!MusicChannel.IsAvailable || item.ChannelId != ChannelId || library.GetItemById(ChannelId) is not Channel channel) return null;
         var artist = item.ExternalId?.Split('/') switch
         {
-            ["artist", var id] when MusicCatalog.IsId(id) => new MusicArtistRef(id, item.Name),
+            ["artist" or "chart-artist", var id] when MusicCatalog.IsId(id) => new MusicArtistRef(id, item.Name),
             ["album", _, var release] when MusicCatalog.IsId(release) => (await catalog.ReleaseAsync(release, ct)).Artists.FirstOrDefault(),
             ["track", _, var release, var track] when MusicCatalog.IsId(release) && MusicCatalog.IsId(track)
                 => (await catalog.TrackAsync(release, track, ct)).Artists.FirstOrDefault(),

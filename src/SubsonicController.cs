@@ -459,6 +459,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     {
         var id = ParseId(One("id") ?? throw Missing("id"), "al") ?? throw NotFound("Album");
         var release = await catalog.ReleaseAsync(id, Ct);
+        prefetch.Opened(user.Id, release);
         var (_, stars) = await LibraryAsync();
         return Success().One(Album("album", release, stars).AddRange(release.Tracks.Select(t => Song("song", t with { Artwork = t.Artwork ?? release.Artwork }, release.Title, stars, release))));
     }
@@ -1144,7 +1145,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
         AudioTicket ticket;
         try { ticket = await sources.ResolveAsync(recording, Ct); }
         catch (ProviderException ex) { throw new SubsonicError(0, ex.Message); }
-        prefetch.After(user.Id, track);
+        if (!download) prefetch.After(user.Id, track);
         var upstream = ticket.Upstream;
         var flac = ticket.Lossless;
         var (format, kbps) = download ? (AudioFormat.Raw, 0) : Choose(One("format"), One("maxBitRate"), Plugin.Instance?.Configuration.SubsonicPreferLossless != false);

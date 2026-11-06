@@ -66,6 +66,10 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             (resolved.Subtitles ?? []).Select((_, i) => $"{root}/sub/{i}.vtt?key={ticket.SubtitleKey}").ToArray());
     }
 
+    // Whether a playback address handed out earlier still works: tickets expire, and the oldest give way to new ones.
+    public bool Holds(string? url) => url?.Split("/StreamFin/Internal/Stream/") is [_, var rest] && tickets.TryGetValue(rest.Split('/')[0], out var ticket)
+        && ticket.Expires > DateTime.UtcNow;
+
     // Jellyfin only extracts embedded subtitles from local files, so remote ones must be external.
     public async Task<MediaSourceInfo> MediaSourceAsync(Guid userId, ResolvedVideo resolved, string name,
         Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> resolve, Func<bool> live, CancellationToken ct)

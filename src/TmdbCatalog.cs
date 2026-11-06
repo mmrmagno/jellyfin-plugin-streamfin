@@ -15,6 +15,7 @@ public sealed class TmdbCatalog(SafeHttp http) : IDisposable
 {
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 4000 });
     private readonly RateWindow budget = new(40, TimeSpan.FromSeconds(10));
+    private readonly FreshCache<object> fresh = new(_ => true, 2000);
     private static readonly Uri Endpoint = new("https://api.themoviedb.org/3/");
     private const string Images = "https://image.tmdb.org/t/p/w500";
     private int Revision => Plugin.Instance?.Configuration.CacheRevision ?? 0;
@@ -35,55 +36,65 @@ public sealed class TmdbCatalog(SafeHttp http) : IDisposable
             "search" => "search/multi?query=" + Uri.EscapeDataString(search!.Trim()) + "&",
             _ => throw new ProviderException("Invalid catalog page.")
         };
-        return CachedAsync($"{category}/{page}/{search?.Trim().ToLowerInvariant()}", category == "search" ? TimeSpan.FromMinutes(30) : Lifetime, async () =>
+        return CachedAsync($"{category}/{page}/{search?.Trim().ToLowerInvariant()}", category == "search" ? TimeSpan.FromMinutes(30) : Lifetime, async token =>
         {
-            using var document = await QueryAsync($"{path}include_adult=false&language=en-US&page={page}", ct);
+            using var document = await QueryAsync($"{path}include_adult=false&language=en-US&page={page}", token);
             var root = document.RootElement;
             var fallback = category == "movies" ? FilmKind.Movie : FilmKind.Tv;
             var items = root.GetProperty("results").EnumerateArray()
                 .Select(node => Parse(node, category is "movies" or "tv" ? fallback : null)).OfType<Film>().Where(f => !f.IsAdult).ToArray();
             foreach (var film in items) Store($"{film.Kind}/{film.Id}", film, Lifetime);
             return new FilmPage(items, root.TryGetProperty("total_pages", out var total) && total.TryGetInt32(out var pages) && page < pages);
-        });
+        }, ct);
     }
 
     public Task<Film> GetAsync(FilmKind kind, int id, CancellationToken ct) => id <= 0 ? throw new ProviderException("Invalid title identifier.")
-        : CachedAsync($"{kind}/{id}", Lifetime, async () =>
+        : CachedAsync($"{kind}/{id}", Lifetime, async token =>
         {
-            using var document = await QueryAsync($"{(kind == FilmKind.Movie ? "movie" : "tv")}/{id}?language=en-US", ct);
+            using var document = await QueryAsync($"{(kind == FilmKind.Movie ? "movie" : "tv")}/{id}?language=en-US", token);
             return Parse(document.RootElement, kind) ?? throw new ProviderException("This title is unavailable.");
-        });
+        }, ct);
 
-    public Task<IReadOnlyList<FilmSeason>> SeasonsAsync(int id, CancellationToken ct) => CachedAsync<IReadOnlyList<FilmSeason>>($"seasons/{id}", Lifetime, async () =>
+    public Task<IReadOnlyList<FilmSeason>> SeasonsAsync(int id, CancellationToken ct) => CachedAsync<IReadOnlyList<FilmSeason>>($"seasons/{id}", Lifetime, async token =>
     {
-        using var document = await QueryAsync($"tv/{id}?language=en-US", ct);
+        using var document = await QueryAsync($"tv/{id}?language=en-US", token);
         // Season 0 holds specials, which streaming sites rarely carry under the same numbering.
         return document.RootElement.GetProperty("seasons").EnumerateArray()
             .Select(s => new FilmSeason(s.GetProperty("season_number").GetInt32(), Text(s, "name") ?? "Season", Number(s, "episode_count") ?? 0, Image(s, "poster_path")))
             .Where(s => s.Number > 0 && s.Episodes > 0).OrderBy(s => s.Number).ToArray();
-    });
+    }, ct);
 
     public Task<IReadOnlyList<FilmEpisode>> EpisodesAsync(int id, int season, CancellationToken ct) => season is < 1 or > 500
         ? throw new ProviderException("Invalid season.")
-        : CachedAsync<IReadOnlyList<FilmEpisode>>($"season/{id}/{season}", Lifetime, async () =>
+        : CachedAsync<IReadOnlyList<FilmEpisode>>($"season/{id}/{season}", Lifetime, async token =>
         {
-            using var document = await QueryAsync($"tv/{id}/season/{season}?language=en-US", ct);
+            using var document = await QueryAsync($"tv/{id}/season/{season}?language=en-US", token);
             // Unaired episodes are listed in advance; nothing can stream them yet.
             return document.RootElement.GetProperty("episodes").EnumerateArray()
                 .Select(e => new FilmEpisode(season, e.GetProperty("episode_number").GetInt32(), Text(e, "name") ?? "Episode", Text(e, "overview") ?? "",
                     Image(e, "still_path"), Number(e, "runtime"),
                     DateTime.TryParse(Text(e, "air_date"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var aired) ? aired : null))
                 .Where(e => e.Aired is null || e.Aired <= DateTime.UtcNow.AddDays(1)).OrderBy(e => e.Number).ToArray();
-        });
+        }, ct);
 
-    private async Task<T> CachedAsync<T>(string key, TimeSpan lifetime, Func<Task<T>> load)
+    // One small call straight to TMDB, past every cache, for the settings page's test.
+    public async Task ProbeAsync(CancellationToken ct)
+    {
+        using var document = await QueryAsync("configuration", ct);
+    }
+
+    private async Task<T> CachedAsync<T>(string key, TimeSpan lifetime, Func<CancellationToken, Task<T>> load, CancellationToken ct)
     {
         if (cache.TryGetValue<T>($"{Revision}/{key}", out var found)) return found!;
         try
         {
-            var value = await load();
-            Store(key, value, lifetime);
-            return value;
+            // Seen before, it answers at once and refreshes behind, while TMDB's budget has room.
+            return (T)await fresh.GetAsync($"{Revision}/{key}", lifetime, async token =>
+            {
+                var value = await load(token);
+                Store(key, value, lifetime);
+                return (object)value!;
+            }, ct, budget.Free(DateTime.UtcNow) > 10);
         }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or JsonException or TaskCanceledException
             && cache.TryGetValue<T>("stale/" + key, out var stale)) { return stale!; }
@@ -128,5 +139,9 @@ public sealed class TmdbCatalog(SafeHttp http) : IDisposable
         return new Film(id, k, title, year, Text(node, "overview") ?? "", Image(node, "poster_path"), runtime,
             node.TryGetProperty("adult", out var adult) && adult.ValueKind == JsonValueKind.True);
     }
-    public void Dispose() => cache.Dispose();
+    public void Dispose()
+    {
+        fresh.Dispose();
+        cache.Dispose();
+    }
 }

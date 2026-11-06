@@ -13,6 +13,8 @@ public sealed class Configuration : BasePluginConfiguration
     public bool ZokoEnabled { get; set; } = true;
     public bool AnimeGgEnabled { get; set; } = true;
     public bool AnimeHeavenEnabled { get; set; } = true;
+    public bool AnimeProviderFallback { get; set; } = true;
+    public bool PrepareNextEpisode { get; set; } = true;
     public bool HideAdultContent { get; set; } = true;
     public bool HideEcchiContent { get; set; } = true;
     public int MetadataCacheMinutes { get; set; } = 60;
