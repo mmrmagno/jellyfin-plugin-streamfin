@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
 
 namespace StreamFin;
 
@@ -11,11 +12,11 @@ public sealed record FilmPage(IReadOnlyList<Film> Items, bool HasNext);
 public sealed record FilmSeason(int Number, string Name, int Episodes, string? Image);
 public sealed record FilmEpisode(int Season, int Number, string Name, string Overview, string? Image, int? Runtime, DateTime? Aired);
 
-public sealed class TmdbCatalog(SafeHttp http) : IDisposable
+public sealed class TmdbCatalog(SafeHttp http, ILogger<TmdbCatalog>? logger = null) : IDisposable
 {
-    private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 4000 });
+    private readonly MemoryCache cache = CacheRegistry.Track("Film lookups", new(new MemoryCacheOptions { SizeLimit = 4000 }));
     private readonly RateWindow budget = new(40, TimeSpan.FromSeconds(10));
-    private readonly FreshCache<object> fresh = new(_ => true, 2000);
+    private readonly FreshCache<object> fresh = new(_ => true, 2000, failed: ex => logger?.LogInformation("StreamFin films: refreshing a page in the background failed ({ErrorType})", ex.GetType().Name), name: "Films");
     private static readonly Uri Endpoint = new("https://api.themoviedb.org/3/");
     private const string Images = "https://image.tmdb.org/t/p/w500";
     private int Revision => Plugin.Instance?.Configuration.CacheRevision ?? 0;

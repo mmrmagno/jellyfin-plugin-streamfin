@@ -1,4 +1,7 @@
 using System.Net;
+using Jellyfin.Data.Enums;
+using MediaBrowser.Model.Entities;
+using Microsoft.Extensions.Caching.Memory;
 using System.Text.Json;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -977,6 +980,135 @@ if (args.Contains("--hls-live"))
     var showLive = await flix.ResolveAsync(new Film(2190, FilmKind.Tv, "South Park", 1997, "", null, null, false), 1, 1, default);
     Check(!showLive[0].Hls || await FirstSegmentAsync(showLive[0], "FlixHQ South Park S01E01") >= 0, "live FlixHQ episode resolves");
 }
+// Round 2: catalog-page search rules, the cache registry, and the online search default.
+Check(CatalogSearch.IsCatalog("catalog/popular/1") && CatalogSearch.IsCatalog("list/tv/3") && !CatalogSearch.IsCatalog("search") && !CatalogSearch.IsCatalog("episode/x/1/y"),
+    "catalog pages are recognised, other folders are not");
+Check(CatalogSearch.Kinds(true, [], []).SequenceEqual([BaseItemKind.Series]), "an anime catalog search returns series only");
+Check(CatalogSearch.Kinds(false, [], []).SequenceEqual([BaseItemKind.Movie, BaseItemKind.Series]), "a movie and TV search returns movies and series");
+Check(CatalogSearch.Kinds(false, [BaseItemKind.Movie], []).SequenceEqual([BaseItemKind.Movie]), "a row asking only for movies gets movies");
+Check(CatalogSearch.Kinds(false, [BaseItemKind.Series], [BaseItemKind.Movie]).SequenceEqual([BaseItemKind.Series]), "a row excluding movies gets no movies");
+Check(CatalogSearch.Kinds(true, [BaseItemKind.Movie], []).Length == 0, "an anime catalog never returns movies");
+Check(new Configuration().OnlineSearch, "online search results are on by default");
+var registered = new MemoryCache(new MemoryCacheOptions { SizeLimit = 10 });
+CacheRegistry.Track("Test cache", registered).Set("a", 1, new MemoryCacheEntryOptions { Size = 1 });
+Check(CacheRegistry.Status().Any(s => s.Name == "Test cache" && s.Entries == 1), "a named cache is listed with its entry count");
+var filled = new FreshCache<string>(_ => true, 10, name: "Test fresh");
+await filled.GetAsync("key", TimeSpan.FromMinutes(5), _ => Task.FromResult("value"), default);
+Check(CacheRegistry.Status().Any(s => s.Name == "Test fresh" && s.Entries == 1), "a fresh cache is listed once it holds an answer");
+CacheRegistry.ClearAll();
+Check(registered.Count == 0 && CacheRegistry.Status().Single(s => s.Name == "Test fresh").Entries == 0, "clearing empties every registered cache");
+filled.Dispose();
+registered.Dispose();
+// 0.14.0.0 fixes: padded episode links on flixhqz.net, and the online search switch.
+var house = new[] { new Uri("https://flixhqz.net/episode/house-2004-watch-online/s01-e01/"), new Uri("https://flixhqz.net/episode/house-2004-watch-online/s01-e10/"), new Uri("https://flixhqz.net/episode/house-2004-watch-online/s02-e01/") };
+Check(FlixSource.WatchEpisode(house, 1, 1)?.AbsolutePath.EndsWith("s01-e01/", StringComparison.Ordinal) == true, "a padded episode link (s01-e01) is found for season 1 episode 1");
+Check(FlixSource.WatchEpisode(house, 1, 10)?.AbsolutePath.EndsWith("s01-e10/", StringComparison.Ordinal) == true, "episode 10 is not confused with episode 1");
+Check(FlixSource.WatchEpisode(house, 2, 1)?.AbsolutePath.EndsWith("s02-e01/", StringComparison.Ordinal) == true, "season 2 episode 1 is found");
+Check(FlixSource.WatchEpisode(house, 3, 1) is null, "a missing season gives no link");
+Check(FlixSource.WatchEpisode([new Uri("https://flixhqz.net/episode/x/s1-e1/")], 1, 1) is not null, "unpadded links still match");
+Check(AnimeChannel.AlternateSeason("zoko") == 101 && AnimeChannel.AlternateSeason("animegg") == 102 && AnimeChannel.AlternateSeason("animeheaven") == 103,
+    "other sources and status rows are numbered 101 and up, never Season 1");
+// Movies & TV sources after FlixHQ: Vidly, keyed by TMDB id.
+var dxd = new Film(45950, FilmKind.Tv, "High School DxD", 2012, "", null, null, false);
+Check(VidlySource.Path(dxd, 3, 2) == "tv/45950/3/2" && VidlySource.Path(new Film(27205, FilmKind.Movie, "Inception", 2010, "", null, null, false), null, null) == "movie/27205",
+    "Vidly pages are addressed by TMDB id, season and episode");
+Check(VidlySource.StreamFrom("<head><link rel=\"preload\" as=\"fetch\" href=\"https://bridge.example.dev/?url=a%2Fmaster.m3u8&amp;Policy=x&amp;Signature=y\"></head>")?.Query
+    == "?url=a%2Fmaster.m3u8&Policy=x&Signature=y", "the preloaded playlist is found and its &amp; decoded");
+Check(VidlySource.StreamFrom("<link rel=\"preload\" href=\"https://x.example/font.woff2\"><link rel=\"stylesheet\" href=\"https://x.example/a.m3u8\">") is null
+    && VidlySource.StreamFrom("<link rel=\"preload\" href=\"http://x.example/a.m3u8\">") is null, "a page without a preloaded https playlist means the title is not there");
+var vidlySubs = VidlySource.SubtitlesFrom("{\"subtitles\":[{\"url\":\"https://cache.example/v1/vtt/tv/1/1/1/English Hi.vtt\",\"lang\":\"en\",\"label\":\"English (HI)\"},"
+    + "{\"url\":\"https://cache.example/fr.vtt\",\"lang\":\"fr\",\"label\":\"French\"},{\"url\":\"http://cache.example/en.vtt\",\"lang\":\"en\",\"label\":\"English\"}]}");
+Check(vidlySubs.Count == 1 && vidlySubs[0].Url.AbsolutePath.EndsWith("English%20Hi.vtt", StringComparison.Ordinal), "only English https subtitle tracks are kept, with spaces escaped");
+Check(VidlySource.SubtitlesFrom("{}").Count == 0, "no subtitle list means no tracks");
+Check(FilmSources.Order.SequenceEqual(["flix", "astra", "vidly", "vidbolt", "punkflix"]) && new Configuration() is { FilmVidly: true, FilmAstra: true, FilmVidBolt: true, FilmPunkflix: true },
+    "FlixHQ is asked first, then Astra, Vidly, VidBolt and Punkflix, all on by default");
+var astraKey = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+var astraNonce = Enumerable.Range(40, 12).Select(i => (byte)i).ToArray();
+var astraPlain = Encoding.UTF8.GetBytes("https://stream.example/master.m3u8?k=1");
+var astraCipher = new byte[astraPlain.Length];
+var astraTag = new byte[16];
+using (var gcm = new System.Security.Cryptography.AesGcm(astraKey, 16)) gcm.Encrypt(astraNonce, astraPlain, astraCipher, astraTag);
+var astraSealed = "as_" + Convert.ToHexString([.. astraNonce, .. astraCipher, .. astraTag]).ToLowerInvariant();
+Check(AstraSource.Decrypt(astraSealed, astraKey)?.AbsoluteUri == "https://stream.example/master.m3u8?k=1", "an Astra stream address decrypts with its key");
+Check(AstraSource.Decrypt(astraSealed) is null && AstraSource.Decrypt("as_zz") is null && AstraSource.Decrypt("plain") is null, "a wrong key or a malformed address gives no stream");
+Check(AstraSource.SealedFrom("{\"sources\":{\"Astra\":{\"type\":\"hls\",\"url\":\"as_00\"}}}") == "as_00" && AstraSource.SealedFrom("{\"sources\":{}}") is null, "the sealed address is read from Astra's answer");
+Check(AstraSource.Query(dxd, 3, 2) == "?tmdbId=45950&type=tv&seasonId=3&episodeId=2", "Astra is asked by TMDB id, season and episode");
+Check(VidBoltSource.StreamFrom("{\"stream\":{\"sources\":[{\"url\":\"https://x.example/index_preview.m3u8\",\"kind\":\"hls\"},{\"url\":\"https://x.example/v/1\",\"kind\":\"hls\"}]}}")?.AbsolutePath == "/v/1"
+    && VidBoltSource.StreamFrom("{\"stream\":null}") is null && VidBoltSource.Query(dxd, 1, 1).EndsWith("&hevc=0", StringComparison.Ordinal), "VidBolt skips preview clips and asks for H.264");
+var punk = PunkflixSource.Parse("{\"stream\":{\"hls\":\"https://media.example/s/1/index.m3u8\"},\"subtitles\":[{\"language\":\"eng\",\"url\":\"https://media.example/en.vtt\"},{\"language\":\"hin\",\"url\":\"https://media.example/hi.vtt\"}]}");
+Check(punk.Stream?.AbsolutePath == "/s/1/index.m3u8" && punk.Subtitles.Count == 1 && PunkflixSource.Parse("{\"error\":\"series not found\"}").Stream is null,
+    "Punkflix gives its HLS address and English subtitles, and nothing for a missing title");
+var tsAsMp4 = Hls.RewriteMedia("#EXTM3U\n#EXTINF:5,\nhttps://edge.example.top/mp4-proxy.mp4?data=1\n", new Uri("https://cdn.example.top/a.m3u8"), new HlsLinks());
+var realFmp4 = Hls.RewriteMedia("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:5,\nseg1.m4s\n", new Uri("https://cdn.example.top/a.m3u8"), new HlsLinks());
+Check(tsAsMp4.Contains(".ts\n", StringComparison.Ordinal) && !tsAsMp4.Contains(".mp4", StringComparison.Ordinal) && realFmp4.Contains(".m4s", StringComparison.Ordinal) && realFmp4.Contains(".mp4", StringComparison.Ordinal),
+    "segments without an init map are named .ts even when the host calls them .mp4; real fMP4 keeps its names");
+// Yearly music history and recap.
+MusicTrack RecapTrack(string id, string artist, string release, int ms = 180_000) => new(id, "Song " + id, [new MusicArtistRef("a" + artist, "Artist " + artist)], release, null, ms, null, false, null, null);
+var recapPlays = new List<MusicPlay>
+{
+    new(RecapTrack("1", "x", "r1"), "Album 1", new DateTime(2026, 3, 1, 10, 0, 0, DateTimeKind.Utc)),
+    new(RecapTrack("1", "x", "r1"), "Album 1", new DateTime(2026, 3, 2, 10, 0, 0, DateTimeKind.Utc)),
+    new(RecapTrack("2", "y", "r2"), "Album 2", new DateTime(2026, 3, 3, 10, 0, 0, DateTimeKind.Utc)),
+    new(RecapTrack("2", "y", "r2"), "Album 2", new DateTime(2026, 7, 3, 10, 0, 0, DateTimeKind.Utc)),
+    new(RecapTrack("1", "x", "r1"), "Album 1", new DateTime(2026, 8, 3, 10, 0, 0, DateTimeKind.Utc)),
+    new(RecapTrack("3", "x", "r1"), "Album 1", new DateTime(2025, 12, 31, 23, 0, 0, DateTimeKind.Utc)),
+};
+var recap2026 = MusicRecap.Build(2026, recapPlays);
+Check(recap2026 is { Plays: 5, Minutes: 15, Songs: 2, Artists: 2, TopMonth: "March" } && recap2026.TopSongs[0] is { Track.Id: "1", Plays: 3 }
+    && recap2026.TopArtists[0] is { Artist.Id: "ax", Plays: 3 } && recap2026.TopAlbums[0] is { ReleaseId: "r1", Plays: 3 }, "a year's recap counts plays, minutes, top songs, artists, albums and the busiest month");
+Check(MusicRecap.Build(2024, recapPlays).Summary.StartsWith("Nothing played yet", StringComparison.Ordinal) && recap2026.Summary.Contains("5 plays, 15 minutes, 2 songs by 2 artists. Most played: Song 1 (3 plays).", StringComparison.Ordinal) && MusicRecap.Count(1, "album") == "1 album",
+    "the recap summary reads well for an empty and a full year");
+var historyRoot = Path.Combine(Path.GetTempPath(), "streamfin-history-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var history = new MusicHistory(historyRoot);
+    var listener = Guid.NewGuid();
+    await history.AppendAsync(listener, recapPlays, default);
+    await File.AppendAllTextAsync(Path.Combine(historyRoot, listener.ToString("N"), "2026.jsonl"), "{broken\n");
+    Check((await history.ReadAsync(listener, 2026, default)).Count == 5 && (await history.ReadAsync(listener, 2025, default)).Count == 1
+        && history.Years(listener).SequenceEqual([2026, 2025]), "plays are kept per year, and a damaged line does not lose the rest");
+}
+finally { if (Directory.Exists(historyRoot)) Directory.Delete(historyRoot, true); }
+// Spotify playlist import.
+Check(SpotifyImport.PlaylistId("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc") == "37i9dQZF1DXcBWIGoYBM5M"
+    && SpotifyImport.PlaylistId("https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M") == "37i9dQZF1DXcBWIGoYBM5M"
+    && SpotifyImport.PlaylistId("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M") == "37i9dQZF1DXcBWIGoYBM5M"
+    && SpotifyImport.PlaylistId("daft punk") is null && SpotifyImport.PlaylistId("https://open.spotify.com/album/37i9dQZF1DXcBWIGoYBM5M") is null,
+    "a Spotify playlist link is recognised in its usual forms, and nothing else is");
+var spotifyPage = SpotifyImport.ParseTracks("""
+{"items":[{"track":{"name":"Get Lucky","duration_ms":369626,"external_ids":{"isrc":"usqx91300108"},"artists":[{"name":"Daft Punk"},{"name":"Pharrell Williams"}],"album":{"name":"Random Access Memories"}}},
+{"track":null},{"track":{"name":"Podcast","artists":[]}}],"next":"https://api.spotify.com/v1/playlists/x/tracks?offset=100"}
+""");
+Check(spotifyPage is { HasNext: true, Tracks: [{ Title: "Get Lucky", Isrc: "USQX91300108", DurationMs: 369626, Album: "Random Access Memories", Artists: ["Daft Punk", "Pharrell Williams"] }] },
+    "a Spotify page gives each song with its ISRC, and skips removed songs and episodes");
+Check(SpotifyImport.ParsePlaylist("{\"name\":\"Road trip\",\"description\":\"<a href=x>Songs</a> for driving\"}") == ("Road trip", "Songs for driving"), "a playlist keeps its name and a plain description");
+MusicTrack Hit(string id, string title, string artist, int ms, bool explicitSong = false) => new(id, title, [new MusicArtistRef("a", artist)], "r", null, ms, null, explicitSong, null, null);
+Check(MusicCatalog.BestMatch("Get Lucky (feat. Pharrell Williams)", "Daft Punk", 369_626,
+        [Hit("1", "Get Lucky", "Someone Else", 369_000), Hit("2", "Get Lucky (Radio Edit)", "Daft Punk", 248_000), Hit("3", "Get Lucky", "Daft Punk", 369_000)])?.Id == "3"
+    && MusicCatalog.BestMatch("Get Lucky", "Daft Punk", 369_626, [Hit("2", "Get Lucky", "Daft Punk", 248_000)]) is null
+    && MusicCatalog.BestMatch("Beyoncé Song - 2011 Remaster", "Beyonce", 200_000, [Hit("4", "Beyonce Song", "Beyoncé", 201_000)])?.Id == "4",
+    "a search hit matches only with the same title and artist and a length within three seconds");
+// The StreamFin entry (hub) and library links.
+Check(new Configuration().StreamingNavigationMode == "Channels" && new Configuration().StreamingLibraryLinks.Count == 0, "existing installs keep the separate channels and no library links");
+Check(StreamingNavigation.NormalizeMode("Hub") == "Hub" && StreamingNavigation.NormalizeMode("Both") == "Both"
+    && new string?[] { null, "", "Channels", "hub", "other" }.All(m => StreamingNavigation.NormalizeMode(m) == "Channels"), "unknown layouts fall back to separate channels");
+Check(new HubChannel().Name == "StreamFin", "the hub's name, which fixes its id, is StreamFin");
+Check(StreamingNavigation.Target("films")?.Folder is null && StreamingNavigation.Target("movies")?.Folder == "list/movies/1" && StreamingNavigation.Target("tv")?.Folder == "list/tv/1"
+    && StreamingNavigation.Target("anime")?.Channel == "Anime" && StreamingNavigation.Target("nope") is null, "hub folders and library links lead to the right channel folder");
+Check(LibraryStreamingLinks.Categories.All(c => StreamingNavigation.Target(c) is not null), "every library link category has a target");
+var hubChannel = new HubChannel();
+Check(!hubChannel.IsEnabledFor(Guid.NewGuid().ToString()) && !hubChannel.IsEnabledFor("invalid"), "the hub is hidden while it is not chosen or for unknown users");
+Check((await hubChannel.GetChannelItems(new MediaBrowser.Controller.Channels.InternalChannelItemQuery { UserId = Guid.Empty }, default)).Items.Count == 0, "a hub that is not chosen lists nothing");
+Check(LibraryStreamingLinks.NativePage(0, 20) == (0, 19) && LibraryStreamingLinks.NativePage(20, 20) == (19, 20)
+    && LibraryStreamingLinks.NativePage(0, 1) == (0, 0) && LibraryStreamingLinks.NativePage(0, null) == (0, null), "the link takes the first row and later pages shift by one");
+var libraryItems = Enumerable.Range(0, 49).ToArray();
+var seenItems = new List<int>();
+for (var start = 0; start < libraryItems.Length + 1; start += 7)
+{
+    var nativePage = LibraryStreamingLinks.NativePage(start, 7);
+    seenItems.AddRange(libraryItems.Skip(nativePage.Start).Take(nativePage.Limit!.Value));
+}
+Check(seenItems.SequenceEqual(libraryItems), "paging a library with a link never skips or repeats its own items");
 Console.WriteLine($"{count} checks passed.");
 
 sealed class SiteFake(string id, IReadOnlyList<SourceTitle> titles, IReadOnlyList<SourceEpisode> episodes, Func<string, IReadOnlyList<ResolvedVideo>> resolve) : IAnimeSource

@@ -10,12 +10,12 @@ namespace StreamFin;
 // share one request, and a recent copy is served when the budget or AniList runs out.
 public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger) : IDisposable
 {
-    private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 4000 });
+    private readonly MemoryCache cache = CacheRegistry.Track("Anime lookups", new(new MemoryCacheOptions { SizeLimit = 4000 }));
     private readonly ConcurrentDictionary<string, Lazy<Task<string>>> inflight = new();
     private readonly RateWindow budget = new(25, TimeSpan.FromMinutes(1));
     // Pages and titles seen before answer at once and refresh behind, while the budget has room.
-    private readonly FreshCache<CatalogPage> pages = new(p => p.Items.Count > 0, 1000, failed: ex => Refused(logger, ex));
-    private readonly FreshCache<Anime> titles = new(_ => true, 4000, failed: ex => Refused(logger, ex));
+    private readonly FreshCache<CatalogPage> pages = new(p => p.Items.Count > 0, 1000, failed: ex => Refused(logger, ex), name: "Anime pages");
+    private readonly FreshCache<Anime> titles = new(_ => true, 4000, failed: ex => Refused(logger, ex), name: "Anime titles");
     // Typing a search fires a query per pause. Searches get part of the budget and never wait,
     // so browsing a page always has slots left.
     private readonly RateWindow searches = new(15, TimeSpan.FromMinutes(1));

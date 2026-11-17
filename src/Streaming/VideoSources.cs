@@ -27,7 +27,7 @@ public static class TestLimit
 // playback goes straight to another site. Also how long each takes to start an episode, so the fastest is tried first.
 public sealed class VideoHealth(ILogger<VideoHealth>? logger = null)
 {
-    public static readonly string[] Sources = [.. SourceRegistry.Order, "flix"];
+    public static readonly string[] Sources = [.. SourceRegistry.Order, .. FilmSources.Order];
     private static readonly TimeSpan Slow = TimeSpan.FromSeconds(60);
     private readonly ConcurrentDictionary<string, CatalogBreaker> breakers = new();
     private readonly ConcurrentDictionary<string, double> speeds = new();
@@ -35,7 +35,7 @@ public sealed class VideoHealth(ILogger<VideoHealth>? logger = null)
     public CatalogBreaker Breaker(string source) => breakers.GetOrAdd(source, id => new CatalogBreaker(limit: 3, window: TimeSpan.FromMinutes(10), slow: Slow, probed: true)
         { Name = Label(id), Logger = logger });
 
-    public static string Label(string source) => source switch { "zoko" => "HiAnime", "animegg" => "AnimeGG", "animeheaven" => "AnimeHeaven", "flix" => "FlixHQ", _ => source };
+    public static string Label(string source) => source switch { "zoko" => "HiAnime", "animegg" => "AnimeGG", "animeheaven" => "AnimeHeaven", "flix" => "FlixHQ", "vidly" => "Vidly", "astra" => "Astra", "vidbolt" => "VidBolt", "punkflix" => "Punkflix", _ => source };
 
     public bool Usable(string source) => Breaker(source).Usable(DateTime.UtcNow);
 
@@ -82,7 +82,7 @@ public sealed class VideoHealth(ILogger<VideoHealth>? logger = null)
         var status = Breaker(source).Status(DateTime.UtcNow);
         if (status.State != SourceHealth.Healthy)
             return $"{Label(source)} is not answering right now ({status.LastError}); StreamFin checks it again in the background"
-                + (source == "flix" ? "." : " and plays from another site meanwhile.");
+                + " and plays from another site meanwhile.";
         return Typical(source) is { } seconds ? $"Usually starts in about {Math.Max(1, Math.Round(seconds)):0} s." : null;
     }
 }
@@ -95,7 +95,7 @@ public sealed record VideoCheck(string? Problem, bool Outage)
 }
 
 // The whole way to a playable video, for a title every site carries, so a check that passes means playing works.
-public sealed class VideoChecks(IEnumerable<IAnimeSource> anime, TmdbCatalog tmdb, FlixSource flix)
+public sealed class VideoChecks(IEnumerable<IAnimeSource> anime, TmdbCatalog tmdb, FlixSource flix, IEnumerable<IFilmSource> films)
 {
     private static readonly Anime Frieren = new(154587, "Sousou no Frieren", ["Frieren: Beyond Journey's End", "Frieren"], 2023, "", null, 24, false, [], MalId: 52991, AvailableEpisodes: 28);
     private static readonly Film Inception = new(27205, FilmKind.Movie, "Inception", 2010, "", null, 148, false);
@@ -115,6 +115,8 @@ public sealed class VideoChecks(IEnumerable<IAnimeSource> anime, TmdbCatalog tmd
                 case "flix":
                     flix.Forget(Inception);
                     return (await flix.ResolveAsync(Inception, null, null, limit.Token)).Count > 0 ? VideoCheck.Works : new("no video was found", false);
+                case var film when films.FirstOrDefault(f => f.Id == film) is { } fallback:
+                    return (await fallback.ResolveAsync(Inception, null, null, limit.Token)).Count > 0 ? VideoCheck.Works : new("no video was found", false);
                 default:
                     if (anime.FirstOrDefault(a => a.Id == source) is not { } site) return new("unknown source", false);
                     var match = await SourceRegistry.MatchAsync(site, Frieren, limit.Token);
@@ -146,7 +148,7 @@ public sealed class VideoProbe(VideoHealth health, VideoChecks checks, ILogger<V
                 {
                     var status = health.Breaker(source).Status(DateTime.UtcNow);
                     if (status.State == SourceHealth.Healthy || status.NextCheck > DateTime.UtcNow) continue;
-                    if (source == "flix" ? !FilmChannel.IsAvailable : !SourceRegistry.IsEnabled(source, config)) continue;
+                    if (FilmSources.Order.Contains(source) ? !FilmChannel.IsAvailable || !FilmSources.IsEnabled(source) : !SourceRegistry.IsEnabled(source, config)) continue;
                     // Each site on its own: one that breaks in a new way must not stop the others being checked.
                     VideoCheck check;
                     try { check = await checks.CheckAsync(source, stop); }

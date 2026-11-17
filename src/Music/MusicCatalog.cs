@@ -178,6 +178,32 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
             .OrderByDescending(c => c.Explicit == track.Explicit).FirstOrDefault();
     }
 
+    // A recording by its ISRC, through Deezer's lookup. Like every Deezer song it plays the catalog's FLAC of the
+    // same recording. Null when Deezer is switched off or does not know the code.
+    public async Task<MusicTrack?> ByIsrcAsync(string isrc, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!Fallback || !Regex.IsMatch(isrc, @"\A[A-Z0-9]{12}\z", RegexOptions.None, TimeSpan.FromSeconds(1))) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(await QueryAsync(deezer, new Uri(Deezer.Api, "track/isrc:" + isrc)));
+            return Deezer.ParseTrack(document.RootElement) is { } track && track.Isrc == isrc ? track : null;
+        }
+        catch (SourceStatusException missing) when (missing.Status is 400 or 404) { return null; }
+    }
+
+    // The search hit that is the same song: same title and artist (accents, case and punctuation aside) and a length
+    // within three seconds; without a length to compare, title and artist alone. Explicit copies first.
+    public static MusicTrack? BestMatch(string title, string artist, int? durationMs, IEnumerable<MusicTrack> candidates)
+    {
+        static string Plain(string text) => MusicAudio.Normalize(Regex.Replace(text, @"\s*[(\[]\s*(?:feat\.?|ft\.?|with|remaster(?:ed)?[^)\]]*|\d{4} remaster[^)\]]*)[^)\]]*[)\]]", "",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)).Split(" - ")[0]);
+        var (wantTitle, wantArtist) = (Plain(title), MusicAudio.Normalize(artist));
+        return candidates.Where(c => Plain(c.Title) == wantTitle && c.Artists.Any(a => MusicAudio.Normalize(a.Name) == wantArtist)
+                && (durationMs is null || c.DurationMs is null || Math.Abs(c.DurationMs.Value - durationMs.Value) <= 3000))
+            .OrderByDescending(c => c.Explicit).ThenBy(c => durationMs is int d && c.DurationMs is int x ? Math.Abs(x - d) : int.MaxValue).FirstOrDefault();
+    }
+
     public async Task<MusicTrack> TrackAsync(string releaseId, string trackId, CancellationToken ct)
         => (await ReleaseAsync(releaseId, ct)).Tracks.FirstOrDefault(t => t.Id == ValidateId(trackId)) ?? throw new ProviderException("This track is unavailable.");
 

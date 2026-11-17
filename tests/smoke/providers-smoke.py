@@ -53,8 +53,9 @@ try:
     legacy_progress = {item: ok('/UserItems/' + item + '/UserData') for item in legacy_ids}
     seasons = children(series['Id'])
     print('Provider choices:', ', '.join(s['Name'] for s in seasons), flush=True)
-    gg = next(x for x in seasons if x['Name'] == 'Episodes · AnimeGG')
-    heaven = next(x for x in seasons if x['Name'] == 'Episodes · AnimeHeaven')
+    # The first source with the title is "Episodes · X", the others are "Also on X".
+    gg = next(x for x in seasons if x['Name'] in ('Episodes · AnimeGG', 'Also on AnimeGG'))
+    heaven = next(x for x in seasons if x['Name'] in ('Episodes · AnimeHeaven', 'Also on AnimeHeaven'))
     gg_episodes = children(gg['Id'])
     heaven_episodes = children(heaven['Id'])
     assert len(heaven_episodes) == 26
@@ -62,7 +63,9 @@ try:
         native = ok('/Shows/' + series['Id'] + '/Episodes?SeasonId=' + season['Id'])['Items']
         assert {x['Id'] for x in native} == {x['Id'] for x in listed}, 'Native episode view omitted cached items'
     print('PASS: native episode views show both legacy AnimeGG and new-provider episodes', flush=True)
-    assert set(legacy_ids).issubset({x['Id'] for x in gg_episodes}), 'Legacy AnimeGG episode IDs changed'
+    # Saved by clear-search-smoke from the first season, whichever source that is.
+    listed = {x['Id'] for season in seasons for x in children(season['Id'])}
+    assert set(legacy_ids).issubset(listed), 'Saved episode IDs changed'
     for item, previous in legacy_progress.items():
         after = ok('/UserItems/' + item + '/UserData')
         for key in ('Played', 'PlaybackPositionTicks', 'PlayCount', 'IsFavorite'):

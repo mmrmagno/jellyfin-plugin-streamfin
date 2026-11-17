@@ -1,13 +1,15 @@
+using Microsoft.Extensions.Logging;
+
 namespace StreamFin;
 
 public sealed record SourceMatches(string Id, string Name, IReadOnlyList<SourceTitle> Titles, string? Error = null);
 public sealed record AnimePlayback(string Key, IReadOnlyList<ResolvedVideo> Videos);
 
-public sealed class SourceRegistry(IEnumerable<IAnimeSource> providers, VideoHealth? health = null) : IDisposable
+public sealed class SourceRegistry(IEnumerable<IAnimeSource> providers, VideoHealth? health = null, ILogger<SourceRegistry>? logger = null) : IDisposable
 {
     // Which titles a site has changes rarely; its episode list changes once a week while a show airs.
-    private readonly FreshCache<SourceMatches> matches = new(m => m.Error is null && m.Titles.Count > 0);
-    private readonly FreshCache<IReadOnlyList<SourceEpisode>> episodes = new(e => e.Count > 0);
+    private readonly FreshCache<SourceMatches> matches = new(m => m.Error is null && m.Titles.Count > 0, failed: ex => logger?.LogInformation("StreamFin sources: refreshing a title list in the background failed ({ErrorType})", ex.GetType().Name), name: "Anime sources");
+    private readonly FreshCache<IReadOnlyList<SourceEpisode>> episodes = new(e => e.Count > 0, failed: ex => logger?.LogInformation("StreamFin sources: refreshing an episode list in the background failed ({ErrorType})", ex.GetType().Name), name: "Anime episodes");
     private readonly VideoHealth health = health ?? new VideoHealth();
     public VideoHealth Health => health;
     private static int Revision => Plugin.Instance?.Configuration.CacheRevision ?? 0;

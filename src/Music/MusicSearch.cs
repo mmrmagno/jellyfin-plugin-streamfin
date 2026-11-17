@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace StreamFin;
 
 public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, SearchHistory history, IHttpContextAccessor contexts,
-    IAuthorizationContext authorization, ILogger<MusicSearch> logger) : IInternalSearchProvider
+    IAuthorizationContext authorization, ILogger<MusicSearch> logger, SpotifyImport spotify) : IInternalSearchProvider
 {
     // Jellyfin derives channel item IDs from external ID + channel name + "16".
     public const string FolderKey = "search" + MusicChannel.ChannelName + "16";
@@ -23,7 +23,9 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
     public Guid SearchFolderId => library.GetNewItemId(FolderKey, typeof(Folder));
     private static bool Wants(SearchProviderQuery query, BaseItemKind kind) => query.IncludeItemTypes.Length == 0
         ? !query.ExcludeItemTypes.Contains(kind) : query.IncludeItemTypes.Contains(kind);
-    public bool CanSearch(SearchProviderQuery query) => query.SearchTerm.Trim().Length is >= 2 and <= 100
+    // A pasted Spotify playlist link starts an import instead of a search, whether or not online search is on.
+    private static bool IsImport(SearchProviderQuery query) => SpotifyImport.Configured && SpotifyImport.PlaylistId(query.SearchTerm) is not null;
+    public bool CanSearch(SearchProviderQuery query) => IsImport(query) || query.SearchTerm.Trim().Length is >= 2 and <= 100 && Plugin.Instance?.Configuration.OnlineSearch != false
         && (Wants(query, BaseItemKind.MusicArtist) || Wants(query, BaseItemKind.MusicAlbum) || Wants(query, BaseItemKind.Audio))
         && (query.MediaTypes.Length == 0 || query.MediaTypes.Contains(MediaType.Audio))
         && (!query.ParentId.HasValue || query.ParentId == Guid.Empty || query.ParentId == ChannelId || query.ParentId == SearchFolderId);
@@ -52,7 +54,7 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
         item.Overview = info.Overview;
         item.ProductionYear = info.ProductionYear;
         item.PremiereDate = info.PremiereDate;
-        item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Distinct().ToArray();
+        item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Append("Streamable").Distinct().ToArray();
         item.ProviderIds = info.ProviderIds;
         // Generic search groups by this key; a shared NULL would collapse unrelated results.
         item.PresentationUniqueKey = "streamfin-search-" + info.Id;
@@ -69,6 +71,12 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
         if (!CanSearch(query) || !MusicChannel.IsAvailable || contexts.HttpContext is not { } context) return [];
         var auth = await authorization.GetAuthorizationInfo(context);
         if (!auth.IsAuthenticated || !Plugin.Allows(auth.UserId) || (query.UserId is { } user && user != Guid.Empty && user != auth.UserId)) return [];
+        if (IsImport(query))
+        {
+            // The playlist shows up under Music > Playlists and fills in while songs are matched.
+            spotify.Start(auth.UserId, query.SearchTerm);
+            return [];
+        }
         try
         {
             var generation = history.Generation;

@@ -21,7 +21,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
     public int Priority => 50;
     public Guid ChannelId => library.GetNewItemId("Channel Anime", typeof(Channel));
     public Guid SearchFolderId => library.GetNewItemId("searchAnime16", typeof(Folder));
-    public bool CanSearch(SearchProviderQuery query) => query.SearchTerm.Trim().Length is >= 2 and <= 100
+    public bool CanSearch(SearchProviderQuery query) => query.SearchTerm.Trim().Length is >= 2 and <= 100 && Plugin.Instance?.Configuration.OnlineSearch != false
         && (query.IncludeItemTypes.Length == 0 ? !query.ExcludeItemTypes.Contains(BaseItemKind.Series) : query.IncludeItemTypes.Contains(BaseItemKind.Series))
         && (query.MediaTypes.Length == 0 || query.MediaTypes.Contains(MediaType.Video))
         && (!query.ParentId.HasValue || query.ParentId == Guid.Empty || query.ParentId == ChannelId || query.ParentId == SearchFolderId);
@@ -64,7 +64,7 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
                     item.Overview = anime.Overview;
                     item.ProductionYear = anime.Year;
                     item.Genres = anime.Genres;
-                    item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Distinct().ToArray();
+                    item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Append("Streamable").Distinct().ToArray();
                     item.ProviderIds = new Dictionary<string, string> { ["Custom"] = $"anifin-series-{anime.Id}" };
                     // Generic search groups series by this persisted key; NULL would collapse unrelated anime.
                     item.PresentationUniqueKey = $"anifin-search-{anime.Id}";

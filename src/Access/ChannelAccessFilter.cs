@@ -18,7 +18,8 @@ namespace StreamFin;
 // IChannel.IsEnabledFor hides the channel, but cached descendants can also be requested
 // via Jellyfin's generic item/playback endpoints. Protect those routes and their results.
 public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationContext authorization, IChannelManager channels, ArtworkAccess artwork, ContentAccess content,
-    MusicLyrics lyrics, MusicMix mix, MediaBrowser.Controller.Dto.IDtoService dtos, AniListCatalog anime, SourceRegistry sites)
+    MusicLyrics lyrics, MusicMix mix, MediaBrowser.Controller.Dto.IDtoService dtos, AniListCatalog anime, SourceRegistry sites, OnlineSearch animeSearch, FilmSearch filmSearch,
+    StreamingNavigation navigation, LibraryStreamingLinks links)
     : IAsyncActionFilter, IAsyncResultFilter
 {
     private bool IsOurs(Guid id) => id != Guid.Empty && content.IsOurs(id);
@@ -26,6 +27,13 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     private Task<bool> Allowed(ActionContext context) => artwork.AllowsAsync(context.HttpContext);
     private void Countable(BaseItemDto dto)
     {
+        // A season without its series link makes Jellyfin's app request Shows/null/Episodes, which fails (HTTP 400).
+        // Some saved seasons have no series id at all; their parent folder is the series.
+        if (dto.Type == BaseItemKind.Season && (dto.SeriesId is null || dto.SeriesId == Guid.Empty) && IsOurs(dto.Id) && library.GetItemById(dto.Id) is Season season)
+        {
+            var series = season.SeriesId != Guid.Empty ? season.SeriesId : library.GetItemById(season.ParentId) is Series parent ? parent.Id : Guid.Empty;
+            if (series != Guid.Empty) { dto.SeriesId = series; dto.SeriesName ??= library.GetItemById(series)?.Name; }
+        }
         // Jellyfin reports every channel folder except series and seasons as ChannelFolderItem, which
         // clients file under no heading. Search and detail pages need the album or artist type.
         if (dto.Type == BaseItemKind.ChannelFolderItem && IsOurs(dto.Id))
@@ -80,6 +88,12 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
             var image = ArtworkAccess.IsImage(context.HttpContext);
             foreach (var id in ids.Where(IsOurs))
                 if (!await content.AllowsAsync(id, context.HttpContext.RequestAborted, cachedOnly: image)) { context.Result = new NotFoundResult(); return; }
+            if (context.HttpContext.Request.Method == "GET" && context.ActionDescriptor is ControllerActionDescriptor browse && CatalogSearch.IsBrowseAction(browse.ActionName)
+                && await CatalogSearchAsync(context) is { } catalogResult)
+            {
+                context.Result = catalogResult;
+                return;
+            }
             if (context.ActionDescriptor is ControllerActionDescriptor { ControllerName: "Lyrics", ActionName: "GetLyrics" }
                 && context.ActionArguments.TryGetValue("itemId", out var lyricItem) && lyricItem is Guid lyricId && IsOurs(lyricId))
             {
@@ -119,6 +133,10 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
                     if (queueOf is Season site) await WarmAsync([site], ct);
                     var all = queueOf is Season one ? ChannelNavigation.SiteEpisodes(await ListAsync(one, auth.User, ct))
                         : await SeriesQueueAsync((Series)queueOf, auth.User!, ct);
+                    // Jellyfin's season and missing filters apply to the queue too. StreamFin has no missing episodes.
+                    if (Argument<bool?>(context, "isMissing") is true) all = [];
+                    else if ((Argument<int?>(context, "seasonNumber") ?? Argument<int?>(context, "season")) is { } seasonNumber)
+                        all = all.Where(e => e.ParentIndexNumber == seasonNumber).ToArray();
                     IEnumerable<Episode> queue = all;
                     if (Argument<Guid?>(context, "startItemId") is { } startId && startId != Guid.Empty) queue = queue.SkipWhile(e => e.Id != startId);
                     if (Argument<Guid?>(context, "adjacentTo") is { } around && around != Guid.Empty)
@@ -138,9 +156,48 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
                     return;
                 }
             }
+            if (context.HttpContext.Request.Method == "GET" && Plugin.Instance?.Configuration.StreamingLibraryLinks is { Count: > 0 }
+                && (await authorization.GetAuthorizationInfo(context.HttpContext)).User is { } viewer)
+                await links.PrepareAsync(context, viewer, context.HttpContext.RequestAborted);
         }
         await next();
     }
+    // A search started on a catalog page keeps that page as its parent, so Jellyfin's own query would list the whole
+    // catalog. These searches ask the matching provider instead, for the kinds the row asked for.
+    private async Task<IActionResult?> CatalogSearchAsync(ActionExecutingContext context)
+    {
+        var request = context.HttpContext.Request;
+        var parentId = context.ActionArguments.Where(p => p.Key.Equals("parentId", StringComparison.OrdinalIgnoreCase) || p.Key.Equals("folderId", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(p => Identifiers(p.Value)).FirstOrDefault();
+        if (parentId == Guid.Empty)
+            parentId = request.Query.Where(p => p.Key.Equals("parentId", StringComparison.OrdinalIgnoreCase) || p.Key.Equals("folderId", StringComparison.OrdinalIgnoreCase))
+                .SelectMany(p => Identifiers(p.Value.ToString())).FirstOrDefault();
+        if (parentId == Guid.Empty || library.GetItemById(parentId) is not Folder parent || !IsOurs(parentId) || !CatalogSearch.IsCatalog(parent.ExternalId)) return null;
+        var term = (Argument<string>(context, "searchTerm") ?? request.Query["searchTerm"].ToString()).Trim();
+        if (term.Length is < 2 or > 100) return null;
+        var auth = await authorization.GetAuthorizationInfo(context.HttpContext);
+        if (auth.User is null || !Plugin.Allows(auth.UserId)) return null;
+        var include = Argument<BaseItemKind[]>(context, "includeItemTypes") ?? [];
+        var exclude = Argument<BaseItemKind[]>(context, "excludeItemTypes") ?? [];
+        var media = Argument<MediaType[]>(context, "mediaTypes") ?? [];
+        var start = Math.Max(0, int.TryParse(request.Query["StartIndex"], out var offset) ? offset : 0);
+        int? limit = int.TryParse(request.Query["Limit"], out var size) && size > 0 ? Math.Min(size, 200) : null;
+        var kinds = CatalogSearch.Kinds(parent.ExternalId!.StartsWith("catalog/", StringComparison.Ordinal), include, exclude);
+        // With online search off the results would be hidden anyway, so the sites are not asked.
+        if (kinds.Length == 0 || (media.Length > 0 && !media.Contains(MediaType.Video)) || Plugin.Instance?.Configuration.OnlineSearch == false)
+            return new OkObjectResult(new QueryResult<BaseItemDto> { Items = [], TotalRecordCount = 0, StartIndex = start });
+        var query = new SearchProviderQuery { SearchTerm = term, UserId = auth.UserId, IncludeItemTypes = kinds, ExcludeItemTypes = exclude, MediaTypes = media, Limit = 30 };
+        var ct = context.HttpContext.RequestAborted;
+        var found = parent.ExternalId.StartsWith("catalog/", StringComparison.Ordinal) ? await animeSearch.SearchAsync(query, ct) : await filmSearch.SearchAsync(query, ct);
+        var items = found.Select(result => library.GetItemById(result.ItemId)).OfType<BaseItem>().ToArray();
+        var page = items.Skip(start);
+        if (limit is { } take) page = page.Take(take);
+        return new OkObjectResult(new QueryResult<BaseItemDto>
+        {
+            Items = dtos.GetBaseItemDtos(page.ToArray(), Options(context.ActionArguments), auth.User), TotalRecordCount = items.Length, StartIndex = start
+        });
+    }
+
     private static T? Argument<T>(ActionExecutingContext context, string name) =>
         context.ActionArguments.FirstOrDefault(a => a.Key.Equals(name, StringComparison.OrdinalIgnoreCase)).Value is T value ? value : default;
 
@@ -229,9 +286,25 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
     {
         var allowed = await Allowed(context);
         var discoveryList = context.HttpContext.Items[SearchHistory.HiddenTag] is true;
+        // With online search switched off, StreamFin titles are hidden from every search: saved search results, and
+        // catalog titles Jellyfin finds in its own database. Browsing the channels is unaffected.
+        var onlineSearchOff = Plugin.Instance?.Configuration.OnlineSearch == false;
+        var searching = !string.IsNullOrWhiteSpace(context.HttpContext.Request.Query["searchTerm"].ToString());
         async Task<bool> Visible(Guid id, bool listing = true) => !IsOurs(id) || (allowed
             && (!listing || !discoveryList || !SearchHistory.IsHidden(library.GetItemById(id)))
+            && !(onlineSearchOff && searching)
             && await content.AllowsAsync(id, context.HttpContext.RequestAborted));
+        // The StreamFin entry's folders become the channels they lead to. In Hub mode the separate channels are left out of
+        // the menu and home screen only; their ids keep working for the hub, favourites, history and playback.
+        var rootListing = context.ActionDescriptor is ControllerActionDescriptor { ActionName: "GetChannels" or "GetUserViews" };
+        Jellyfin.Database.Implementations.Entities.User? viewer = null;
+        async Task<BaseItemDto?> Navigate(BaseItemDto dto)
+        {
+            if (rootListing && navigation.HidesChannel(dto.Id)) return null;
+            if (!navigation.IsPlaceholder(dto.Id)) return dto;
+            viewer ??= allowed ? (await authorization.GetAuthorizationInfo(context.HttpContext)).User : null;
+            return await navigation.ResolveAsync(dto, viewer, context.HttpContext.RequestAborted);
+        }
         if (context.Result is ObjectResult result)
         {
             if (allowed) await content.PrefetchAsync(result.Value switch
@@ -244,19 +317,20 @@ public sealed class ChannelAccessFilter(ILibraryManager library, IAuthorizationC
             switch (result.Value)
             {
                 case BaseItemDto item:
-                    if (!await Visible(item.Id, listing: false)) context.Result = new NotFoundResult();
-                    else Countable(item);
+                    if (await Navigate(item) is not { } shown || !await Visible(shown.Id, listing: false)) context.Result = new NotFoundResult();
+                    else { Countable(shown); result.Value = shown; }
                     break;
                 case QueryResult<BaseItemDto> query:
+                    if (allowed) LibraryStreamingLinks.Apply(query, context.HttpContext);
                     var kept = new List<BaseItemDto>();
-                    foreach (var dto in query.Items) if (await Visible(dto.Id)) { Countable(dto); kept.Add(dto); }
+                    foreach (var dto in query.Items) if (await Navigate(dto) is { } mapped && await Visible(mapped.Id)) { Countable(mapped); kept.Add(mapped); }
                     var filtered = kept.ToArray();
                     query.TotalRecordCount = Math.Max(filtered.Length, query.TotalRecordCount - (query.Items.Count - filtered.Length));
                     query.Items = filtered;
                     break;
                 case IEnumerable<BaseItemDto> items:
                     var visible = new List<BaseItemDto>();
-                    foreach (var dto in items) if (await Visible(dto.Id)) { Countable(dto); visible.Add(dto); }
+                    foreach (var dto in items) if (await Navigate(dto) is { } mapped && await Visible(mapped.Id)) { Countable(mapped); visible.Add(mapped); }
                     result.Value = visible.ToArray();
                     break;
                 // Remote-control users see what others are playing; hide StreamFin titles they may not see.

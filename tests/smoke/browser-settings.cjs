@@ -32,7 +32,9 @@ const fs = require('node:fs');
     ]);
     const after = await (await context.request.get(base + path, {headers})).json();
     for (const key of ['Enabled', 'AnimeGgEnabled', 'AnimeHeavenEnabled', 'HideAdultContent', 'HideEcchiContent', 'AllowedUserIds']) {
-      if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) throw new Error('Saving unchanged settings changed ' + key);
+      // The user list is saved in the order the page shows users; only who is allowed matters.
+      const norm = value => JSON.stringify(Array.isArray(value) ? [...value].sort() : value);
+      if (norm(before[key]) !== norm(after[key])) throw new Error('Saving unchanged settings changed ' + key);
     }
     console.log('PASS: saving preserves permissions and content filters');
     const clearPath = '/StreamFin/SearchResults/Clear';

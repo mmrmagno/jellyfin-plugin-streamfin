@@ -7,10 +7,10 @@ namespace StreamFin;
 // answer comes back at once, and once it is older than its lifetime a fresh one loads behind it; for a day it still
 // answers while the site is failing. Callers asking at the same time share one load, which runs on its own deadline (90 s),
 // so a viewer leaving the page does not cancel it for the others. Never for signed playback addresses.
-public sealed class FreshCache<T>(Func<T, bool> usable, int size = 1000, Func<DateTimeOffset>? clock = null, Action<Exception>? failed = null) : IDisposable
+public sealed class FreshCache<T>(Func<T, bool> usable, int size = 1000, Func<DateTimeOffset>? clock = null, Action<Exception>? failed = null, string? name = null) : IDisposable
 {
     private sealed record Entry(T Value, DateTimeOffset FreshUntil, DateTimeOffset Expires);
-    private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = size });
+    private readonly MemoryCache cache = CacheRegistry.Track(name, new(new MemoryCacheOptions { SizeLimit = size }));
     private readonly ConcurrentDictionary<string, Lazy<Task<T>>> pending = new();
     private DateTimeOffset Now => clock?.Invoke() ?? DateTimeOffset.UtcNow;
 

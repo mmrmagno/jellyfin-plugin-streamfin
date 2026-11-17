@@ -101,7 +101,13 @@ try:
     upstream = urllib.request.urlopen(urllib.request.Request('https://tracks.monochrome.st/track/' + song['id'].rsplit('-', 1)[1],
                                                              headers={'User-Agent': 'Mozilla/5.0', 'Range': 'bytes=0-65535'}), timeout=60).read()
     assert body == upstream, 'stream did not pass the catalog bytes through unchanged'
-    gain = call('getSong', me, id=song['id'])['song']['replayGain']
+    # Gain is read from the first stream in the background and kept in memory, so poll for it briefly.
+    gain = None
+    for _ in range(30):
+        gain = call('getSong', me, id=song['id'])['song'].get('replayGain')
+        if gain: break
+        time.sleep(0.5)
+    assert gain, 'replay gain was not read from the stream within 15 seconds'
     assert -30 < gain['trackGain'] < 10 and 0 < gain['trackPeak'] <= 2, gain
     status, headers, body = call('stream', me, raw=True, id=song['id'], format='raw', maxBitRate='128', headers={'Range': 'bytes=0-3'})
     assert headers.get_content_type() == 'audio/flac' and body == b'fLaC', 'format=raw must not be converted'
