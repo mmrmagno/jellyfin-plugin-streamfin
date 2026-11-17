@@ -10,7 +10,8 @@ public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalo
     public Guid ChannelId => library.GetNewItemId("Channel Anime", typeof(MediaBrowser.Controller.Channels.Channel));
     public Guid FilmChannelId => library.GetNewItemId("Channel " + FilmChannel.ChannelName, typeof(MediaBrowser.Controller.Channels.Channel));
     public Guid MusicChannelId => library.GetNewItemId("Channel " + MusicChannel.ChannelName, typeof(MediaBrowser.Controller.Channels.Channel));
-    public bool IsOurs(Guid id) => IsChannel(id) || library.GetItemById(id)?.ChannelId is { } channel && IsChannel(channel);
+    // Guid.Empty comes from requests without a parent or start item; GetItemById throws on it.
+    public bool IsOurs(Guid id) => id != Guid.Empty && (IsChannel(id) || library.GetItemById(id)?.ChannelId is { } channel && IsChannel(channel));
     public bool IsChannel(Guid id) => id == ChannelId || id == FilmChannelId || id == MusicChannelId;
 
     private static int? AnimeId(BaseItem item)
@@ -20,12 +21,13 @@ public sealed class ContentAccess(ILibraryManager library, AniListCatalog catalo
     }
 
     public Task PrefetchAsync(IEnumerable<Guid> ids, CancellationToken ct) => catalog.PrefetchAsync(ids
-        .Select(library.GetItemById).OfType<BaseItem>().Where(item => item.ChannelId == ChannelId)
+        .Where(id => id != Guid.Empty).Select(library.GetItemById).OfType<BaseItem>().Where(item => item.ChannelId == ChannelId)
         .Select(AnimeId).OfType<int>().Where(id => !decisions.ContainsKey(id)), ct);
 
     // cachedOnly answers from what is already cached without asking AniList; unknown titles are denied.
     public async Task<bool> AllowsAsync(Guid id, CancellationToken ct, bool cachedOnly = false)
     {
+        if (id == Guid.Empty) return true;
         var item = library.GetItemById(id);
         if (item?.ChannelId == FilmChannelId) return FilmChannel.IsAvailable;
         if (item?.ChannelId == MusicChannelId) return MusicChannel.IsAvailable;
@@ -49,4 +51,15 @@ public static class ChannelNavigation
     public static IReadOnlyList<Episode> SiteEpisodes(IEnumerable<BaseItem> children) => children.OfType<Episode>()
         .Select((e, index) => (e, index)).OrderBy(p => AnimeChannel.Number(p.e.Name) ?? p.e.IndexNumber ?? decimal.MaxValue).ThenBy(p => p.index)
         .Select(p => p.e).ToArray();
+}
+
+// Jellyfin treats an item with no runtime as fully played and clears its resume point, so the first probed runtime is kept.
+public static class ResumeRuntime
+{
+    public static async Task KeepAsync(ILibraryManager library, string key, Type type, long? ticks, CancellationToken ct)
+    {
+        if (ticks is not > 0 || library.GetItemById(library.GetNewItemId(key, type)) is not { } item || item.RunTimeTicks is > 0) return;
+        item.RunTimeTicks = ticks;
+        await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
+    }
 }

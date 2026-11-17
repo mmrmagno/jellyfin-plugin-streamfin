@@ -22,7 +22,7 @@ namespace StreamFin;
 // Item IDs: movie/<scope>/<tmdb>, tv/<scope>/<tmdb>, season/<scope>/<tmdb>/<n>, ep/<scope>/<tmdb>/<s>/<e>.
 // The scope (listing name) keeps one title from being moved between folders by Jellyfin;
 // the TMDB provider ID lets watch progress follow the title across listings.
-public sealed class FilmChannel(TmdbCatalog catalog, FlixSource flix, StreamRelay relay, IHttpContextAccessor contexts,
+public sealed class FilmChannel(TmdbCatalog catalog, FilmSources sources, StreamRelay relay, IHttpContextAccessor contexts,
     IAuthorizationContext authorization, ILibraryManager library, ILogger<FilmChannel> logger, VideoHealth health)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
@@ -171,10 +171,12 @@ public sealed class FilmChannel(TmdbCatalog catalog, FlixSource flix, StreamRela
         if (AnimeChannel.PreparesNext && Ready.TryGetValue<MediaSourceInfo>(key, out var ready) && relay.Holds(ready!.Path))
         {
             if (starting) PrepareNext(user, id, target.Film, target.Season, target.Episode);
+            await ResumeRuntime.KeepAsync(library, id + ChannelName + "16", id.StartsWith("movie/", StringComparison.Ordinal) ? typeof(Movie) : typeof(Episode), ready!.RunTimeTicks, ct);
             return [ready];
         }
         var source = await PlayAsync(user, target.Film, target.Season, target.Episode, ct);
         if (starting) PrepareNext(user, id, target.Film, target.Season, target.Episode);
+        await ResumeRuntime.KeepAsync(library, id + ChannelName + "16", id.StartsWith("movie/", StringComparison.Ordinal) ? typeof(Movie) : typeof(Episode), source.RunTimeTicks, ct);
         return [source];
     }
 
@@ -185,17 +187,12 @@ public sealed class FilmChannel(TmdbCatalog catalog, FlixSource flix, StreamRela
     private async Task<MediaSourceInfo> PlayAsync(Guid user, Film film, int? season, int? episode, CancellationToken ct)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        IReadOnlyList<ResolvedVideo> videos;
-        try { videos = await flix.ResolveAsync(film, season, episode, ct); }
-        catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException or ProviderException)
-        {
-            health.Failed("flix", ex, ct);
-            throw;
-        }
+        // Each site is tried in turn; the one that plays is also the one asked again when its link expires.
+        var (site, videos) = await sources.ResolveAsync(film, season, episode, ct);
         var subtitles = videos[0].Subtitles?.Count ?? 0;
-        var source = await relay.MediaSourceAsync(user, videos[0], $"FlixHQ · {videos[0].Quality}" + (subtitles > 0 ? $" · {subtitles} subtitle tracks" : ""),
-            token => flix.ResolveAsync(film, season, episode, token), () => Plugin.Allows(user) && IsAvailable, ct);
-        health.Started("flix", clock.Elapsed);
+        var source = await relay.MediaSourceAsync(user, videos[0], $"{site.Name} · {videos[0].Quality}" + (subtitles > 0 ? $" · {subtitles} subtitle tracks" : ""),
+            token => site.ResolveAsync(film, season, episode, token), () => Plugin.Allows(user) && IsAvailable, ct);
+        health.Started(site.Id, clock.Elapsed);
         return source;
     }
 

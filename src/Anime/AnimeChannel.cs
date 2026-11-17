@@ -24,12 +24,13 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
 {
     public string Name => "Anime";
     public string Description => "StreamFin · Browse anime and stream Japanese audio with English subtitles.";
-    public string DataVersion => "streamfin-6-" + SourceRegistry.CacheKey + "-" + AniListCatalog.PolicyKey + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
+    public string DataVersion => "streamfin-7-" + SourceRegistry.CacheKey + "-" + AniListCatalog.PolicyKey + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
     public string HomePageUrl => "https://github.com/mmrmagno/jellyfin-plugin-streamfin";
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
     public bool IsEnabledFor(string userId) => Guid.TryParse(userId, out var id) && Plugin.Allows(id);
     // A site going down or coming back changes what a title lists, so its cached listings are made again.
-    public string GetCacheKey(string? userId) => $"{userId}-{sources.Health.Key}-{DateTime.UtcNow.Ticks / TimeSpan.FromMinutes(Math.Clamp(Plugin.Instance?.Configuration.MetadataCacheMinutes ?? 60, 1, 1440)).Ticks}";
+    // DataVersion is part of the key so a build that lays out seasons differently never serves the old listing.
+    public string GetCacheKey(string? userId) => $"{DataVersion}-{userId}-{sources.Health.Key}-{DateTime.UtcNow.Ticks / TimeSpan.FromMinutes(Math.Clamp(Plugin.Instance?.Configuration.MetadataCacheMinutes ?? 60, 1, 1440)).Ticks}";
     public InternalChannelFeatures GetChannelFeatures() => new()
     {
         MediaTypes = [ChannelMediaType.Video], ContentTypes = [ChannelMediaContentType.Episode],
@@ -132,11 +133,15 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
             {
                 foreach (var candidate in match.Titles)
                 {
-                    var item = Folder($"source/{scope}/{anime.Id}/{SourceRegistry.Key(match.Id, candidate.Id)}",
-                        match.Titles.Count == 1 && SourceRegistry.IsExact(candidate, anime) ? $"Episodes · {match.Name}" : $"{match.Name} · {candidate.Title}",
+                    var key = SourceRegistry.Key(match.Id, candidate.Id);
+                    var label = match.Titles.Count == 1 && SourceRegistry.IsExact(candidate, anime) ? $"Episodes · {match.Name}" : $"{match.Name} · {candidate.Title}";
+                    // The first source found is Season 1 (what series Play and Next Up use); the others are "Also on" seasons.
+                    // A status row for a site without this title comes before it, so only source rows count.
+                    var main = !items.Any(IsSource);
+                    var item = Folder($"source/{scope}/{anime.Id}/{key}", main ? label : label.Replace("Episodes · ", "Also on ", StringComparison.Ordinal),
                         "Japanese audio with English subtitles. Choose another provider here if this source is unavailable.");
                     item.FolderType = ChannelFolderType.Season;
-                    item.IndexNumber = 1;
+                    item.IndexNumber = main ? 1 : AlternateSeason(match.Id);
                     item.ImageUrl = anime.Image;
                     items.Add(item);
                 }
@@ -145,7 +150,8 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
                     var message = match.Error ?? "No matching title found.";
                     var item = Folder($"title/{scope}/{anime.Id}/{match.Id}/status", $"{match.Name} · {message}", message);
                     item.FolderType = ChannelFolderType.Season;
-                    item.IndexNumber = 1;
+                    // Never Season 1: that number belongs to the source that plays.
+                    item.IndexNumber = AlternateSeason(match.Id);
                     items.Add(item);
                 }
             }
@@ -159,15 +165,39 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
                     || items.Any(i => i.Id == saved.ExternalId)) continue;
                 var item = Folder(saved.ExternalId, saved.Name, saved.Overview);
                 item.FolderType = ChannelFolderType.Season;
-                item.IndexNumber = saved.IndexNumber;
+                // A kept season that was Season 1 moves aside when another source is Season 1 now.
+                item.IndexNumber = saved.IndexNumber == 1 && items.Any(i => IsSource(i) && i.IndexNumber == 1)
+                    ? AlternateSeason(SourceRegistry.Split(saved.ExternalId.Split('/', 4)[3]).Provider) : saved.IndexNumber;
                 item.ProviderIds = saved.ProviderIds;
                 items.Add(item);
             }
+            await RenumberAsync(items, ct);
             return Result(items);
         }
         if (parts is ["source", var sourceScope, var sourceAnime, var sourceId] && int.TryParse(sourceAnime, out var sourceAnimeId))
             return await EpisodesAsync(sourceScope, await catalog.GetAsync(sourceAnimeId, ct), sourceId, ct);
         return Result([]);
+    }
+
+    public static int AlternateSeason(string provider) => 101 + Math.Max(0, Array.IndexOf(SourceRegistry.Order, provider));
+    private static bool IsSource(ChannelItemInfo item) => item.Id.StartsWith("source/", StringComparison.Ordinal);
+
+    // Jellyfin copies a channel item's season and episode numbers only when it first creates the item, so saved
+    // seasons (and their episodes) from before this numbering are brought in line with the listing.
+    private async Task RenumberAsync(IEnumerable<ChannelItemInfo> listed, CancellationToken ct)
+    {
+        foreach (var folder in listed.Where(i => i.FolderType == ChannelFolderType.Season))
+        {
+            if (library.GetItemById(library.GetNewItemId(folder.Id + "Anime16", typeof(Season))) is not Season season || season.IndexNumber == folder.IndexNumber) continue;
+            season.IndexNumber = folder.IndexNumber;
+            await season.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
+            foreach (var episode in library.GetItemList(new InternalItemsQuery { ParentId = season.Id, Recursive = false }).OfType<Episode>())
+            {
+                if (episode.ParentIndexNumber == folder.IndexNumber) continue;
+                episode.ParentIndexNumber = folder.IndexNumber;
+                await episode.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
+            }
+        }
     }
 
     private async Task<ChannelItemResult> EpisodesAsync(string scope, Anime anime, string sourceId, CancellationToken ct)
@@ -176,6 +206,8 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
         var episodes = await sources.EpisodesAsync(sourceId, anime, ct);
         var provider = SourceRegistry.Split(sourceId).Provider;
         var name = sources.Name(sourceId);
+        // The season listing has already numbered this source (Season 1 or "Also on" 101+); episodes follow it.
+        var season = (library.GetItemById(library.GetNewItemId($"source/{scope}/{anime.Id}/{sourceId}Anime16", typeof(Season))) as Season)?.IndexNumber ?? 1;
         return Result(episodes.Select(episode => new ChannelItemInfo
         {
             Id = $"episode/{scope}/{anime.Id}/{SourceRegistry.Key(provider, episode.Id)}",
@@ -184,7 +216,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
             ContentType = ChannelMediaContentType.Episode, ImageUrl = anime.Image,
             Overview = provider == "zoko" ? $"Japanese audio · English subtitles (selectable) · {name}" : $"Japanese audio · English subtitles (embedded in the video) · {name}",
             IndexNumber = episode.Number == decimal.Truncate(episode.Number) ? (int)episode.Number : null,
-            ParentIndexNumber = 1, ProductionYear = anime.Year,
+            ParentIndexNumber = season, ProductionYear = anime.Year,
             RunTimeTicks = anime.Duration is > 0 ? TimeSpan.FromMinutes(anime.Duration.Value).Ticks : null,
             // The AniFin provider key predates the rename; watch state is matched on it.
             Tags = ["StreamFin"], ProviderIds = new Dictionary<string, string> { ["AniFinEpisode"] = SourceRegistry.Key(provider, episode.Id) }
@@ -208,10 +240,12 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
         if (PreparesNext && Ready.TryGetValue<Prepared>(key, out var ready) && SourceRegistry.IsEnabled(ready!.Provider) && relay.Holds(ready.Source.Path))
         {
             if (starting) PrepareNext(user, parts[1], anime, episode);
+            await ResumeRuntime.KeepAsync(library, id + "Anime16", typeof(Episode), ready.Source.RunTimeTicks, ct);
             return [ready.Source];
         }
         var source = await PlayAsync(user, parts[1], anime, episode, EpisodeNumber(id), ct);
         if (starting) PrepareNext(user, parts[1], anime, episode);
+        await ResumeRuntime.KeepAsync(library, id + "Anime16", typeof(Episode), source.Source.RunTimeTicks, ct);
         return [source.Source];
     }
 

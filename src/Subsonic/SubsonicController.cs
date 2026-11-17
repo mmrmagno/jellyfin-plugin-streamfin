@@ -755,7 +755,7 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                 ? when : DateTime.UtcNow;
             plays.Add(new MusicPlay(track, release.Title, at));
         }
-        await store.UpdateAsync(user.Id, library => library.Plays.InsertRange(0, plays), Ct);
+        await store.RecordPlaysAsync(user.Id, plays, Ct);
         return Success();
     }
 
@@ -768,14 +768,33 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
     private async Task<SubsonicNode?> PlaylistsAsync()
     {
         var (library, stars) = await LibraryAsync();
-        return Success().One(new SubsonicNode("playlists").AddRange(library.Playlists.OrderByDescending(p => p.Changed).Select(p => Playlist(p, stars, false))));
+        return Success().One(new SubsonicNode("playlists").AddRange(library.Playlists.OrderByDescending(p => p.Changed)
+            .Concat(await RecapPlaylistsAsync()).Select(p => Playlist(p, stars, false))));
+    }
+
+    // Each year's most played songs as a playlist an app can open but not change: its id is never stored, so every
+    // edit answers "not found".
+    public static Guid RecapPlaylistId(int year) => new(System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes("streamfin-recap-" + year)));
+    private async Task<IReadOnlyList<MusicPlaylist>> RecapPlaylistsAsync()
+    {
+        var playlists = new List<MusicPlaylist>();
+        foreach (var year in store.History.Years(user.Id).Take(5))
+        {
+            var recap = MusicRecap.Build(year, await store.History.ReadAsync(user.Id, year, Ct));
+            if (recap.Plays == 0) continue;
+            var start = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            playlists.Add(new MusicPlaylist(RecapPlaylistId(year), $"Your {year}: top songs", recap.Summary, start, DateTime.UtcNow,
+                recap.TopSongs.Select(song => new MusicPlay(song.Track, song.Album, start)).ToArray()));
+        }
+        return playlists;
     }
 
     private async Task<SubsonicNode?> PlaylistAsync()
     {
         var id = ParsePlaylist(One("id") ?? throw Missing("id")) ?? throw NotFound("Playlist");
         var (library, stars) = await LibraryAsync();
-        return Success().One(Playlist(library.Playlists.FirstOrDefault(p => p.Id == id) ?? throw NotFound("Playlist"), stars, true));
+        var found = library.Playlists.FirstOrDefault(p => p.Id == id) ?? (await RecapPlaylistsAsync()).FirstOrDefault(p => p.Id == id);
+        return Success().One(Playlist(found ?? throw NotFound("Playlist"), stars, true));
     }
 
     private async Task<List<MusicPlay>> EntriesAsync(IEnumerable<string> ids)
@@ -1164,6 +1183,17 @@ public sealed class SubsonicController(SubsonicAuth auth, MusicCatalog catalog, 
                 FileNameStar = MusicPaths.Part(track.Title) + "." + ticket.Container
             }.ToString();
             Response.Headers.Vary = "Origin";
+            // Gain is kept in memory only, so after a restart a song that is already on disk would never learn it:
+            // it is served from the file without a download, which is where the gain is otherwise read.
+            if (MusicGain.For(ticket.TrackId) is null && songs.OpenComplete(ticket.TrackId, ticket.Container) is { } cached)
+            {
+                await using (cached)
+                {
+                    var head = new byte[(int)Math.Min(MusicGain.HeadBytes, cached.Length)];
+                    var read = await cached.ReadAtLeastAsync(head, head.Length, throwOnEndOfStream: false, Ct);
+                    MusicGain.Remember(head.AsSpan(0, read), ticket.TrackId);
+                }
+            }
             songs.Warm(ticket);
             if (await songs.ServeAsync(HttpContext, ticket, range, () => Plugin.Allows(user.Id) && SubsonicAuth.Enabled)) return null;
             if (ticket.Local)

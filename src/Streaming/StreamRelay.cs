@@ -98,10 +98,12 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
         var streams = info.MediaStreams.Where(s => s.Type != MediaStreamType.Subtitle).ToList();
         var subtitles = resolved.Subtitles ?? [];
+        // Codec "webvtt", not "vtt": when the codec equals the client's format, Jellyfin hands the client this Path, a
+        // loopback relay address it cannot reach. Any other name makes Jellyfin serve the track from its own endpoint.
         for (var i = 0; i < subtitles.Count; i++)
             streams.Add(new MediaStream
             {
-                Type = MediaStreamType.Subtitle, Index = streams.Count, Codec = "vtt", Path = playback.Subtitles[i],
+                Type = MediaStreamType.Subtitle, Index = streams.Count, Codec = "webvtt", Path = playback.Subtitles[i],
                 IsExternal = true, SupportsExternalStream = true, Title = subtitles[i].Label, IsDefault = i == 0 && subtitles[i].Language == "en",
                 Language = subtitles[i].Language == "und" ? null : subtitles[i].Language
             });
@@ -346,7 +348,8 @@ public static class Hls
         var ext = Path.GetExtension(url.AbsolutePath).TrimStart('.').ToLowerInvariant();
         return ext is "m4s" or "mp4" or "aac" or "ts" or "vtt" or "webvtt" or "m4a" or "m4v" or "cmfv" or "cmfa" ? ext : "ts";
     }
-    private static string Part(int index, bool playlist, Uri url) => $"p/{index}.{(playlist ? "m3u8" : Extension(url))}";
+    private static string Part(int index, bool playlist, Uri url, bool fragmented = true) =>
+        $"p/{index}.{(playlist ? "m3u8" : !fragmented && Extension(url) is "mp4" or "m4s" or "m4v" or "cmfv" ? "ts" : Extension(url))}";
 
     // FFmpeg reads attribute lists loosely: bare or quoted values, backslash escapes, the last
     // duplicate wins. Parse them the same way so nothing FFmpeg would act on is overlooked.
@@ -438,13 +441,17 @@ public static class Hls
     {
         var output = new StringBuilder("#EXTM3U\n");
         string Relay(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url)[2..]; }
+        // Without EXT-X-MAP the segments are MPEG-TS whatever their address says (some hosts call them .mp4), and
+        // FFmpeg refuses a segment whose content does not match its extension.
+        var fragmented = Lines(text).Any(l => l.TrimStart().StartsWith("#EXT-X-MAP", StringComparison.Ordinal));
+        string Segment(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url, fragmented)[2..]; }
         foreach (var raw in Lines(text))
         {
             var line = raw.Trim();
             if (line.Length == 0 || line == "#EXTM3U") continue;
             if (!line.StartsWith('#'))
             {
-                output.Append(Relay(line)).Append('\n');
+                output.Append(Segment(line)).Append('\n');
                 continue;
             }
             var colon = line.IndexOf(':');

@@ -82,10 +82,12 @@ other = state['users']['other']
 plugins = ok('/Plugins', admin)
 assert any(p['Id'].replace('-', '') == PLUGIN.replace('-', '') and p['Status'] == 'Active' for p in plugins), plugins
 print('PASS: StreamFin loaded', flush=True)
-ok('/Plugins/' + PLUGIN + '/Configuration', admin, {
-    'Enabled': True, 'AllowedUserIds': [viewer['id']], 'AnimeGgEnabled': True,
-    'MetadataCacheMinutes': 60, 'CacheRevision': int(time.time()),
-})
+# Merged into what is saved: posting only these fields would reset every other setting (API keys, layout, filters)
+# on a server that is also used by hand. Test users are added to whoever is already allowed.
+config = ok('/Plugins/' + PLUGIN + '/Configuration', admin)
+config.update({'Enabled': True, 'AnimeGgEnabled': True, 'MetadataCacheMinutes': 60, 'CacheRevision': int(time.time()),
+               'AllowedUserIds': sorted(set(config.get('AllowedUserIds') or []) - {other['id']} | {viewer['id']})})
+ok('/Plugins/' + PLUGIN + '/Configuration', admin, config)
 tasks = ok('/ScheduledTasks', admin)
 refresh = next((t for t in tasks if 'channel' in t['Name'].lower()), None)
 if refresh and refresh['State'] != 'Running':

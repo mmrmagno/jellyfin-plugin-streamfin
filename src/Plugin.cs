@@ -19,11 +19,23 @@ public sealed class Configuration : BasePluginConfiguration
     public bool HideEcchiContent { get; set; } = true;
     public int MetadataCacheMinutes { get; set; } = 60;
     public bool FilmEnabled { get; set; } = true;
+    // Fallback Movies & TV sources, asked in order after FlixHQ (FilmSources.Order) for titles it does not have or cannot play.
+    public bool FilmVidly { get; set; } = true;
+    public bool FilmAstra { get; set; } = true;
+    public bool FilmVidBolt { get; set; } = true;
+    public bool FilmPunkflix { get; set; } = true;
     public string TmdbApiKey { get; set; } = "";
     public bool MusicEnabled { get; set; } = true;
     // Empty means MusicCatalog.DefaultApi.
     public string MusicApiUrl { get; set; } = "";
     public bool MusicPreferExplicit { get; set; } = true;
+    // Off: online titles stop appearing in Jellyfin search. The channels are not affected.
+    public bool OnlineSearch { get; set; } = true;
+    // Channels: Anime, Movies & TV and Music each have their own entry (as before). Hub: one StreamFin entry holds them.
+    // Both: the StreamFin entry and the separate channels.
+    public string StreamingNavigationMode { get; set; } = "Channels";
+    // A StreamFin entry at the top of these Jellyfin libraries (category: anime, movies, tv or music).
+    public List<StreamingLibraryLink> StreamingLibraryLinks { get; set; } = [];
     // Off: no song plays from Monochrome's audio host; its catalog still answers searches, albums and artists.
     public bool MusicMonochrome { get; set; } = true;
     // Where songs play from and where searches go first: the first that works wins. Unknown names are dropped and
@@ -34,6 +46,9 @@ public sealed class Configuration : BasePluginConfiguration
     public bool MusicPrefetch { get; set; } = true;
     // Deezer's public catalog answers searches, albums and artists while the music catalog cannot.
     public bool MusicDeezer { get; set; } = true;
+    // A free Spotify developer app, only used to read public playlists pasted into search for import.
+    public string SpotifyClientId { get; set; } = "";
+    public string SpotifyClientSecret { get; set; } = "";
     // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.
     public int MusicCacheMb { get; set; } = 4096;
     // When no FLAC source answers, a song may play from a lossy one (YouTube's AAC) instead of failing.
@@ -63,7 +78,16 @@ public sealed class Plugin : BasePlugin<Configuration>, IHasWebPages
     public override Guid Id => PluginId;
     public override string Name => "StreamFin";
     public override string Description => "Anime, movies, TV and lossless music from online sources, as Jellyfin channels.";
-    public IEnumerable<PluginPageInfo> GetPages() => [new() { Name = "streamfin", EmbeddedResourcePath = "StreamFin.Configuration.html" }];
+    // EnableInMainMenu puts StreamFin in the dashboard sidebar; without it the page is only reachable from the plugin card.
+    public IEnumerable<PluginPageInfo> GetPages() => [new()
+    {
+        Name = "streamfin",
+        DisplayName = "StreamFin",
+        EmbeddedResourcePath = "StreamFin.Configuration.html",
+        EnableInMainMenu = true,
+        MenuSection = "server",
+        MenuIcon = "extension"
+    }];
     public static string[] Ordered(string[]? saved, params string[] known) => (saved ?? []).Where(s => known.Contains(s)).Concat(known).Distinct().ToArray();
     public static bool Allows(Guid id) => id != Guid.Empty && Instance?.Configuration is { Enabled: true } c
         && c.AllowedUserIds.Any(value => Guid.TryParse(value, out var allowed) && allowed == id);

@@ -12,8 +12,10 @@ public sealed record FlixServer(string Name, Uri Link);
 // Movies and TV from the two FlixHQ layouts, ported from my flixdl downloader. Each site lists
 // third-party players; the player page is read as text, packed scripts are unpacked as a pure
 // string transform, and nothing from the page is ever executed.
-public sealed class FlixSource(SafeHttp http) : IDisposable
+public sealed class FlixSource(SafeHttp http) : IFilmSource, IDisposable
 {
+    public string Id => "flix";
+    public string Name => "FlixHQ";
     public static readonly Uri Watch = new("https://flixhqz.net/");
     public static readonly Uri Classic = new("https://flixhq.ws/");
     public static readonly string[] ServerOrder = ["vidmoly", "doodstream", "vidsrc"];
@@ -60,7 +62,7 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
                 errors.Add(site.Host + ": unavailable");
             }
         }
-        throw new ProviderException("No source could play this title right now (" + string.Join(", ", errors.Distinct().Take(6)) + "). Please try again later.");
+        throw new ProviderException(string.Join(", ", errors.Distinct().Take(6)));
     }
 
     public static int Rank(string name) => Array.FindIndex(ServerOrder, p => name.Contains(p, StringComparison.OrdinalIgnoreCase)) is var i and >= 0 ? i : ServerOrder.Length;
@@ -167,13 +169,16 @@ public sealed class FlixSource(SafeHttp http) : IDisposable
     private Task<IReadOnlyList<FlixServer>> MovieServersAsync(Uri site, Uri page, CancellationToken ct) =>
         site == Watch ? TokenServersAsync(page, site, "players", ct) : ListedServersAsync(page, site, ct);
 
+    // The site writes episodes as /episode/<show>/s01-e01/, and the padding varies, so leading zeros are ignored.
+    public static Uri? WatchEpisode(IEnumerable<Uri?> links, int season, int episode) => links.FirstOrDefault(u => u is not null
+        && Regex.IsMatch(u.AbsolutePath, $@"/s0*{season}-e0*{episode}/?\z", RegexOptions.None, TimeSpan.FromSeconds(1)));
+
     private async Task<(IReadOnlyList<FlixServer>, Uri)> EpisodeServersAsync(Uri site, Uri series, int season, int episode, CancellationToken ct)
     {
         var html = await http.TextAsync(series, ct, headers: Referer(site));
         if (site == Watch)
         {
-            var link = Anchors(html, "eps-item").Select(a => Http(series, a.Attributes.GetValueOrDefault("href")))
-                .FirstOrDefault(u => u is not null && u.AbsolutePath.TrimEnd('/').EndsWith($"/s{season}-e{episode}", StringComparison.Ordinal));
+            var link = WatchEpisode(Anchors(html, "eps-item").Select(a => Http(series, a.Attributes.GetValueOrDefault("href"))), season, episode);
             if (link is null) throw new ProviderException($"Season {season} episode {episode} is not listed.");
             return (await TokenServersAsync(link, series, "players_show", ct), link);
         }

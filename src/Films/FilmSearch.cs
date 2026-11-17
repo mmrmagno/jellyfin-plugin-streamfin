@@ -24,7 +24,7 @@ public sealed class FilmSearch(TmdbCatalog catalog, ILibraryManager library, Sea
     public Guid SearchFolderId => library.GetNewItemId(FolderKey, typeof(Folder));
     private static bool Wants(SearchProviderQuery query, BaseItemKind kind) => query.IncludeItemTypes.Length == 0
         ? !query.ExcludeItemTypes.Contains(kind) : query.IncludeItemTypes.Contains(kind);
-    public bool CanSearch(SearchProviderQuery query) => query.SearchTerm.Trim().Length is >= 2 and <= 100
+    public bool CanSearch(SearchProviderQuery query) => query.SearchTerm.Trim().Length is >= 2 and <= 100 && Plugin.Instance?.Configuration.OnlineSearch != false
         && (Wants(query, BaseItemKind.Movie) || Wants(query, BaseItemKind.Series))
         && (query.MediaTypes.Length == 0 || query.MediaTypes.Contains(MediaType.Video))
         && (!query.ParentId.HasValue || query.ParentId == Guid.Empty || query.ParentId == ChannelId || query.ParentId == SearchFolderId);
@@ -70,7 +70,7 @@ public sealed class FilmSearch(TmdbCatalog catalog, ILibraryManager library, Sea
                     item.Name = film.Title;
                     item.Overview = film.Overview;
                     item.ProductionYear = film.Year;
-                    item.Tags = ["StreamFin"];
+                    item.Tags = ["StreamFin", "Streamable"];
                     item.ProviderIds = FilmChannel.Ids(film);
                     // Generic search groups by this key; a shared NULL would collapse unrelated titles.
                     item.PresentationUniqueKey = $"streamfin-search-{film.Kind.ToString().ToLowerInvariant()}-{film.Id}";

@@ -21,10 +21,11 @@ const fs = require('node:fs');
     await page.locator(':text-is("Cowboy Bebop"):visible').last().waitFor({timeout: 45000});
     await page.screenshot({path: 'artifacts/test-search.png'});
     console.log('PASS: native browser search discovers online anime');
-    await page.locator(':text-is("Cowboy Bebop"):visible').last().click();
-    await page.locator(':text-is("Episodes · ' + provider + '"):visible').last().waitFor({timeout: 45000});
-    await page.locator(':text-is("Episodes · ' + provider + '"):visible').last().click();
-    const firstEpisode = provider === 'AnimeHeaven' ? '1 · Episode 1' : '1 · Asteroid Blues';
+    // Songs with the same name are listed too; open the show.
+    await page.locator('.card[data-type="Series"]:visible').filter({hasText: 'Cowboy Bebop'}).first().click();
+    await page.getByText(new RegExp('^(Episodes · |Also on )' + provider + '$')).locator('visible=true').last().waitFor({timeout: 45000});
+    await page.getByText(new RegExp('^(Episodes · |Also on )' + provider + '$')).locator('visible=true').last().click();
+    const firstEpisode = provider === 'AnimeGG' ? '1 · Asteroid Blues' : '1 · Episode 1';
     await page.getByText(firstEpisode, {exact: false}).last().waitFor({timeout: 45000});
     await page.locator('button.btnPlay:visible').first().waitFor({timeout: 45000});
     await page.locator('button.btnPlay:visible').first().click();

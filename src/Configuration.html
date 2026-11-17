@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html><head><title>StreamFin</title></head><body>
-<div id="streamfinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,paper-icon-button-light">
+<div id="streamfinConfig" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,emby-select,paper-icon-button-light">
   <div data-role="content"><div class="content-primary">
     <style>
       #streamfinConfig .streamfinOrder { padding-left: 1.5em; }
@@ -15,6 +15,13 @@
       <h3>Who can watch</h3>
       <p>Only ticked users see the channels. Nobody is ticked by default.</p>
       <div id="streamfinUsers"></div>
+      <p id="streamfinNoUsers" class="fieldDescription" role="status" hidden>StreamFin is on but no one is allowed, so every channel is hidden. Tick at least one user.</p>
+      <h3>Show in Jellyfin</h3>
+      <div class="selectContainer"><label class="selectLabel" for="streamingNavigationMode">Layout</label><select is="emby-select" id="streamingNavigationMode"><option value="Channels">Separate channels: Anime, Movies &amp; TV, Music</option><option value="Hub">One StreamFin entry with all three inside</option><option value="Both">The StreamFin entry and the separate channels</option></select>
+        <div class="fieldDescription">Watch progress, favourites and history are the same in every layout. Reload the Jellyfin app after a change.</div></div>
+      <h4>StreamFin inside your libraries</h4>
+      <p class="fieldDescription">Puts a StreamFin entry at the top of a library, leading to online titles of the chosen kind. The library's own files and scans are not changed.</p>
+      <div id="streamfinLibraryLinks"></div><p id="streamfinLibraryLinksStatus" class="fieldDescription" role="status"></p>
       <h3>Anime sources</h3>
       <div class="fieldDescription">Open a title, then pick a source. Test looks up a well-known show on the site, then its episode list and the first episode's video, so a pass means playing works. It can take up to a minute.</div>
       <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="zokoEnabled"><span>HiAnime</span></label>
@@ -35,7 +42,15 @@
         <button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="tmdb"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
       <div class="streamfinSource"><span class="streamfinName">FlixHQ: the videos</span>
         <p class="streamfinVideoHealth" data-source="flix" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="flix"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
-      <div class="fieldDescription">Test the key after saving it. The FlixHQ test finds a well-known film and its video.</div>
+      <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmAstra"><span>Astra: H.264 up to 1080p, wide coverage</span></label>
+        <p class="streamfinVideoHealth" data-source="astra" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="astra"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
+      <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmVidly"><span>Vidly: wide coverage, HEVC (needs a transcode on most clients)</span></label>
+        <p class="streamfinVideoHealth" data-source="vidly" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="vidly"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
+      <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmVidBolt"><span>VidBolt: H.264</span></label>
+        <p class="streamfinVideoHealth" data-source="vidbolt" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="vidbolt"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
+      <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmPunkflix"><span>Punkflix: mostly movies, up to 4K</span></label>
+        <p class="streamfinVideoHealth" data-source="punkflix" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="punkflix"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
+      <div class="fieldDescription">Test the key after saving it. Each video test finds a well-known film and its video. FlixHQ is tried first. When a site does not have a title or cannot play it, the next one in this list is tried; a site that is down is tried last.</div>
       <h3>Music</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicEnabled"><span>Show the Music channel</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicExplicit"><span>Prefer explicit versions</span></label>
@@ -100,8 +115,14 @@
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideAdult"><span>Hide adult titles</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="hideEcchi"><span>Hide ecchi titles</span></label>
       <p>Anime only, based on AniList tags, not an age rating. Movies &amp; TV never shows titles TMDB marks as adult.</p>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="onlineSearch"><span>Show online titles in Jellyfin search</span></label>
+      <div class="fieldDescription">Results from StreamFin are tagged Streamable. Turning this off only hides them from search; the channels still work.</div>
       <h3>Cache</h3>
       <div class="inputContainer"><label class="inputLabel" for="streamfinCache">Catalog cache (minutes)</label><input is="emby-input" type="number" id="streamfinCache" min="1" max="1440" required></div>
+      <div class="fieldDescription">Clearing empties StreamFin's catalog and source caches and makes Jellyfin rebuild its saved listings. Warming loads the first pages of Anime and Movies &amp; TV now; this also runs at startup and every six hours.</div>
+      <div id="streamfinCacheStatus" role="status" class="fieldDescription"></div>
+      <button is="emby-button" type="button" id="streamfinCacheClear" class="raised block" disabled><span>Clear catalog cache</span></button>
+      <button is="emby-button" type="button" id="streamfinCacheWarm" class="raised block" disabled><span>Warm catalog cache</span></button>
       <p id="streamfinStatus" role="status">Loading settings…</p>
       <button is="emby-button" type="submit" id="streamfinSave" class="raised button-submit block" disabled><span>Save</span></button>
       <h3>Maintenance</h3>
@@ -152,6 +173,10 @@
             page.querySelector('#zokoEnabled').checked = config.ZokoEnabled !== false;
             page.querySelector('#animeGgEnabled').checked = config.AnimeGgEnabled;
             page.querySelector('#filmEnabled').checked = config.FilmEnabled !== false;
+            page.querySelector('#filmVidly').checked = config.FilmVidly !== false;
+            page.querySelector('#filmPunkflix').checked = config.FilmPunkflix !== false;
+            page.querySelector('#filmVidBolt').checked = config.FilmVidBolt !== false;
+            page.querySelector('#filmAstra').checked = config.FilmAstra !== false;
             page.querySelector('#tmdbKey').value = config.TmdbApiKey || '';
             page.querySelector('#musicEnabled').checked = config.MusicEnabled !== false;
             page.querySelector('#musicApi').value = config.MusicApiUrl || '';
@@ -160,6 +185,9 @@
             page.querySelector('#animeFallback').checked = config.AnimeProviderFallback !== false;
             page.querySelector('#animeNext').checked = config.PrepareNextEpisode !== false;
             page.querySelector('#hideAdult').checked = config.HideAdultContent !== false;
+            page.querySelector('#onlineSearch').checked = config.OnlineSearch !== false;
+            page.querySelector('#streamingNavigationMode').value = ['Channels', 'Hub', 'Both'].includes(config.StreamingNavigationMode) ? config.StreamingNavigationMode : 'Channels';
+            await renderLibraryLinks(config);
             page.querySelector('#hideEcchi').checked = config.HideEcchiContent !== false;
             page.querySelector('#streamfinCache').value = config.MetadataCacheMinutes;
             page.querySelector('#musicCache').value = config.MusicCacheMb ?? 4096;
@@ -190,11 +218,14 @@
               label.append(input, text); container.append(label);
             });
             loaded = true;
+            page.querySelector('#streamfinNoUsers').hidden = !(config.Enabled && config.AllowedUserIds.length === 0);
             page.querySelector('#streamfinSave').disabled = false;
             page.querySelector('#streamfinRefresh').disabled = false;
             page.querySelector('#streamfinClearSearch').disabled = false;
             page.querySelector('#streamfinStatus').textContent = '';
-            await Promise.all([renderSaves(), renderHealth()]);
+            await Promise.all([renderSaves(), renderHealth(), renderCache()]);
+            page.querySelector('#streamfinCacheClear').disabled = false;
+            page.querySelector('#streamfinCacheWarm').disabled = false;
             clearInterval(healthTimer);
             healthTimer = setInterval(renderHealth, 10000);
           } catch (error) {
@@ -205,6 +236,9 @@
         page.querySelector('#streamfinForm').addEventListener('submit', async function (event) {
           event.preventDefault();
           if (!loaded) return;
+          const noneAllowed = page.querySelectorAll('#streamfinUsers input:checked').length === 0;
+          if (page.querySelector('#streamfinEnabled').checked && noneAllowed
+            && !confirm('No one is allowed to use StreamFin, so every channel will be hidden. Save anyway?')) return;
           Dashboard.showLoadingMsg();
           try {
             const config = await ApiClient.getPluginConfiguration(pluginId);
@@ -212,6 +246,10 @@
             config.ZokoEnabled = page.querySelector('#zokoEnabled').checked;
             config.AnimeGgEnabled = page.querySelector('#animeGgEnabled').checked;
             config.FilmEnabled = page.querySelector('#filmEnabled').checked;
+            config.FilmVidly = page.querySelector('#filmVidly').checked;
+            config.FilmPunkflix = page.querySelector('#filmPunkflix').checked;
+            config.FilmVidBolt = page.querySelector('#filmVidBolt').checked;
+            config.FilmAstra = page.querySelector('#filmAstra').checked;
             config.TmdbApiKey = page.querySelector('#tmdbKey').value.trim();
             config.MusicEnabled = page.querySelector('#musicEnabled').checked;
             config.MusicApiUrl = page.querySelector('#musicApi').value.trim();
@@ -220,6 +258,11 @@
             config.AnimeProviderFallback = page.querySelector('#animeFallback').checked;
             config.PrepareNextEpisode = page.querySelector('#animeNext').checked;
             config.HideAdultContent = page.querySelector('#hideAdult').checked;
+            config.OnlineSearch = page.querySelector('#onlineSearch').checked;
+            config.StreamingNavigationMode = page.querySelector('#streamingNavigationMode').value;
+            // Links to libraries this page could not list are kept as they were.
+            if (libraryIds) config.StreamingLibraryLinks = (config.StreamingLibraryLinks || []).filter(link => !libraryIds.has(normalizeId(link.LibraryId)))
+              .concat(Array.from(page.querySelectorAll('#streamfinLibraryLinks select'), select => ({LibraryId: select.dataset.libraryId, Category: select.value})).filter(link => link.Category));
             config.HideEcchiContent = page.querySelector('#hideEcchi').checked;
             config.MetadataCacheMinutes = Number(page.querySelector('#streamfinCache').value);
             config.MusicCacheMb = Number(page.querySelector('#musicCache').value);
@@ -244,6 +287,36 @@
             Dashboard.processPluginConfigurationUpdateResult(await ApiClient.updatePluginConfiguration(pluginId, config));
           } finally { Dashboard.hideLoadingMsg(); }
         });
+        let libraryIds = null;
+        function normalizeId(id) { return String(id || '').replaceAll('-', '').toLowerCase(); }
+        async function renderLibraryLinks(config) {
+          const container = page.querySelector('#streamfinLibraryLinks');
+          const status = page.querySelector('#streamfinLibraryLinksStatus');
+          container.replaceChildren();
+          libraryIds = null;
+          try {
+            const libraries = await ApiClient.ajax({type: 'GET', url: ApiClient.getUrl('Library/VirtualFolders'), dataType: 'json'});
+            const ids = new Set();
+            libraries.filter(library => library.ItemId && ['', 'movies', 'tvshows', 'music', 'mixed'].includes(library.CollectionType || '')).forEach(library => {
+              const key = normalizeId(library.ItemId);
+              if (ids.has(key)) return;
+              ids.add(key);
+              const row = document.createElement('div'); row.className = 'selectContainer';
+              const label = document.createElement('label'); label.className = 'selectLabel'; label.htmlFor = 'streamfinLibrary-' + key; label.textContent = library.Name;
+              const select = document.createElement('select'); select.id = label.htmlFor; select.setAttribute('is', 'emby-select'); select.dataset.libraryId = library.ItemId;
+              [['', 'Off'], ['anime', 'Anime'], ['movies', 'Popular movies'], ['tv', 'Popular TV'], ['music', 'Music']].forEach(([value, text]) => {
+                const option = document.createElement('option'); option.value = value; option.textContent = text; select.append(option);
+              });
+              const existing = (config.StreamingLibraryLinks || []).find(link => normalizeId(link.LibraryId) === key);
+              select.value = existing && ['anime', 'movies', 'tv', 'music'].includes(existing.Category) ? existing.Category : '';
+              row.append(label, select); container.append(row);
+            });
+            libraryIds = ids;
+            status.textContent = ids.size ? 'Off leaves a library as it is.' : 'No movie, TV, music or mixed library yet.';
+          } catch (error) {
+            status.textContent = 'Could not list the libraries. Existing links are kept when you save.';
+          }
+        }
         function clockTime(value) { return new Date(value).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); }
         function describe(health) {
           if (health.State === 'Healthy') return 'healthy';
@@ -264,6 +337,29 @@
             lines.forEach(line => { line.textContent = ''; });
           }
         }
+        async function renderCache() {
+          const status = page.querySelector('#streamfinCacheStatus');
+          try {
+            const caches = await ApiClient.ajax({type: 'GET', url: ApiClient.getUrl('StreamFin/Cache'), dataType: 'json'});
+            const total = caches.reduce((sum, cache) => sum + cache.Entries, 0);
+            status.textContent = caches.length ? total + ' saved answers in ' + caches.length + ' caches.' : 'Nothing cached yet.';
+          } catch (error) {
+            status.textContent = 'Could not load the cache status.';
+          }
+        }
+        page.querySelector('#streamfinCacheClear').addEventListener('click', async function () {
+          if (!confirm('Clear every StreamFin cache? Pages load again from the sources.')) return;
+          try { await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('StreamFin/Cache/Clear')}); }
+          catch (error) { page.querySelector('#streamfinCacheStatus').textContent = 'Could not clear the cache.'; return; }
+          await renderCache();
+        });
+        page.querySelector('#streamfinCacheWarm').addEventListener('click', async function () {
+          const status = page.querySelector('#streamfinCacheStatus');
+          status.textContent = 'Warming the catalog cache. This can take a minute.';
+          try { await ApiClient.ajax({type: 'POST', url: ApiClient.getUrl('StreamFin/Cache/Warm')}); } catch (error) { }
+          await renderCache();
+        });
+
         async function renderHealth() {
           renderVideoHealth();
           const lines = {Monochrome: page.querySelector('#healthMonochrome'), Deezer: page.querySelector('#healthDeezer'), YouTube: page.querySelector('#healthYouTube')};

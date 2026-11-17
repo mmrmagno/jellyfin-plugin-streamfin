@@ -53,7 +53,9 @@ public sealed class MusicLibraryStore
     private readonly ConcurrentDictionary<Guid, long> versions = new();
     private readonly string? fixedRoot;
     public MusicLibraryStore() { }
-    public MusicLibraryStore(string root) => fixedRoot = root;
+    public MusicLibraryStore(string root) { fixedRoot = root; History = new MusicHistory(Path.Combine(root, "history")); }
+    // Every play by year, for the yearly recap; Plays above keeps only the most recent.
+    public MusicHistory History { get; } = new();
     private string? Root => fixedRoot ?? (Plugin.Instance is { } plugin ? Path.Combine(plugin.DataFolderPath, "music") : null);
 
     private string? File(Guid user) => Root is { } root ? Path.Combine(root, user.ToString("N") + ".json") : null;
@@ -110,10 +112,18 @@ public sealed class MusicLibraryStore
     }
 
     // Changes on every write in this process; enough to tell Jellyfin a cached listing is stale.
-    public long Version(Guid user) => versions.GetValueOrDefault(user);
+    // Starts from the process start time, so a restart never reuses a version (and a cached listing) from before it.
+    private static readonly long Started = DateTime.UtcNow.Ticks;
+    public long Version(Guid user) => Started + versions.GetValueOrDefault(user);
 
     public Task RecordPlayAsync(Guid user, MusicTrack track, string album, CancellationToken ct)
-        => UpdateAsync(user, library => library.Plays.Insert(0, new MusicPlay(track, album, DateTime.UtcNow)), ct);
+        => RecordPlaysAsync(user, [new MusicPlay(track, album, DateTime.UtcNow)], ct);
+
+    public async Task RecordPlaysAsync(Guid user, IReadOnlyList<MusicPlay> plays, CancellationToken ct)
+    {
+        await UpdateAsync(user, library => library.Plays.InsertRange(0, plays), ct);
+        await History.AppendAsync(user, plays, ct);
+    }
 
     // Most recent first, one entry per track.
     public static IReadOnlyList<MusicPlay> Recent(MusicLibrary library, int count) => library.Plays.OrderByDescending(p => p.At)

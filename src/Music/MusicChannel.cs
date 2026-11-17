@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
@@ -111,6 +112,30 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
 
     private static readonly string[] ReleaseOrder = ["ALBUM", "EP", "SINGLE", "COMPILATION"];
 
+    private static ChannelItemInfo Described(ChannelItemInfo item, string overview) { item.Overview = overview; return item; }
+
+    // Jellyfin keeps the description a channel folder had when it was first saved; a recap's changes with every play.
+    private async Task RefreshOverviewsAsync(IEnumerable<ChannelItemInfo> listed, CancellationToken ct)
+    {
+        foreach (var info in listed)
+            if (library.GetItemById(library.GetNewItemId(info.Id + ChannelName + "16", typeof(Folder))) is { } saved && saved.Overview != info.Overview)
+            {
+                saved.Overview = info.Overview;
+                await saved.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
+            }
+    }
+
+    // Counting a year reads its history file; the result is kept until the next play changes the store's version.
+    private static readonly Microsoft.Extensions.Caching.Memory.MemoryCache Recaps = new(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions { SizeLimit = 200 });
+    private async Task<MusicRecap> RecapAsync(Guid user, int year, CancellationToken ct)
+    {
+        var key = $"{user:N}/{year}/{store.Version(user)}";
+        if (Recaps.TryGetValue<MusicRecap>(key, out var known)) return known!;
+        var recap = MusicRecap.Build(year, await store.History.ReadAsync(user, year, ct));
+        Recaps.Set(key, recap, new Microsoft.Extensions.Caching.Memory.MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(6) });
+        return recap;
+    }
+
     private async Task<ChannelItemResult> BrowseAsync(string id, Guid user, CancellationToken ct)
     {
         if (id.EndsWith("/status", StringComparison.Ordinal)) return Result([]);
@@ -151,6 +176,49 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
             return Result(MusicLibraryStore.Recent(await store.ReadAsync(user, ct), 100).Select(play => Track(play.Track, "recent")));
         }
         var parts = id.Split('/');
+        if (id == "playlists" || parts is ["playlist", _])
+        {
+            if (user == Guid.Empty) return Result([]);
+            var playlists = (await store.ReadAsync(user, ct)).Playlists;
+            if (id == "playlists")
+                return Result(playlists.OrderByDescending(p => p.Changed).Select(p => Folder("playlist/" + p.Id.ToString("N"), p.Name,
+                    string.Join(" · ", new[] { $"{p.Entries.Count} songs", p.Comment }.Where(t => t.Length > 0)))));
+            if (!Guid.TryParseExact(parts[1], "N", out var playlistId) || playlists.FirstOrDefault(p => p.Id == playlistId) is not { } playlist) return Result([]);
+            return Result(playlist.Entries.Where(e => e.Track.Title.Length > 0).Select((entry, index) => Ranked(Track(entry.Track, "playlist"), index)));
+        }
+        if (id == "recap" || parts is ["recap", _] or ["recap", _, _])
+        {
+            if (user == Guid.Empty) return Result([]);
+            if (id == "recap")
+            {
+                var years = store.History.Years(user).Append(DateTime.UtcNow.Year).Distinct().OrderDescending();
+                var shown = new List<ChannelItemInfo>();
+                foreach (var y in years) shown.Add(Folder($"recap/{y}", $"Your {y}", (await RecapAsync(user, y, ct)).Summary));
+                await RefreshOverviewsAsync(shown, ct);
+                return Result(shown);
+            }
+            if (!int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var year) || year is < 2000 or > 2999) return Result([]);
+            var recap = await RecapAsync(user, year, ct);
+            if (parts.Length == 2)
+            {
+                ChannelItemInfo[] inside = recap.Plays == 0 ? [Folder($"recap/{year}/status", recap.Summary, recap.Summary)] :
+                [
+                    Folder($"recap/{year}/songs", "Top songs", recap.Summary),
+                    Folder($"recap/{year}/artists", "Top artists", $"The {MusicRecap.Count(recap.TopArtists.Count, "artist")} you played most in {year}."),
+                    Folder($"recap/{year}/albums", "Top albums", $"The {MusicRecap.Count(recap.TopAlbums.Count, "album")} you played most in {year}.")
+                ];
+                await RefreshOverviewsAsync(inside, ct);
+                return Result(inside);
+            }
+            return parts[2] switch
+            {
+                "songs" => Result(recap.TopSongs.Select((song, index) => Ranked(Described(Track(song.Track, "recap"), $"{MusicRecap.Count(song.Plays, "play")} in {year}"), index))),
+                "artists" => Result(recap.TopArtists.Select((a, index) => Ranked(Artist(new MusicArtistPage(a.Artist.Id, a.Artist.Name, null, $"{MusicRecap.Count(a.Plays, "play")} in {year}", [], [])), index))),
+                "albums" => Result(recap.TopAlbums.Select((a, index) => Ranked(Described(Album(new MusicRelease(a.ReleaseId, a.Title, a.Artists, "ALBUM", null, null, a.Artwork, null, []), "recap"),
+                    $"{MusicRecap.Count(a.Plays, "play")} in {year}"), index))),
+                _ => Result([])
+            };
+        }
         if (parts is [var artistKind and ("artist" or Chart + "artist"), var artistId])
         {
             var prefix = artistKind == "artist" ? "" : Chart;
@@ -222,6 +290,8 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
         yield return Folder("search", "Search results", "Use Jellyfin's search (magnifying glass) to find artists, albums and songs online. What you find appears here.");
         yield return Folder("starred", "Starred", "Albums you mark as a favourite here, and albums and songs you star in a Subsonic app.");
         yield return Folder("recent", "Recently played");
+        yield return Folder("playlists", "Playlists", "Your playlists, including ones made in a Subsonic app. To import a Spotify playlist, paste its link into Jellyfin's search.");
+        yield return Folder("recap", "Your year in music", "Your most played songs, artists and albums of each year, counted from the plays StreamFin has seen.");
     }
 
     // Search results are library items made by MusicSearch; describe them again so Jellyfin keeps them.
@@ -301,6 +371,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
         if (track.Title.Length > 0)
             try { await store.RecordPlayAsync(user, track, album, ct); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logger.LogWarning("StreamFin could not save music history ({ErrorType})", ex.GetType().Name); }
+        await ResumeRuntime.KeepAsync(library, id + ChannelName + "16", typeof(Audio), source.RunTimeTicks, ct);
         return [source];
     }
 }
