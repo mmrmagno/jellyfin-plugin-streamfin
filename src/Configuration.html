@@ -44,13 +44,21 @@
         <p class="streamfinVideoHealth" data-source="flix" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="flix"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
       <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmAstra"><span>Astra: H.264 up to 1080p, wide coverage</span></label>
         <p class="streamfinVideoHealth" data-source="astra" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="astra"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
+      <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmVidRift"><span>VidRift: H.264 up to 4K, from 7Movies</span></label>
+        <p class="streamfinVideoHealth" data-source="vidrift" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="vidrift"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
       <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmVidly"><span>Vidly: wide coverage, HEVC (needs a transcode on most clients)</span></label>
         <p class="streamfinVideoHealth" data-source="vidly" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="vidly"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
       <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmVidBolt"><span>VidBolt: H.264</span></label>
         <p class="streamfinVideoHealth" data-source="vidbolt" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="vidbolt"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
+      <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmRive"><span>Rive: English audio, up to 720p</span></label>
+        <p class="streamfinVideoHealth" data-source="rive" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="rive"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
       <div class="streamfinSource"><label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmPunkflix"><span>Punkflix: mostly movies, up to 4K</span></label>
         <p class="streamfinVideoHealth" data-source="punkflix" role="status"></p><button is="emby-button" type="button" class="raised streamfinTest" data-kind="video" data-source="punkflix"><span>Test now</span></button><p class="streamfinTestResult" role="status"></p></div>
-      <div class="fieldDescription">Test the key after saving it. Each video test finds a well-known film and its video. FlixHQ is tried first. When a site does not have a title or cannot play it, the next one in this list is tried; a site that is down is tried last.</div>
+      <div class="fieldDescription">Test the key after saving it. Each video test finds a well-known film and its video. When you press play, every site that is switched on is asked at once. The best answer plays, and the others are listed as versions in the player, named by site, quality and codec. A site that is down is skipped.</div>
+      <div class="selectContainer"><label class="selectLabel" for="filmMaxHeight">Movies &amp; TV quality</label><select is="emby-select" id="filmMaxHeight"><option value="0">Best available (up to 4K)</option><option value="1080">Up to 1080p</option><option value="720">Up to 720p (saves bandwidth)</option></select>
+        <div class="fieldDescription selectFieldDescription">The tallest picture within this limit plays first. Taller versions stay in the version list.</div></div>
+      <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="filmPreferH264"><span>Prefer H.264 at the same quality</span></label>
+      <div class="fieldDescription checkboxFieldDescription">H.264 plays on almost every device without the server converting it. HEVC versions are used when nothing else matches.</div>
       <h3>Music</h3>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicEnabled"><span>Show the Music channel</span></label>
       <label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="musicExplicit"><span>Prefer explicit versions</span></label>
@@ -175,6 +183,10 @@
             page.querySelector('#filmEnabled').checked = config.FilmEnabled !== false;
             page.querySelector('#filmVidly').checked = config.FilmVidly !== false;
             page.querySelector('#filmPunkflix').checked = config.FilmPunkflix !== false;
+            page.querySelector('#filmVidRift').checked = config.FilmVidRift !== false;
+            page.querySelector('#filmRive').checked = config.FilmRive !== false;
+            page.querySelector('#filmMaxHeight').value = String(config.FilmMaxHeight || 0);
+            page.querySelector('#filmPreferH264').checked = config.FilmPreferH264 !== false;
             page.querySelector('#filmVidBolt').checked = config.FilmVidBolt !== false;
             page.querySelector('#filmAstra').checked = config.FilmAstra !== false;
             page.querySelector('#tmdbKey').value = config.TmdbApiKey || '';
@@ -248,6 +260,10 @@
             config.FilmEnabled = page.querySelector('#filmEnabled').checked;
             config.FilmVidly = page.querySelector('#filmVidly').checked;
             config.FilmPunkflix = page.querySelector('#filmPunkflix').checked;
+            config.FilmVidRift = page.querySelector('#filmVidRift').checked;
+            config.FilmRive = page.querySelector('#filmRive').checked;
+            config.FilmMaxHeight = Number(page.querySelector('#filmMaxHeight').value) || 0;
+            config.FilmPreferH264 = page.querySelector('#filmPreferH264').checked;
             config.FilmVidBolt = page.querySelector('#filmVidBolt').checked;
             config.FilmAstra = page.querySelector('#filmAstra').checked;
             config.TmdbApiKey = page.querySelector('#tmdbKey').value.trim();

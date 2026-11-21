@@ -35,7 +35,7 @@ public sealed class VideoHealth(ILogger<VideoHealth>? logger = null)
     public CatalogBreaker Breaker(string source) => breakers.GetOrAdd(source, id => new CatalogBreaker(limit: 3, window: TimeSpan.FromMinutes(10), slow: Slow, probed: true)
         { Name = Label(id), Logger = logger });
 
-    public static string Label(string source) => source switch { "zoko" => "HiAnime", "animegg" => "AnimeGG", "animeheaven" => "AnimeHeaven", "flix" => "FlixHQ", "vidly" => "Vidly", "astra" => "Astra", "vidbolt" => "VidBolt", "punkflix" => "Punkflix", _ => source };
+    public static string Label(string source) => source switch { "zoko" => "HiAnime", "animegg" => "AnimeGG", "animeheaven" => "AnimeHeaven", "flix" => "FlixHQ", "vidly" => "Vidly", "astra" => "Astra", "vidbolt" => "VidBolt", "punkflix" => "Punkflix", "vidrift" => "VidRift", "rive" => "Rive", _ => source };
 
     public bool Usable(string source) => Breaker(source).Usable(DateTime.UtcNow);
 

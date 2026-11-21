@@ -22,8 +22,8 @@ namespace StreamFin;
 // Item IDs: movie/<scope>/<tmdb>, tv/<scope>/<tmdb>, season/<scope>/<tmdb>/<n>, ep/<scope>/<tmdb>/<s>/<e>.
 // The scope (listing name) keeps one title from being moved between folders by Jellyfin;
 // the TMDB provider ID lets watch progress follow the title across listings.
-public sealed class FilmChannel(TmdbCatalog catalog, FilmSources sources, StreamRelay relay, IHttpContextAccessor contexts,
-    IAuthorizationContext authorization, ILibraryManager library, ILogger<FilmChannel> logger, VideoHealth health)
+public sealed class FilmChannel(TmdbCatalog catalog, FilmVersions versions, IHttpContextAccessor contexts,
+    IAuthorizationContext authorization, ILibraryManager library, ILogger<FilmChannel> logger)
     : IChannel, IHasCacheKey, IRequiresMediaInfoCallback
 {
     public const string ChannelName = "Movies & TV";
@@ -157,44 +157,24 @@ public sealed class FilmChannel(TmdbCatalog catalog, FilmSources sources, Stream
         if (context is null) return [];
         var auth = await authorization.GetAuthorizationInfo(context);
         if (!auth.IsAuthenticated || !Plugin.Allows(auth.UserId) || !IsAvailable) throw new UnauthorizedAccessException("StreamFin is not enabled for this account.");
-        (Film Film, int? Season, int? Episode) target = id.Split('/') switch
-        {
-            ["movie", _, var movie] when int.TryParse(movie, out var movieId) => (await catalog.GetAsync(FilmKind.Movie, movieId, ct), null, null),
-            ["ep", _, var show, var s, var e] when int.TryParse(show, out var showId) && int.TryParse(s, out var season) && int.TryParse(e, out var episode)
-                && season is > 0 and < 1000 && episode is > 0 and < 10000 => (await catalog.GetAsync(FilmKind.Tv, showId, ct), season, episode),
-            _ => throw new ProviderException("Invalid StreamFin title.")
-        };
+        var target = await versions.TargetAsync(id, ct);
         var user = auth.UserId;
-        var key = user.ToString("N") + id;
+        var type = id.StartsWith("movie/", StringComparison.Ordinal) ? typeof(Movie) : typeof(Episode);
         // Only a real start prepares the next episode, not opening an episode's page.
         var starting = context.Request.Path.Value?.Contains("/PlaybackInfo", StringComparison.OrdinalIgnoreCase) == true;
-        if (AnimeChannel.PreparesNext && Ready.TryGetValue<MediaSourceInfo>(key, out var ready) && relay.Holds(ready!.Path))
+        // A version picked on the page arrives as its id; it is probed now if it was only listed so far.
+        var picked = context.Items[FilmVersions.PickedKey] as string is { Length: > 0 } fromFilter ? fromFilter : context.Request.Query["mediaSourceId"].ToString();
+        var found = await versions.PlayAsync(user, id, picked, ct);
+        if (starting)
         {
-            if (starting) PrepareNext(user, id, target.Film, target.Season, target.Episode);
-            await ResumeRuntime.KeepAsync(library, id + ChannelName + "16", id.StartsWith("movie/", StringComparison.Ordinal) ? typeof(Movie) : typeof(Episode), ready!.RunTimeTicks, ct);
-            return [ready];
+            PrepareNext(user, id, target.Film, target.Season, target.Episode);
+            versions.ProbeOthers(found);
         }
-        var source = await PlayAsync(user, target.Film, target.Season, target.Episode, ct);
-        if (starting) PrepareNext(user, id, target.Film, target.Season, target.Episode);
-        await ResumeRuntime.KeepAsync(library, id + ChannelName + "16", id.StartsWith("movie/", StringComparison.Ordinal) ? typeof(Movie) : typeof(Episode), source.RunTimeTicks, ct);
-        return [source];
+        await ResumeRuntime.KeepAsync(library, id + ChannelName + "16", type, found.Probed?.RunTimeTicks, ct);
+        return found.List;
     }
 
-    // The next episode of a show, found and probed while one plays, as for anime: per user, kept half an hour.
-    private static readonly MemoryCache Ready = new(new MemoryCacheOptions { SizeLimit = 200 });
     private static readonly SemaphoreSlim Preparing = new(1, 1);
-
-    private async Task<MediaSourceInfo> PlayAsync(Guid user, Film film, int? season, int? episode, CancellationToken ct)
-    {
-        var clock = System.Diagnostics.Stopwatch.StartNew();
-        // Each site is tried in turn; the one that plays is also the one asked again when its link expires.
-        var (site, videos) = await sources.ResolveAsync(film, season, episode, ct);
-        var subtitles = videos[0].Subtitles?.Count ?? 0;
-        var source = await relay.MediaSourceAsync(user, videos[0], $"{site.Name} · {videos[0].Quality}" + (subtitles > 0 ? $" · {subtitles} subtitle tracks" : ""),
-            token => site.ResolveAsync(film, season, episode, token), () => Plugin.Allows(user) && IsAvailable, ct);
-        health.Started(site.Id, clock.Elapsed);
-        return source;
-    }
 
     private void PrepareNext(Guid user, string id, Film film, int? season, int? episode)
     {
@@ -209,10 +189,7 @@ public sealed class FilmChannel(TmdbCatalog catalog, FilmSources sources, Stream
                 var (nextSeason, nextEpisode) = (await catalog.EpisodesAsync(film.Id, s, limit.Token)).Any(x => x.Number == e + 1) ? (s, e + 1)
                     : (await catalog.SeasonsAsync(film.Id, limit.Token)).Any(x => x.Number == s + 1) ? (s + 1, 1) : (0, 0);
                 if (nextSeason == 0) return;
-                var key = user.ToString("N") + $"ep/{scope}/{show}/{nextSeason}/{nextEpisode}";
-                if (Ready.TryGetValue(key, out _)) return;
-                var prepared = await PlayAsync(user, film, nextSeason, nextEpisode, limit.Token);
-                Ready.Set(key, prepared, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(30) });
+                await versions.PrepareAsync(user, $"ep/{scope}/{show}/{nextSeason}/{nextEpisode}", limit.Token);
             }
             catch (Exception ex) when (ex is ProviderException or HttpRequestException or OperationCanceledException or IOException
                 or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException)

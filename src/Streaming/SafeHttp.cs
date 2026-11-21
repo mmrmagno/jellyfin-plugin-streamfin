@@ -107,7 +107,7 @@ public sealed class SafeHttp : IDisposable
             if (headers is not null)
                 foreach (var pair in headers)
                 {
-                    if (pair.Key is not ("Referer" or "Origin" or "Cookie" or "Authorization")
+                    if (pair.Key is not ("Referer" or "Origin" or "Cookie" or "Authorization" or "x-embed-parent")
                         || (pair.Key == "Authorization" && originalHost != "api.themoviedb.org")) throw new ProviderException("Unsupported source header.");
                     // Gate cookies and API tokens belong to one website, never forward them to a redirect elsewhere.
                     if (pair.Key is not ("Cookie" or "Authorization") || uri.IdnHost == originalHost) request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);

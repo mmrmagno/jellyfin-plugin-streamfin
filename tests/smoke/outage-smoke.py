@@ -128,16 +128,17 @@ else:
     assert bool(lyrics) == memo['lyrics']
     print('PASS: scrobbles, stars and lyrics work without the catalog', flush=True)
 
-    # Something never seen has to ask the catalog. The first tries wait for the connection to time out; once
-    # it counts as down, the answer is immediate. Either way the app gets words, not "HTTP 522".
+    # Something never seen has to ask the catalog. Deezer answers searches while it is down (0.12.0.0); with
+    # Deezer off, the app gets words, not "HTTP 522". The first tries may wait for the connection to time out;
+    # once the catalog counts as down, the answer is immediate.
     for attempt in range(4):
         started = time.monotonic()
         answer = call('search3', me, query='new outage query ' + secrets.token_hex(3))
         took = time.monotonic() - started
-        assert answer['status'] == 'failed' and ('not responding' in answer['error']['message'] or 'slowly' in answer['error']['message']), answer
+        assert answer['status'] == 'ok' or ('not responding' in answer['error']['message'] or 'slowly' in answer['error']['message']), answer
         assert took < 35, f'a search during the outage took {took:.1f} s'
     assert took < 2, f'the catalog was not counted as down after repeated failures ({took:.1f} s)'
-    print('PASS: unknown things fail fast with a readable message once the catalog counts as down', flush=True)
+    print('PASS: searches during the outage answer fast, from Deezer or with a readable message', flush=True)
 
     if args.youtube:
         # The tools come from GitHub, which the outage does not touch.

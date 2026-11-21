@@ -6,13 +6,8 @@ using System.Text.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 using StreamFin;
+using static Harness;
 
-var count = 0;
-void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); Console.WriteLine("PASS: " + name); count++; }
-void Reject(Action action, string name) { try { action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
-Exception? Throws(Action action) { try { action(); } catch (Exception ex) { return ex; } return null; }
-void Contained(Action action, string name) { try { action(); } catch (ProviderException) { } Check(true, name); }
-async Task RejectAsync(Func<Task> action, string name) { try { await action(); } catch (ProviderException) { Check(true, name); return; } throw new Exception("FAIL: " + name); }
 
 var titles = AnimeGgSource.ParseSearch("<a href=\"/series/test-show\" class=\"mse\"><h2>Test &amp; Show</h2></a><a href=\"/series/test-show\" class=\"mse\"><h2>Duplicate</h2></a>");
 Check(titles.Count == 1 && titles[0].Title == "Test & Show", "search decodes entities and deduplicates");
@@ -893,14 +888,16 @@ foreach (var (text, part) in new[] { (".. .", "_"), (". .", "_"), ("..", "_"), (
     Check(MusicPaths.Part(text) == part, "music path part " + text.Replace("\0", "NUL"));
 Check(MusicPaths.Part(new string('é', 200)).Length == 80 && System.Text.Encoding.UTF8.GetByteCount(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))) <= 180
     && !char.IsHighSurrogate(MusicPaths.Part(string.Concat(Enumerable.Repeat("😀", 100)))[^1]), "music path parts stay short in characters and bytes without splitting a character");
-Check(MusicPaths.Root("") is null && MusicPaths.Root("relative/music") is null && MusicPaths.Root("/srv/music/") == "/srv/music" && MusicPaths.Root("/srv/x/../music") == "/srv/music",
-    "the music library folder must be absolute and is normalised");
+var musicRoot = Path.Combine(Path.GetTempPath(), "streamfin-music");
+string InMusic(params string[] parts) => Path.Combine([musicRoot, .. parts]);
+Check(MusicPaths.Root("") is null && MusicPaths.Root("relative/music") is null && MusicPaths.Root(musicRoot + Path.DirectorySeparatorChar) == musicRoot
+    && MusicPaths.Root(Path.Combine(Path.GetTempPath(), "x", "..", "streamfin-music")) == musicRoot, "the music library folder must be absolute and is normalised");
 var savedAlbum = new MusicRelease("155102851176075264", "OK Computer", [new("155102851176075265", "Radiohead")], "ALBUM", new DateTime(1997, 7, 1), null, null, 12, []);
-var albumFolder = MusicPaths.Album("/srv/music", savedAlbum);
-Check(albumFolder == "/srv/music/Radiohead/OK Computer (1997)", "saved albums go under artist and album with the year");
-Check(MusicPaths.Album("/srv/music", savedAlbum, edition: true) == "/srv/music/Radiohead/OK Computer (1997) [075264]", "a second edition of an album gets its own folder");
-Check(MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Artists = [new("155102851176075265", "..")] }) == "/srv/music/_/.. (1997)" && MusicPaths.Album("/srv/music", savedAlbum with { Title = "..", Date = null }) == "/srv/music/Radiohead/_"
-    && MusicPaths.Album("/srv/music", savedAlbum with { Date = null, Artists = [] }) == "/srv/music/Unknown artist/OK Computer", "album folders cannot climb out of the library folder");
+var albumFolder = MusicPaths.Album(musicRoot, savedAlbum);
+Check(albumFolder == InMusic("Radiohead", "OK Computer (1997)"), "saved albums go under artist and album with the year");
+Check(MusicPaths.Album(musicRoot, savedAlbum, edition: true) == InMusic("Radiohead", "OK Computer (1997) [075264]"), "a second edition of an album gets its own folder");
+Check(MusicPaths.Album(musicRoot, savedAlbum with { Title = "..", Artists = [new("155102851176075265", "..")] }) == InMusic("_", ".. (1997)") && MusicPaths.Album(musicRoot, savedAlbum with { Title = "..", Date = null }) == InMusic("Radiohead", "_")
+    && MusicPaths.Album(musicRoot, savedAlbum with { Date = null, Artists = [] }) == InMusic("Unknown artist", "OK Computer"), "album folders cannot climb out of the library folder");
 var savedTrack = musicSearch.Tracks[0] with { Title = "Paranoid Android", Number = 2, Disc = 1 };
 Check(MusicPaths.Track(albumFolder, savedTrack, false) == albumFolder + "/02 Paranoid Android.flac"
     && MusicPaths.Track(albumFolder, savedTrack with { Disc = 2, Title = "../x" }, true) == albumFolder + "/2-02 .._x.flac", "saved songs are numbered, with the disc when there are several");
@@ -1020,8 +1017,9 @@ var vidlySubs = VidlySource.SubtitlesFrom("{\"subtitles\":[{\"url\":\"https://ca
     + "{\"url\":\"https://cache.example/fr.vtt\",\"lang\":\"fr\",\"label\":\"French\"},{\"url\":\"http://cache.example/en.vtt\",\"lang\":\"en\",\"label\":\"English\"}]}");
 Check(vidlySubs.Count == 1 && vidlySubs[0].Url.AbsolutePath.EndsWith("English%20Hi.vtt", StringComparison.Ordinal), "only English https subtitle tracks are kept, with spaces escaped");
 Check(VidlySource.SubtitlesFrom("{}").Count == 0, "no subtitle list means no tracks");
-Check(FilmSources.Order.SequenceEqual(["flix", "astra", "vidly", "vidbolt", "punkflix"]) && new Configuration() is { FilmVidly: true, FilmAstra: true, FilmVidBolt: true, FilmPunkflix: true },
-    "FlixHQ is asked first, then Astra, Vidly, VidBolt and Punkflix, all on by default");
+Check(FilmSources.Order.SequenceEqual(["flix", "astra", "vidrift", "vidly", "vidbolt", "rive", "punkflix"])
+    && new Configuration() is { FilmVidly: true, FilmAstra: true, FilmVidBolt: true, FilmPunkflix: true, FilmVidRift: true, FilmRive: true, FilmMaxHeight: 0, FilmPreferH264: true },
+    "seven Movies & TV sources, all on by default, best quality first with H.264 preferred");
 var astraKey = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
 var astraNonce = Enumerable.Range(40, 12).Select(i => (byte)i).ToArray();
 var astraPlain = Encoding.UTF8.GetBytes("https://stream.example/master.m3u8?k=1");
@@ -1109,7 +1107,10 @@ for (var start = 0; start < libraryItems.Length + 1; start += 7)
     seenItems.AddRange(libraryItems.Skip(nativePage.Start).Take(nativePage.Limit!.Value));
 }
 Check(seenItems.SequenceEqual(libraryItems), "paging a library with a link never skips or repeats its own items");
-Console.WriteLine($"{count} checks passed.");
+await PlaybackChecks.RunAsync();
+await SharedChecks.RunAsync();
+FilmSourceChecks.Run();
+Console.WriteLine($"{Harness.Count} checks passed.");
 
 sealed class SiteFake(string id, IReadOnlyList<SourceTitle> titles, IReadOnlyList<SourceEpisode> episodes, Func<string, IReadOnlyList<ResolvedVideo>> resolve) : IAnimeSource
 {
