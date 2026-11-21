@@ -20,6 +20,7 @@ public sealed class FlixSource(SafeHttp http) : IFilmSource, IDisposable
     public static readonly Uri Classic = new("https://flixhq.ws/");
     public static readonly string[] ServerOrder = ["vidmoly", "doodstream", "vidsrc"];
     private readonly MemoryCache pages = new(new MemoryCacheOptions { SizeLimit = 2000 });
+    private readonly InFlight<Uri?> searches = new(TimeSpan.FromSeconds(30));
     private static Regex Rx(string pattern) => new(pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromSeconds(2));
     private static readonly Regex AnchorTag = Rx(@"<a\b([^>]*)>(.*?)</a>");
     private static readonly Regex M3u8 = Rx(@"https?://[^\s""'<>\\]+?\.m3u8(?:\?[^\s""'<>\\]*)?");
@@ -77,16 +78,20 @@ public sealed class FlixSource(SafeHttp http) : IFilmSource, IDisposable
         foreach (var site in new[] { Watch, Classic }) pages.Remove(PageKey(site, film));
     }
 
-    private static string PageKey(Uri site, Film film) => $"{site.Host}/{film.Kind}/{film.Id}";
+    private static string PageKey(Uri site, Film film) => $"{Plugin.Instance?.Configuration.CacheRevision ?? 0}/{site.Host}/{film.Kind}/{film.Id}";
 
     private async Task<Uri?> FindAsync(Uri site, Film film, CancellationToken ct)
     {
         var key = PageKey(site, film);
         if (pages.TryGetValue<Uri>(key, out var known)) return known;
-        var html = await http.TextAsync(new Uri(site, "search?keyword=" + Uri.EscapeDataString(film.Title)), ct);
-        var found = site == Watch ? MatchWatch(html, film) : MatchClassic(html, film);
-        if (found is not null) pages.Set(key, found, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(12) });
-        return found;
+        // Several viewers opening the same title at once send the site one search.
+        return await searches.GetAsync(key, async token =>
+        {
+            var html = await http.TextAsync(new Uri(site, "search?keyword=" + Uri.EscapeDataString(film.Title)), token);
+            var found = site == Watch ? MatchWatch(html, film) : MatchClassic(html, film);
+            if (found is not null) pages.Set(key, found, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(12) });
+            return found;
+        }, ct);
     }
 
     // flixhqz.net slugs carry the title and year: /watch-movie/<title>-<year>-watch-online/.

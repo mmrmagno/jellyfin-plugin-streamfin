@@ -24,6 +24,12 @@ public sealed class Configuration : BasePluginConfiguration
     public bool FilmAstra { get; set; } = true;
     public bool FilmVidBolt { get; set; } = true;
     public bool FilmPunkflix { get; set; } = true;
+    public bool FilmVidRift { get; set; } = true;
+    public bool FilmRive { get; set; } = true;
+    // Movies & TV quality: the tallest picture allowed (0 = no limit), and H.264 first at equal quality so the server
+    // need not convert the video for most players.
+    public int FilmMaxHeight { get; set; }
+    public bool FilmPreferH264 { get; set; } = true;
     public string TmdbApiKey { get; set; } = "";
     public bool MusicEnabled { get; set; } = true;
     // Empty means MusicCatalog.DefaultApi.

@@ -14,6 +14,7 @@ public sealed class MusicLyrics(SafeHttp http, MusicCatalog catalog) : IDisposab
     public const string Host = "lrclib.net";
     private const int LineLimit = 2000;
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 2000 });
+    private readonly InFlight<LyricDto?> lookups = new(TimeSpan.FromSeconds(30));
     private readonly RateWindow budget = new(10, TimeSpan.FromSeconds(10));
 
     public async Task<LyricDto?> ForItemAsync(Audio audio, CancellationToken ct)
@@ -39,6 +40,12 @@ public sealed class MusicLyrics(SafeHttp http, MusicCatalog catalog) : IDisposab
     {
         if (track.Artists.Count == 0) return null;
         if (cache.TryGetValue<LyricDto?>("lyrics/" + track.Id, out var known)) return known;
+        // A player and the lyrics screen often ask for the same song together; LRCLIB gets one lookup.
+        return await lookups.GetAsync(track.Id, token => LookupAsync(track, album, token), ct);
+    }
+
+    private async Task<LyricDto?> LookupAsync(MusicTrack track, string album, CancellationToken ct)
+    {
         var query = "track_name=" + Uri.EscapeDataString(track.Title) + "&artist_name=" + Uri.EscapeDataString(track.Artists[0].Name);
         LyricDto? lyrics;
         // The exact lookup needs title, artist, album and length to match; the search is the fallback for small differences.

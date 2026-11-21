@@ -22,7 +22,10 @@ public sealed class ServiceRegistration : IPluginServiceRegistrator
         services.AddSingleton<IFilmSource, AstraSource>();
         services.AddSingleton<IFilmSource, VidBoltSource>();
         services.AddSingleton<IFilmSource, PunkflixSource>();
+        services.AddSingleton<IFilmSource, VidRiftSource>();
+        services.AddSingleton<IFilmSource>(provider => new RiveSource(provider.GetRequiredService<SafeHttp>()));
         services.AddSingleton<FilmSources>();
+        services.AddSingleton<FilmVersions>();
         services.AddSingleton<MusicMetadataStore>();
         services.AddSingleton(provider => new MonochromeHealth(provider.GetService<Microsoft.Extensions.Logging.ILogger<MonochromeHealth>>()));
         services.AddSingleton<VideoHealth>();
