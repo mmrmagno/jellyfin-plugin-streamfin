@@ -29,10 +29,13 @@ It works on TV apps too. It started as AniFin (anime only) and grew into StreamF
 - Japanese audio with English subtitles. Never a dub.
 - The next episode is prepared while one plays, so Next episode starts at once.
 - If a source fails, the same episode plays from another source, but only when that source lists exactly this title.
+- Titles show their AniList score, genres, animation studio, main tags and wide banner art.
 
 **Movies & TV**
 - Popular movies, popular TV and trending, from TMDB.
 - Shows open into seasons and episodes. The next episode is prepared while one plays.
+- Titles show their TMDB rating, genres, age rating, studio or network, cast and director with photos, backdrop and
+  logo, and link to IMDb.
 - Seven video sources are asked at once. The best answer plays (up to 4K, H.264 first so most devices need no
   conversion), and the others appear as versions in the player, named by source, quality and codec.
   A quality setting can cap it at 1080p or 720p.

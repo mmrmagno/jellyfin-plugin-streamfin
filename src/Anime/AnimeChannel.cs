@@ -24,7 +24,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
 {
     public string Name => "Anime";
     public string Description => "StreamFin · Browse anime and stream Japanese audio with English subtitles.";
-    public string DataVersion => "streamfin-7-" + SourceRegistry.CacheKey + "-" + AniListCatalog.PolicyKey + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
+    public string DataVersion => "streamfin-8-" + SourceRegistry.CacheKey + "-" + AniListCatalog.PolicyKey + "-" + (Plugin.Instance?.Configuration.CacheRevision ?? 0);
     public string HomePageUrl => "https://github.com/mmrmagno/jellyfin-plugin-streamfin";
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
     public bool IsEnabledFor(string userId) => Guid.TryParse(userId, out var id) && Plugin.Allows(id);
@@ -59,7 +59,12 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
         if (query.UserId != Guid.Empty && !Plugin.Allows(query.UserId)) throw new UnauthorizedAccessException("StreamFin is not enabled for this account.");
         if (Plugin.Instance?.Configuration is not { Enabled: true }) return Result([]);
         var id = query.FolderId ?? "";
-        try { return await BrowseAsync(id, ct); }
+        try
+        {
+            var result = await BrowseAsync(id, ct);
+            ChannelMetadata.InBackground(token => ChannelMetadata.SyncAsync(library, Name, result.Items, token), logger);
+            return result;
+        }
         catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.RegularExpressions.RegexMatchTimeoutException or UriFormatException or System.Text.Json.JsonException or TaskCanceledException && !ct.IsCancellationRequested)
         {
             logger.LogWarning("StreamFin catalog request failed ({ErrorType})", ex.GetType().Name);
@@ -82,6 +87,21 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
             }
             return Result([status]);
         }
+    }
+
+    // What AniList says about a title, on its series and on each episode: score (out of 10), genres, animation studios,
+    // the strongest tags, and the AniList and MyAnimeList ids alongside the ids watch progress hangs on.
+    // The banner goes on the series only: on every episode it would be the same picture downloaded hundreds of times.
+    public static void Describe(Anime anime, ChannelItemInfo item, bool banner = true)
+    {
+        if (anime.AverageScore is { } score) item.CommunityRating = score / 10f;
+        if (anime.Genres.Length > 0) item.Genres = [.. anime.Genres];
+        if (anime.Studios is { Length: > 0 } studios) item.Studios = [.. studios];
+        item.Tags = ["StreamFin", .. anime.Tags ?? []];
+        item.ProviderIds ??= [];
+        item.ProviderIds["AniList"] = anime.Id.ToString(CultureInfo.InvariantCulture);
+        if (anime.MalId is > 0 and var mal) item.ProviderIds["MyAnimeList"] = mal.ToString(CultureInfo.InvariantCulture);
+        if (banner && anime.Banner is { } wide) ArtworkStore.Set(item.Id, new Artwork(Backdrop: wide, Banner: wide));
     }
 
     private async Task<ChannelItemResult> BrowseAsync(string id, CancellationToken ct)
@@ -118,6 +138,7 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
                 // The anifin prefix predates the rename; changing it would orphan saved progress.
                 item.ProviderIds = new Dictionary<string, string> { ["Custom"] = $"anifin-series-{anime.Id}" };
                 item.IndexNumber = data.Items.IndexOf(anime) + 1;
+                Describe(anime, item);
                 return item;
             }).ToList();
             if (data.Next is { } next) items.Add(Folder($"catalog/{category}/{next}", $"More ({(next - 1) / PagesPerFolder + 1})"));
@@ -213,14 +234,15 @@ public sealed class AnimeChannel(AniListCatalog catalog, SourceRegistry sources,
             Id = $"episode/{scope}/{anime.Id}/{SourceRegistry.Key(provider, episode.Id)}",
             Name = $"{episode.Number.ToString(CultureInfo.InvariantCulture)} · {episode.Title}",
             SeriesName = anime.Title, Type = ChannelItemType.Media, MediaType = ChannelMediaType.Video,
-            ContentType = ChannelMediaContentType.Episode, ImageUrl = anime.Image,
+            // Episode cards are wide, so the banner fits them better than the tall poster.
+            ContentType = ChannelMediaContentType.Episode, ImageUrl = anime.Banner ?? anime.Image,
             Overview = provider == "zoko" ? $"Japanese audio · English subtitles (selectable) · {name}" : $"Japanese audio · English subtitles (embedded in the video) · {name}",
             IndexNumber = episode.Number == decimal.Truncate(episode.Number) ? (int)episode.Number : null,
             ParentIndexNumber = season, ProductionYear = anime.Year,
             RunTimeTicks = anime.Duration is > 0 ? TimeSpan.FromMinutes(anime.Duration.Value).Ticks : null,
             // The AniFin provider key predates the rename; watch state is matched on it.
             Tags = ["StreamFin"], ProviderIds = new Dictionary<string, string> { ["AniFinEpisode"] = SourceRegistry.Key(provider, episode.Id) }
-        }));
+        }).Select(item => { Describe(anime, item, banner: false); return item; }));
     }
 
     public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(string id, CancellationToken ct)
