@@ -42,6 +42,17 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         public DateTime Created { get; } = DateTime.UtcNow;
         public DateTime Expires { get; } = DateTime.UtcNow.AddHours(12);
         public SemaphoreSlim Gate { get; } = new(1, 1);
+        // Set once anything reads the stream, so versions that were only listed give way first.
+        public bool Used { get; set; }
+        // Segments that could not be fetched in a row. A host that has stopped answering is not asked again and again by
+        // FFprobe walking the whole playlist: after a few failures the next segments fail at once, for 20 s, then one
+        // request is let through again in case the host is back.
+        public int SegmentFailures;
+        public long LastFailure;
+        // Movies & TV tickets follow the quality settings when choosing a variant; anime and music keep the best one.
+        public bool FilmQuality { get; init; }
+        // Segments whose leading image was cut off are always sent whole, so a later byte range cannot land off by the image.
+        public ConcurrentDictionary<int, int> Stripped { get; } = new();
         public ResolvedVideo? Video { get; set; }
         public HlsLinks Links { get; } = new();
         public required ResolvedVideo First { get; init; }
@@ -51,15 +62,22 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
 
     // A session starts from the resolution Jellyfin just probed; resolving again costs several
     // page loads for film sources and can land on a different server or file.
-    public Playback Create(Guid userId, ResolvedVideo resolved, Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> resolve, Func<bool> live)
+    public Playback Create(Guid userId, ResolvedVideo resolved, Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> resolve, Func<bool> live, bool filmQuality = false)
     {
         var hls = resolved.Hls;
         foreach (var pair in tickets.Where(p => p.Value.Expires < DateTime.UtcNow)) tickets.TryRemove(pair.Key, out _);
         // Failed and abandoned attempts pile up, so make room by dropping the oldest instead of refusing.
-        foreach (var (limit, scope) in new[] { (32, tickets.Where(p => p.Value.UserId == userId)), (256, tickets) })
-            foreach (var pair in scope.OrderBy(p => p.Value.Created).SkipLast(limit - 1).ToList()) tickets.TryRemove(pair.Key, out _);
+        // A title lists several versions, each with its own ticket. Tickets from the last two minutes (the versions being
+        // listed right now) stay; among older ones, those never played go first, then the oldest.
+        var recent = DateTime.UtcNow.AddMinutes(-2);
+        foreach (var (limit, scope) in new[] { (128, tickets.Where(p => p.Value.UserId == userId)), (1024, tickets) })
+        {
+            var all = scope.ToList();
+            foreach (var pair in all.OrderBy(p => p.Value.Created > recent).ThenBy(p => p.Value.Used).ThenBy(p => p.Value.Created).Take(all.Count - (limit - 1)).ToList())
+                tickets.TryRemove(pair.Key, out _);
+        }
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-        var ticket = tickets[id] = new(userId, hls, resolve, live) { Video = resolved, First = resolved };
+        var ticket = tickets[id] = new(userId, hls, resolve, live) { Video = resolved, First = resolved, FilmQuality = filmQuality };
         var root = host.GetLocalApiUrl("127.0.0.1", "http", host.HttpPort).TrimEnd('/') + "/StreamFin/Internal/Stream/" + id;
         // The extension lets FFmpeg pick its HLS reader before reading a byte.
         return new(id, root + (hls ? "/master.m3u8" : ""), secret,
@@ -79,34 +97,97 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         catch { tickets.TryRemove(playback.Id, out _); throw; }
     }
 
-    private async Task<MediaSourceInfo> ProbeAsync(Playback playback, ResolvedVideo resolved, string name, CancellationToken ct)
+    // A version that is listed but not yet probed: it plays like any other once picked, and is probed then.
+    // Until it is probed, a listed version describes its picture from its playlist (height, codec) and assumes stereo
+    // AAC, so a player can start it straight away; the probe replaces the guess in the same object, which Jellyfin
+    // keeps in its own list of versions for a few minutes.
+    public sealed class Prepared(Playback playback, ResolvedVideo video, MediaSourceInfo media)
+    {
+        public Playback Playback { get; } = playback;
+        public ResolvedVideo Video { get; } = video;
+        public MediaSourceInfo Media { get; } = media;
+        public bool Probed { get; set; }
+        public bool Failed { get; set; }
+        // One probe of a version at a time: a pick and the background check never probe it twice over.
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+    }
+    public Prepared Prepare(Guid userId, ResolvedVideo resolved, string name, string id, int height, bool? h264,
+        Func<CancellationToken, Task<IReadOnlyList<ResolvedVideo>>> resolve, Func<bool> live)
+    {
+        var playback = Create(userId, resolved, resolve, live, filmQuality: true);
+        var media = Base(playback, resolved, name);
+        media.Id = id;
+        // No audio is guessed: an app sends the audio track chosen on the page by number, and a guessed number would pick
+        // the wrong one once the probe finds the real order. Subtitles are numbered from 100 both before and after the probe.
+        var guessed = new List<MediaStream>
+        {
+            new() { Type = MediaStreamType.Video, Index = 0, Codec = h264 == false ? "hevc" : "h264", Height = height > 0 ? height : null,
+                Width = height > 0 ? height * 16 / 9 : null, IsDefault = true }
+        };
+        guessed.AddRange(Subtitles(playback, resolved, ListedSubtitles));
+        media.MediaStreams = guessed;
+        return new(playback, resolved, media);
+    }
+
+    // Where a listed version's subtitle tracks are numbered, well past any stream a probe finds.
+    public const int ListedSubtitles = 100;
+
+    public async Task<MediaSourceInfo> ProbeAsync(Prepared prepared, CancellationToken ct)
+    {
+        await prepared.Gate.WaitAsync(ct);
+        try
+        {
+            if (prepared.Probed) return prepared.Media;
+            var probed = await ProbeAsync(prepared.Playback, prepared.Video, prepared.Media.Name, ct, ListedSubtitles);
+            var media = prepared.Media;
+            media.MediaStreams = probed.MediaStreams;
+            media.RunTimeTicks = probed.RunTimeTicks;
+            media.Bitrate = probed.Bitrate;
+            media.Size = probed.Size;
+            media.Container = probed.Container;
+            prepared.Probed = true;
+            prepared.Failed = false;
+            return media;
+        }
+        // The ticket stays: a version that failed once may open when it is picked later, and it is still listed.
+        catch { prepared.Failed = true; throw; }
+        finally { prepared.Gate.Release(); }
+    }
+
+    private static MediaSourceInfo Base(Playback playback, ResolvedVideo resolved, string name) => new()
     {
         // Audio is direct played so the FLAC reaches the client untouched: with a required header, clients
         // ask Jellyfin's static stream, which fetches the loopback URL itself and forwards User-Agent and Range.
         // Jellyfin 12 disables direct stream for every HTTP source, and a transcode follows the client's
         // profile, which is often lossy.
-        var media = new MediaSourceInfo
+        Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Ticket?.Container ?? (resolved.Hls ? "hls" : "mp4"), IsRemote = true,
+        Name = name, SupportsDirectPlay = resolved.Audio, SupportsDirectStream = resolved.Audio, SupportsTranscoding = true, SupportsProbing = true,
+        RequiredHttpHeaders = new Dictionary<string, string> { [Header] = playback.Secret }
+    };
+
+    // Codec "webvtt", not "vtt": when the codec equals the client's format, Jellyfin hands the client this Path, a
+    // loopback relay address it cannot reach. Any other name makes Jellyfin serve the track from its own endpoint.
+    private static List<MediaStream> Subtitles(Playback playback, ResolvedVideo resolved, int first)
+    {
+        var subtitles = resolved.Subtitles ?? [];
+        return subtitles.Select((subtitle, i) => new MediaStream
         {
-            Path = playback.Url, Protocol = MediaProtocol.Http, Container = resolved.Ticket?.Container ?? (resolved.Hls ? "hls" : "mp4"), IsRemote = true,
-            Name = name, SupportsDirectPlay = resolved.Audio, SupportsDirectStream = resolved.Audio, SupportsTranscoding = true, SupportsProbing = true,
-            RequiredHttpHeaders = new Dictionary<string, string> { [Header] = playback.Secret }
-        };
+            Type = MediaStreamType.Subtitle, Index = first + i, Codec = "webvtt", Path = playback.Subtitles[i],
+            IsExternal = true, SupportsExternalStream = true, Title = subtitle.Label, IsDefault = i == 0 && subtitle.Language == "en",
+            Language = subtitle.Language == "und" ? null : subtitle.Language
+        }).ToList();
+    }
+
+    private async Task<MediaSourceInfo> ProbeAsync(Playback playback, ResolvedVideo resolved, string name, CancellationToken ct, int? subtitlesFrom = null)
+    {
+        var media = Base(playback, resolved, name);
         // YouTube's addresses change on every lookup, so probes are kept per song and format instead.
         if (resolved.Ticket is { } song) return await ProbeAudioAsync(media, song.TrackId + ":" + song.Container, song.Container, ct);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var info = await encoder.GetMediaInfo(new MediaInfoRequest { MediaSource = media, MediaType = DlnaProfileType.Video, ExtractChapters = false }, timeout.Token);
         var streams = info.MediaStreams.Where(s => s.Type != MediaStreamType.Subtitle).ToList();
-        var subtitles = resolved.Subtitles ?? [];
-        // Codec "webvtt", not "vtt": when the codec equals the client's format, Jellyfin hands the client this Path, a
-        // loopback relay address it cannot reach. Any other name makes Jellyfin serve the track from its own endpoint.
-        for (var i = 0; i < subtitles.Count; i++)
-            streams.Add(new MediaStream
-            {
-                Type = MediaStreamType.Subtitle, Index = streams.Count, Codec = "webvtt", Path = playback.Subtitles[i],
-                IsExternal = true, SupportsExternalStream = true, Title = subtitles[i].Label, IsDefault = i == 0 && subtitles[i].Language == "en",
-                Language = subtitles[i].Language == "und" ? null : subtitles[i].Language
-            });
+        streams.AddRange(Subtitles(playback, resolved, subtitlesFrom ?? streams.Count));
         media.MediaStreams = streams;
         media.RunTimeTicks = info.RunTimeTicks;
         media.Bitrate = info.Bitrate;
@@ -153,7 +234,8 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         return address is not null && IPAddress.IsLoopback(address)
             && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(context.Request.Headers[Header].ToString()), Encoding.UTF8.GetBytes(secret))
             && tickets.TryGetValue(id, out var ticket) && ticket.Expires > DateTime.UtcNow && Plugin.Allows(ticket.UserId) && ticket.Live()
-            ? ticket : null;
+            ? Use(ticket) : null;
+        static Ticket Use(Ticket ticket) { ticket.Used = true; return ticket; }
     }
 
     // Resolve once per HLS session: the playlist tokens are tied to that resolution.
@@ -210,7 +292,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
         var video = await VideoAsync(ticket, timeout.Token);
         var text = await http.TextAsync(video.Url, timeout.Token, headers: video.Headers, open: true);
-        var master = Hls.IsMaster(text) ? Hls.RewriteMaster(text, video.Url, ticket.Links) : Hls.WrapMedia(ticket.Links.Add(video.Url, playlist: true));
+        var master = Hls.IsMaster(text) ? (ticket.FilmQuality ? Hls.RewriteMaster(text, video.Url, ticket.Links, FilmSources.MaxHeight, FilmSources.PreferH264) : Hls.RewriteMaster(text, video.Url, ticket.Links)) : Hls.WrapMedia(ticket.Links.Add(video.Url, playlist: true));
         await WriteAsync(context, master, "application/vnd.apple.mpegurl");
     }
 
@@ -227,7 +309,20 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
             await WriteAsync(context, Hls.RewriteMedia(text, upstream, ticket.Links), "application/vnd.apple.mpegurl");
             return;
         }
-        await ProxyAsync(context, ticket, upstream, video.Headers, range, open: true, timeout.Token, segment: true);
+        if (Volatile.Read(ref ticket.SegmentFailures) >= 6 && DateTime.UtcNow.Ticks - Interlocked.Read(ref ticket.LastFailure) < TimeSpan.FromSeconds(20).Ticks)
+        { context.Response.StatusCode = 502; return; }
+        if (ticket.Stripped.ContainsKey(index)) range = "";
+        try
+        {
+            await ProxyAsync(context, ticket, upstream, video.Headers, range, open: true, timeout.Token, segment: true, link: index);
+            if (context.Response.StatusCode < 400) Interlocked.Exchange(ref ticket.SegmentFailures, 0);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException && !context.RequestAborted.IsCancellationRequested)
+        {
+            Interlocked.Increment(ref ticket.SegmentFailures);
+            Interlocked.Exchange(ref ticket.LastFailure, DateTime.UtcNow.Ticks);
+            if (!context.Response.HasStarted) context.Response.StatusCode = 502;
+        }
     }
 
     public async Task ServeSubtitleAsync(HttpContext context, string id, int index, string key)
@@ -259,7 +354,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     }
 
     // Returns false, without writing anything, when a retryable request finds the link expired.
-    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false, string? audio = null)
+    private async Task<bool> ProxyAsync(HttpContext context, Ticket ticket, Uri upstream, IReadOnlyDictionary<string, string> headers, string range, bool open, CancellationToken ct, bool retryable = false, bool segment = false, string? audio = null, int link = -1)
     {
         using var response = await SafeHttp.PatientAsync(() => http.OpenAsync(upstream, true, ct, range.Length == 0 ? null : range,
             head: HttpMethods.IsHead(context.Request.Method), headers: headers, open: open), ct, attempts: audio is null ? 1 : 3);
@@ -291,222 +386,27 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
                     if (!context.Response.HasStarted) context.Response.StatusCode = 502;
                     break;
                 }
+                var skip = 0;
+                // FFmpeg asks for every segment from byte 0 ("bytes=0-"); that whole-file answer is shortened by the image.
+                if (segment && first && (range.Length == 0 || range.Replace(" ", "") == "bytes=0-") && !context.Response.HasStarted
+                    && Hls.ImagePrefix(buffer.AsSpan(0, read)) is > 0 and var image)
+                {
+                    skip = image;
+                    if (link >= 0) ticket.Stripped[link] = image;
+                    var total = response.Content.Headers.ContentRange?.Length ?? response.Content.Headers.ContentLength;
+                    context.Response.StatusCode = 200;
+                    context.Response.Headers.Remove("Content-Range");
+                    context.Response.Headers.Remove("Accept-Ranges");
+                    context.Response.ContentLength = total is long length ? length - skip : null;
+                    context.Response.ContentType = "video/mp2t";
+                }
                 first = false;
                 if (!Plugin.Allows(ticket.UserId) || !ticket.Live()) break;
-                await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted);
+                await context.Response.Body.WriteAsync(buffer.AsMemory(skip, read - skip), context.RequestAborted);
             }
         }
         // FFprobe and seeking FFmpeg hang up mid-segment all the time; that is not an error.
         catch (Exception ex) when (context.RequestAborted.IsCancellationRequested && ex is OperationCanceledException or IOException) { }
         return true;
     }
-}
-
-// Upstream addresses never reach FFmpeg. Each one gets a small index in the ticket,
-// and FFmpeg only ever sees loopback paths built from those indexes.
-public sealed class HlsLinks
-{
-    public const int Limit = 20000;
-    private readonly List<(Uri Url, bool Playlist)> links = [];
-    private readonly Dictionary<Uri, int> known = [];
-    public int Add(Uri url, bool playlist)
-    {
-        SafeHttp.ValidateOpen(url);
-        if (url.OriginalString.Length > 4096) throw new ProviderException("The stream playlist has an invalid address.");
-        lock (links)
-        {
-            if (known.TryGetValue(url, out var existing)) return existing;
-            if (links.Count >= Limit) throw new ProviderException("The stream playlist is too large.");
-            links.Add((url, playlist));
-            return known[url] = links.Count - 1;
-        }
-    }
-    public Uri? Get(int index) { lock (links) return index >= 0 && index < links.Count ? links[index].Url : null; }
-    public bool IsPlaylist(int index) { lock (links) return links[index].Playlist; }
-}
-
-public static class Hls
-{
-    private static readonly Regex Bandwidth = new(@"\A\d{1,12}\z", RegexOptions.None, TimeSpan.FromSeconds(1));
-    private static readonly Regex Plain = new(@"\A[A-Za-z0-9.\-]{1,64}\z", RegexOptions.None, TimeSpan.FromSeconds(1));
-    private static readonly Regex Number = new(@"\A\d{1,12}\z", RegexOptions.None, TimeSpan.FromSeconds(1));
-    private static readonly Regex Range = new(@"\A\d{1,15}(@\d{1,15})?\z", RegexOptions.None, TimeSpan.FromSeconds(1));
-    private static readonly Regex Seconds = new(@"\A#EXTINF:\s*(\d{1,6}(?:\.\d{1,6})?)", RegexOptions.None, TimeSpan.FromSeconds(1));
-
-    public static bool IsMaster(string text) => text.Contains("#EXT-X-STREAM-INF", StringComparison.Ordinal);
-    private static string[] Lines(string text)
-    {
-        if (!text.TrimStart('﻿', ' ', '\r', '\n').StartsWith("#EXTM3U", StringComparison.Ordinal)) throw new ProviderException("The source did not return an HLS playlist.");
-        return text.Replace("\r\n", "\n").Split('\n');
-    }
-    private static Uri Absolute(Uri playlist, string reference) =>
-        Uri.TryCreate(playlist, reference.Trim(), out var url) ? url : throw new ProviderException("The stream playlist has an invalid address.");
-
-    // Segment names keep a media extension: FFmpeg refuses HLS segments whose name it does not recognise.
-    private static string Extension(Uri url)
-    {
-        var ext = Path.GetExtension(url.AbsolutePath).TrimStart('.').ToLowerInvariant();
-        return ext is "m4s" or "mp4" or "aac" or "ts" or "vtt" or "webvtt" or "m4a" or "m4v" or "cmfv" or "cmfa" ? ext : "ts";
-    }
-    private static string Part(int index, bool playlist, Uri url, bool fragmented = true) =>
-        $"p/{index}.{(playlist ? "m3u8" : !fragmented && Extension(url) is "mp4" or "m4s" or "m4v" or "cmfv" ? "ts" : Extension(url))}";
-
-    // FFmpeg reads attribute lists loosely: bare or quoted values, backslash escapes, the last
-    // duplicate wins. Parse them the same way so nothing FFmpeg would act on is overlooked.
-    public static Dictionary<string, string> Attributes(string list)
-    {
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        var i = 0;
-        while (true)
-        {
-            while (i < list.Length && (char.IsWhiteSpace(list[i]) || list[i] == ',')) i++;
-            if (i >= list.Length) break;
-            var equals = list.IndexOf('=', i);
-            if (equals < 0) break;
-            var key = list[i..equals];
-            i = equals + 1;
-            var value = new StringBuilder();
-            if (i < list.Length && list[i] == '"')
-            {
-                i++;
-                while (i < list.Length && list[i] != '"')
-                {
-                    if (list[i] == '\\') { if (i + 1 >= list.Length) break; value.Append(list[i + 1]); i += 2; }
-                    else value.Append(list[i++]);
-                }
-                if (i < list.Length) i++;
-            }
-            else while (i < list.Length && !char.IsWhiteSpace(list[i]) && list[i] != ',') value.Append(list[i++]);
-            result[key] = value.ToString();
-        }
-        return result;
-    }
-
-    // Rebuilds a tag from the attributes it may carry; anything else is dropped. A URI is
-    // replaced by a relay path, so FFmpeg never sees an upstream address.
-    private static string Tag(string name, Dictionary<string, string> attributes, string[] quoted, string[] plain, Func<string, string>? uri = null)
-    {
-        var parts = new List<string>();
-        foreach (var (key, value) in attributes)
-        {
-            if (key == "URI" && uri is not null) parts.Add($"URI=\"{uri(value)}\"");
-            else if (quoted.Contains(key) && value.Length <= 256 && value.All(c => c >= ' ' && c != '"' && c != '\\')) parts.Add($"{key}=\"{value}\"");
-            else if (plain.Contains(key) && Plain.IsMatch(value)) parts.Add($"{key}={value}");
-        }
-        return $"#{name}:{string.Join(',', parts)}";
-    }
-
-    // Keep the best video variant and the renditions it uses. Jellyfin transcodes for each
-    // client anyway, and every variant kept would be another stream FFprobe has to open.
-    public static string RewriteMaster(string text, Uri playlist, HlsLinks links)
-    {
-        var lines = Lines(text);
-        (long Bandwidth, Dictionary<string, string> Attributes, int Uri)? best = null;
-        for (var i = 0; i < lines.Length; i++)
-        {
-            if (!lines[i].StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal)) continue;
-            var next = Array.FindIndex(lines, i + 1, l => l.Trim().Length > 0 && !l.StartsWith('#'));
-            if (next < 0) continue;
-            var attributes = Attributes(lines[i]["#EXT-X-STREAM-INF:".Length..]);
-            var bandwidth = attributes.TryGetValue("BANDWIDTH", out var b) && Bandwidth.IsMatch(b) ? long.Parse(b, CultureInfo.InvariantCulture) : 0;
-            if (best is null || bandwidth > best.Value.Bandwidth) best = (bandwidth, attributes, next);
-        }
-        if (best is not { } chosen) throw new ProviderException("The stream playlist lists no playable variant.");
-        var audio = chosen.Attributes.GetValueOrDefault("AUDIO");
-        var output = new StringBuilder("#EXTM3U\n");
-        foreach (var line in lines)
-        {
-            if (!line.StartsWith("#EXT-X-MEDIA:", StringComparison.Ordinal)) continue;
-            var media = Attributes(line["#EXT-X-MEDIA:".Length..]);
-            // Subtitle renditions are dropped: Jellyfin cannot extract them from a remote stream.
-            if (audio is null || media.GetValueOrDefault("TYPE") != "AUDIO" || media.GetValueOrDefault("GROUP-ID") != audio) continue;
-            output.Append(Tag("EXT-X-MEDIA", media, ["GROUP-ID", "NAME", "LANGUAGE", "CHANNELS"], ["TYPE", "DEFAULT", "AUTOSELECT"],
-                value => Part(links.Add(Absolute(playlist, value), true), true, playlist))).Append('\n');
-        }
-        var variant = Absolute(playlist, lines[chosen.Uri]);
-        output.Append(Tag("EXT-X-STREAM-INF", chosen.Attributes, ["CODECS", "AUDIO"], ["BANDWIDTH", "AVERAGE-BANDWIDTH", "RESOLUTION", "FRAME-RATE"]))
-            .Append('\n').Append(Part(links.Add(variant, true), true, variant)).Append('\n');
-        return output.ToString();
-    }
-
-    public static string WrapMedia(int index) => $"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\np/{index}.m3u8\n";
-
-    public static int FirstVariant(string master)
-    {
-        var line = master.Split('\n').First(l => l.StartsWith("p/", StringComparison.Ordinal));
-        return int.Parse(line[2..line.IndexOf('.')], CultureInfo.InvariantCulture);
-    }
-
-    public static string RewriteMedia(string text, Uri playlist, HlsLinks links)
-    {
-        var output = new StringBuilder("#EXTM3U\n");
-        string Relay(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url)[2..]; }
-        // Without EXT-X-MAP the segments are MPEG-TS whatever their address says (some hosts call them .mp4), and
-        // FFmpeg refuses a segment whose content does not match its extension.
-        var fragmented = Lines(text).Any(l => l.TrimStart().StartsWith("#EXT-X-MAP", StringComparison.Ordinal));
-        string Segment(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url, fragmented)[2..]; }
-        foreach (var raw in Lines(text))
-        {
-            var line = raw.Trim();
-            if (line.Length == 0 || line == "#EXTM3U") continue;
-            if (!line.StartsWith('#'))
-            {
-                output.Append(Segment(line)).Append('\n');
-                continue;
-            }
-            var colon = line.IndexOf(':');
-            var (name, value) = colon < 0 ? (line[1..], "") : (line[1..colon], line[(colon + 1)..]);
-            if (name is "EXT-X-STREAM-INF" or "EXT-X-MEDIA" or "EXT-X-I-FRAME-STREAM-INF" or "EXT-X-SESSION-DATA")
-                throw new ProviderException("The stream playlist nests other playlists.");
-            var kept = name switch
-            {
-                "EXTINF" when Seconds.Match(line) is { Success: true } m => $"#EXTINF:{m.Groups[1].Value},",
-                "EXT-X-TARGETDURATION" or "EXT-X-MEDIA-SEQUENCE" or "EXT-X-DISCONTINUITY-SEQUENCE" or "EXT-X-VERSION" when Number.IsMatch(value) => $"#{name}:{value}",
-                "EXT-X-PLAYLIST-TYPE" when value is "VOD" or "EVENT" => $"#{name}:{value}",
-                "EXT-X-BYTERANGE" when Range.IsMatch(value) => $"#{name}:{value}",
-                "EXT-X-ENDLIST" or "EXT-X-DISCONTINUITY" or "EXT-X-INDEPENDENT-SEGMENTS" when value.Length == 0 => $"#{name}",
-                "EXT-X-KEY" => Tag(name, Attributes(value), [], ["METHOD", "IV"], Relay),
-                "EXT-X-MAP" => Tag(name, Attributes(value), ["BYTERANGE"], [], Relay),
-                _ => null
-            };
-            if (kept is not null) output.Append(kept).Append('\n');
-        }
-        return output.ToString();
-    }
-
-    public static double Duration(string text) => Regex.Matches(text, @"#EXTINF:\s*([0-9.]+)", RegexOptions.None, TimeSpan.FromSeconds(2))
-        .Sum(m => double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : 0);
-
-    public static string WebVtt(string text)
-    {
-        text = text.TrimStart('\uFEFF').Replace("\r\n", "\n");
-        if (text.TrimStart().StartsWith("WEBVTT", StringComparison.Ordinal)) return text.TrimStart();
-        if (!Regex.IsMatch(text, @"\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->", RegexOptions.None, TimeSpan.FromSeconds(2))) throw new ProviderException("The subtitle file is not SubRip or WebVTT.");
-        return "WEBVTT\n\n" + Regex.Replace(text, @"(\d{2}:\d{2}:\d{2}),(\d{3})", "$1.$2", RegexOptions.None, TimeSpan.FromSeconds(2));
-    }
-}
-
-[ApiController]
-[Route("StreamFin/Internal/Stream")]
-public sealed class StreamController(StreamRelay relay) : ControllerBase
-{
-    // FFmpeg cannot carry the user's Jellyfin session. These routes are loopback-only and additionally
-    // require a random per-process header, an opaque ticket, and a still-authorized owner.
-    [AllowAnonymous, HttpGet("{ticket}"), HttpHead("{ticket}")]
-    public async Task Stream(string ticket)
-    {
-        // Jellyfin's probe hangs up on purpose once it has read enough; that is not an error worth a log line.
-        try { await relay.ServeFileAsync(HttpContext, ticket); }
-        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested) { }
-    }
-
-    [AllowAnonymous, HttpGet("{ticket}/master.m3u8"), HttpHead("{ticket}/master.m3u8")]
-    public Task Master(string ticket) => relay.ServeMasterAsync(HttpContext, ticket);
-
-    [AllowAnonymous, HttpGet("{ticket}/p/{index:int}.{ext:length(2,6)}"), HttpHead("{ticket}/p/{index:int}.{ext:length(2,6)}")]
-    public Task Part(string ticket, int index) => relay.ServePartAsync(HttpContext, ticket, index);
-
-    // Fetched by Jellyfin's subtitle encoder, which sends its own User-Agent; the per-ticket key replaces the header.
-    [AllowAnonymous, HttpGet("{ticket}/sub/{index:int}.vtt")]
-    public Task Subtitle(string ticket, int index, [FromQuery] string key) => relay.ServeSubtitleAsync(HttpContext, ticket, index, key ?? "");
 }

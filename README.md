@@ -33,7 +33,9 @@ It works on TV apps too. It started as AniFin (anime only) and grew into StreamF
 **Movies & TV**
 - Popular movies, popular TV and trending, from TMDB.
 - Shows open into seasons and episodes. The next episode is prepared while one plays.
-- FlixHQ is tried first. When it does not have a title or cannot play it, Astra, Vidly, VidBolt and Punkflix are tried in turn.
+- Seven video sources are asked at once. The best answer plays (up to 4K, H.264 first so most devices need no
+  conversion), and the others appear as versions in the player, named by source, quality and codec.
+  A quality setting can cap it at 1080p or 720p.
 
 **Music**
 - Lossless FLAC from Monochrome's catalog: CD quality, and 24 bit on some albums. Never transcoded.
@@ -67,10 +69,12 @@ It works on TV apps too. It started as AniFin (anime only) and grew into StreamF
 | AnimeGG | Anime | Title search | Burned in |
 | AnimeHeaven | Anime | Title search | Burned in |
 | FlixHQ | Movies and TV | Title and year | Usually a separate English track |
-| Astra | Movies and TV, after FlixHQ | TMDB ID | Separate English tracks |
-| Vidly | Movies and TV, after Astra | TMDB ID | Separate English tracks |
-| VidBolt | Movies and TV, after Vidly | TMDB ID | Separate English tracks |
-| Punkflix | Mostly movies, last | TMDB ID | Separate English tracks |
+| Astra | Movies and TV | TMDB ID | Separate English tracks |
+| Vidly | Movies and TV | TMDB ID | Separate English tracks |
+| VidBolt | Movies and TV | TMDB ID | Separate English tracks |
+| VidRift | Movies and TV, up to 4K | TMDB ID | Separate English tracks |
+| Rive | Movies and TV, English audio, up to 720p | TMDB ID | Separate English tracks |
+| Punkflix | Mostly movies | TMDB ID | Separate English tracks |
 | Monochrome | Music (FLAC) | Its own IDs, with ISRCs | Not applicable |
 | Deezer | Music catalog, when Monochrome cannot answer | Its own IDs, with ISRCs | Not applicable |
 | YouTube | Music, off by default | Artist and title, same length within 3 s | Not applicable |
