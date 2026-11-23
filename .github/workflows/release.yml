@@ -12,7 +12,8 @@ concurrency:
 
 jobs:
   build:
-    name: Build and test
+    # Not "Build and test": that is the pull request check main requires, and a release run must never stand in for it.
+    name: Build release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # Builds and tests run here, with a read-only token. Nothing in this job can publish.
