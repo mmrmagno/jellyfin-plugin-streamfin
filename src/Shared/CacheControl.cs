@@ -65,7 +65,13 @@ public sealed class CatalogWarmer(AniListCatalog anime, TmdbCatalog films, ILogg
         if (FilmChannel.IsAvailable)
             foreach (var category in FilmCategories)
                 foreach (var page in new[] { 1, 2, 3 })
-                    steps.Add(token => films.BrowseAsync(category, page, token));
+                    steps.Add(async token =>
+                    {
+                        // Cast, studios and pictures of the warmed titles too, so their pages show them from the start.
+                        foreach (var film in (await films.BrowseAsync(category, page, token)).Items)
+                            try { if (films.KnownDetails(film) is null) { await films.SpareAsync(token); await films.DetailsAsync(film, token); } }
+                            catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Text.Json.JsonException) { }
+                    });
         // One request at a time: each provider keeps its own rate limit, and a failed page only skips itself.
         foreach (var step in steps)
         {

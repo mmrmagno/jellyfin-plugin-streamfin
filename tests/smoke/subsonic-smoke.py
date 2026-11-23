@@ -51,7 +51,7 @@ password = secrets.token_hex(12)
 other_password = secrets.token_hex(12)
 config = jellyfin(config_path, admin)
 original = dict(config)
-config.update({'Enabled': True, 'MusicEnabled': True, 'MusicApiUrl': '', 'AllowedUserIds': [viewer['id']], 'SubsonicEnabled': True,
+config.update({'Enabled': True, 'MusicEnabled': True, 'MusicApiUrl': '', 'AllowedUserIds': sorted(set(config.get('AllowedUserIds') or []) - {other['id']} | {viewer['id']}), 'SubsonicEnabled': True,
                'SubsonicPasswords': [{'UserId': viewer['id'], 'Password': password}, {'UserId': other['id'], 'Password': other_password}]})
 jellyfin(config_path, admin, config)
 me = credentials(viewer_name, password)
@@ -204,7 +204,7 @@ try:
     print(f'PASS: the library grows from a starred artist ({len(grown)} albums)', flush=True)
 
     # The other user has their own library, even with access.
-    config['AllowedUserIds'] = [viewer['id'], other['id']]
+    config['AllowedUserIds'] = sorted(set(config.get('AllowedUserIds') or []) | {viewer['id'], other['id']})
     jellyfin(config_path, admin, config)
     them = credentials(other_name, other_password)
     assert call('ping', them)['status'] == 'ok' and not call('getStarred2', them)['starred2'].get('album')

@@ -46,7 +46,7 @@ def jellyfin(path, token, data=None, raw=False, headers=None, method=None):
 def sign_in():
     password = secrets.token_hex(12)
     config = jellyfin(config_path, admin)
-    config.update({'Enabled': True, 'MusicEnabled': True, 'MusicApiUrl': '', 'AllowedUserIds': [viewer['id']], 'SubsonicEnabled': True,
+    config.update({'Enabled': True, 'MusicEnabled': True, 'MusicApiUrl': '', 'AllowedUserIds': sorted(set(config.get('AllowedUserIds') or []) - {state['users']['other']['id']} | {viewer['id']}), 'SubsonicEnabled': True,
                    'SubsonicPasswords': [{'UserId': viewer['id'], 'Password': password}], 'MusicYouTube': args.youtube, 'MusicAllowLossy': True})
     jellyfin(config_path, admin, config)
     return {'apiKey': password, 'v': '1.16.1', 'c': 'smoke', 'f': 'json'}

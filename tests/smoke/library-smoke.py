@@ -56,7 +56,7 @@ viewer = state['users']['viewer']
 password = secrets.token_hex(12)
 config = jellyfin(config_path, admin)
 original = dict(config)
-config.update({'Enabled': True, 'MusicEnabled': True, 'MusicApiUrl': '', 'AllowedUserIds': [viewer['id']], 'SubsonicEnabled': True,
+config.update({'Enabled': True, 'MusicEnabled': True, 'MusicApiUrl': '', 'AllowedUserIds': sorted(set(config.get('AllowedUserIds') or []) - {state['users']['other']['id']} | {viewer['id']}), 'SubsonicEnabled': True,
                'SubsonicPasswords': [{'UserId': viewer['id'], 'Password': password}], 'MusicLibraryFolder': '', 'CacheRevision': config.get('CacheRevision', 0) + 1})
 jellyfin(config_path, admin, config)
 try:

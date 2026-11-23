@@ -1110,6 +1110,7 @@ Check(seenItems.SequenceEqual(libraryItems), "paging a library with a link never
 await PlaybackChecks.RunAsync();
 await SharedChecks.RunAsync();
 FilmSourceChecks.Run();
+MetadataChecks.Run();
 Console.WriteLine($"{Harness.Count} checks passed.");
 
 sealed class SiteFake(string id, IReadOnlyList<SourceTitle> titles, IReadOnlyList<SourceEpisode> episodes, Func<string, IReadOnlyList<ResolvedVideo>> resolve) : IAnimeSource

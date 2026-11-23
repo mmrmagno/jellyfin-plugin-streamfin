@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
@@ -19,10 +20,13 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
     // Typing a search fires a query per pause. Searches get part of the budget and never wait,
     // so browsing a page always has slots left.
     private readonly RateWindow searches = new(15, TimeSpan.FromMinutes(1));
-    private const string Fields = "id idMal title { romaji english native } synonyms startDate { year } description(asHtml:false) coverImage { large } duration isAdult genres episodes nextAiringEpisode { episode }";
+    private const string Fields = "id idMal title { romaji english native } synonyms startDate { year } description(asHtml:false) coverImage { large } bannerImage duration isAdult averageScore genres episodes tags { name rank isMediaSpoiler isAdult } studios { nodes { name isAnimationStudio } } nextAiringEpisode { episode }";
+    // AniList ranks tags by relevance; the strongest few describe a title, the rest are noise.
+    private const int MaxTags = 8;
     private static readonly Uri Endpoint = new("https://graphql.anilist.co");
     private static readonly TimeSpan StaleFor = TimeSpan.FromHours(24);
-    private int Revision => Plugin.Instance?.Configuration.CacheRevision ?? 0;
+    // ".2" since titles carry score, tags, studios and banner: titles cached without them are fetched again.
+    private string Revision => (Plugin.Instance?.Configuration.CacheRevision ?? 0).ToString(CultureInfo.InvariantCulture) + ".2";
     private TimeSpan Lifetime => TimeSpan.FromMinutes(Math.Clamp(Plugin.Instance?.Configuration.MetadataCacheMinutes ?? 60, 1, 1440));
     private TimeSpan TitleLifetime => Lifetime < TimeSpan.FromHours(6) ? TimeSpan.FromHours(6) : Lifetime;
     public static bool IsAllowed(Anime anime, bool hideAdult, bool hideEcchi) =>
@@ -161,13 +165,29 @@ public sealed class AniListCatalog(SafeHttp http, ILogger<AniListCatalog> logger
             .OfType<string>().Where(s => s.Length > 0).Distinct().ToArray();
         var image = Text(node.GetProperty("coverImage"), "large");
         if (!Uri.TryCreate(image, UriKind.Absolute, out var imageUri) || imageUri.Scheme != "https" || !imageUri.Host.EndsWith(".anilist.co", StringComparison.Ordinal)) image = null;
+        // The wide art Jellyfin shows behind a title's page and on episode cards; only from AniList's own image host.
+        var banner = Text(node, "bannerImage");
+        if (!Uri.TryCreate(banner, UriKind.Absolute, out var bannerUri) || bannerUri.Scheme != "https" || !bannerUri.Host.EndsWith(".anilist.co", StringComparison.Ordinal)) banner = null;
+        // Spoiler tags give the plot away and adult tags do not belong on an ordinary title; the rest go by relevance.
+        var tags = node.TryGetProperty("tags", out var tagList) && tagList.ValueKind == JsonValueKind.Array
+            ? tagList.EnumerateArray().Where(t => t.ValueKind == JsonValueKind.Object && !(t.TryGetProperty("isMediaSpoiler", out var spoiler) && spoiler.ValueKind == JsonValueKind.True)
+                && !(t.TryGetProperty("isAdult", out var adult) && adult.ValueKind == JsonValueKind.True))
+                .Select(t => (Name: Text(t, "name"), Rank: Number(t, "rank") ?? 0)).Where(t => !string.IsNullOrWhiteSpace(t.Name))
+                .OrderByDescending(t => t.Rank).Select(t => t.Name!).Distinct(StringComparer.Ordinal).Take(MaxTags).ToArray()
+            : [];
+        // AniList lists every company involved; Jellyfin's studio field wants the animation studios.
+        var studios = node.TryGetProperty("studios", out var studioList) && studioList.ValueKind == JsonValueKind.Object
+            && studioList.TryGetProperty("nodes", out var nodes) && nodes.ValueKind == JsonValueKind.Array
+            ? nodes.EnumerateArray().Where(n => n.ValueKind == JsonValueKind.Object && n.TryGetProperty("isAnimationStudio", out var animation) && animation.ValueKind == JsonValueKind.True)
+                .Select(n => Text(n, "name")).OfType<string>().Where(n => n.Length > 0).Distinct(StringComparer.Ordinal).ToArray()
+            : [];
         // An airing show has episodes up to the next one; a finished show reports its total.
         var next = node.TryGetProperty("nextAiringEpisode", out var airing) && airing.ValueKind == JsonValueKind.Object ? Number(airing, "episode") : null;
         var available = next is > 1 ? next - 1 : next is null ? Number(node, "episodes") : null;
         return new Anime(node.GetProperty("id").GetInt32(), Text(title, "english") ?? Text(title, "romaji") ?? "Unknown anime", aliases,
             Number(node.GetProperty("startDate"), "year"), AnimeGgSource.Clean(Text(node, "description") ?? ""), image,
             Number(node, "duration"), node.GetProperty("isAdult").GetBoolean(), node.GetProperty("genres").EnumerateArray().Select(g => g.GetString()!).ToArray(),
-            Number(node, "idMal"), available);
+            Number(node, "idMal"), available, Number(node, "averageScore") is > 0 and <= 100 and var score ? score : null, tags, studios, banner);
     }
     // Refreshing what is already shown waits while fewer than a fifth of the minute's calls are left.
     private bool Spare => budget.Free(DateTime.UtcNow) > 5;
