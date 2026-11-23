@@ -17,6 +17,13 @@ updates:
       default-days: 7
   - package-ecosystem: docker
     directories: ['/.clusterfuzzlite', '/scripts/images/sdk', '/scripts/images/tools']
+    # The plugin targets the .NET and Jellyfin versions Jellyfin 12.3 runs on; a new major SDK or another Jellyfin
+    # release is a deliberate change, not a routine update.
+    ignore:
+      - dependency-name: dotnet/sdk
+        update-types: ['version-update:semver-major']
+      - dependency-name: jellyfin/jellyfin
+        update-types: ['version-update:semver-major', 'version-update:semver-minor']
     schedule:
       interval: monthly
     cooldown:
