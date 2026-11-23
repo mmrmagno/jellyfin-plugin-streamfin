@@ -131,6 +131,8 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
                 known.Used = DateTime.UtcNow;
                 return known.Size;
             }
+            // yt-dlp fetches count against the same few downloads at a time as the catalog's.
+            if (Entries.Values.Count(e => !e.Complete) >= Downloads + 1) throw new ProviderException("The server is fetching other songs. Try again in a moment.");
             entry = new Entry { Path = System.IO.Path.Combine(root, id + "." + container), Container = container, Used = DateTime.UtcNow,
                 Stop = CancellationTokenSource.CreateLinkedTokenSource(ct) };
             Entries[id] = entry;
@@ -398,17 +400,18 @@ public sealed class MusicCache(SafeHttp http, ILogger<MusicCache> logger)
 
     public static (bool, DateTime) Order(string trackId, DateTime used, IReadOnlySet<string> favourites) => (favourites.Contains(trackId), used);
 
-    // Oldest first, favourites last, until the songs fit. A song played in the last minute stays, even over the limit.
+    // Oldest first, favourites last, until the songs fit. Songs still downloading count too. A song played in the last
+    // minute stays over the limit, but only up to a quarter more: past that, even recent songs go.
     private void Trim()
     {
         lock (Gate)
         {
             var kept = Entries.Where(e => e.Value.Complete).OrderBy(e => Order(e.Key, e.Value.Used, favoured)).ToList();
-            var total = kept.Sum(e => e.Value.Size);
+            var total = kept.Sum(e => e.Value.Size) + Entries.Values.Where(e => !e.Complete).Sum(e => Math.Max(Volatile.Read(ref e.Written), Volatile.Read(ref e.Size)));
             foreach (var (id, entry) in kept)
             {
                 if (total <= Limit) break;
-                if (DateTime.UtcNow - entry.Used < TimeSpan.FromMinutes(1)) continue;
+                if (DateTime.UtcNow - entry.Used < TimeSpan.FromMinutes(1) && total <= Limit + Limit / 4) continue;
                 if (!Entries.TryRemove(new KeyValuePair<string, Entry>(id, entry))) continue;
                 try { File.Delete(entry.Path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 total -= entry.Size;

@@ -19,6 +19,9 @@ static class MetadataChecks
              "studios":{"nodes":[{"name":"Pierrot","isAnimationStudio":true},{"name":"TV Tokyo","isAnimationStudio":false}]}}
             """);
         var naruto = AniListCatalog.Parse(anilist.RootElement);
+        Check(ChannelMetadata.MergeIds(new Dictionary<string, string> { ["Imdb"] = "tt0137523", ["Tmdb"] = "1" }, new Dictionary<string, string> { ["tmdb"] = "550", ["Custom"] = "x" })
+                is { Count: 3 } merged && merged["Imdb"] == "tt0137523" && merged["Tmdb"] == "550" && merged["Custom"] == "x",
+            "a search keeps the ids a title was described with and updates its own");
         Check(naruto is { AverageScore: 79, Banner: "https://s4.anilist.co/b.jpg", MalId: 20 } && naruto.Tags!.SequenceEqual(["Ninja", "Shounen"]) && naruto.Studios!.SequenceEqual(["Pierrot"]),
             "AniList gives score, banner, the strongest non-spoiler tags and the animation studios");
         using var foreign = JsonDocument.Parse(anilist.RootElement.GetRawText().Replace("https://s4.anilist.co/b.jpg", "https://evil.example/b.jpg"));

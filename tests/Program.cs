@@ -24,9 +24,10 @@ Reject(() => AnimeGgSource.ParseVideos("var videoSources = [{file: \"https://loc
 foreach (var id in new[] { "../config", "https://evil.example", "test?override=x", "a/b", "" }) Reject(() => AnimeGgSource.ValidateId(id), "invalid ID " + id);
 foreach (var uri in new[] { "http://www.animegg.org/", "https://animegg.org.evil.example/", "https://user@www.animegg.org/", "https://127.0.0.1/", "https://vidcache.net:22/" })
     Reject(() => SafeHttp.Validate(new Uri(uri), true), "unsafe URL " + uri);
-foreach (var address in new[] { "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "::ffff:127.0.0.1", "fd00::1", "fe80::1" })
+foreach (var address in new[] { "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "::ffff:127.0.0.1", "fd00::1", "fe80::1",
+    "0.0.0.0", "192.0.0.8", "192.0.2.1", "198.51.100.7", "203.0.113.9", "192.88.99.1", "2002:c0a8:0101::1", "2001:db8::1", "2001:0:4136:e378::1", "ff02::1", "255.255.255.255" })
     Check(!SafeHttp.IsPublicAddress(IPAddress.Parse(address)), "private address rejected " + address);
-Check(SafeHttp.IsPublicAddress(IPAddress.Parse("1.1.1.1")), "public IPv4 accepted");
+Check(SafeHttp.IsPublicAddress(IPAddress.Parse("1.1.1.1")) && SafeHttp.IsPublicAddress(IPAddress.Parse("2002:0101:0101::1")) && SafeHttp.IsPublicAddress(IPAddress.Parse("2606:4700::1111")), "public IPv4, public 6to4 and global IPv6 accepted");
 Check(SafeHttp.IsPublicAddress(IPAddress.Parse("64:ff9b::101:101")) && !SafeHttp.IsPublicAddress(IPAddress.Parse("64:ff9b::a00:1")) && !SafeHttp.IsPublicAddress(IPAddress.Parse("64:ff9b::7f00:1")), "NAT64 judged by its embedded IPv4");
 Check(AniListCatalog.CurrentSeason(new DateTime(2026, 10, 1)) == ("FALL", 2026), "October season boundary");
 Check(AniListCatalog.CurrentSeason(new DateTime(2027, 1, 1)) == ("WINTER", 2027), "January season boundary");
@@ -377,6 +378,20 @@ Check(deezerArtist.TopTracks.Single().Artists.Select(a => a.Name).SequenceEqual(
 Reject(() => Deezer.ParseArtist("""{"artist":{"id":"27","name":"x"}}"""), "Deezer artist without a numeric ID is rejected");
 Reject(() => Deezer.ParseRelease("[]"), "Deezer release must be an object");
 Check(MusicPaths.Album("/music", deezerRelease with { Id = "dz7" }, edition: true).EndsWith("Discovery (2001) [dz7]", StringComparison.Ordinal), "a short Deezer album ID still names a second edition");
+var linkRoot = Path.Combine(Path.GetTempPath(), "streamfin-links-" + Guid.NewGuid().ToString("N"));
+try
+{
+    Directory.CreateDirectory(Path.Combine(linkRoot, "lib"));
+    Directory.CreateDirectory(Path.Combine(linkRoot, "elsewhere"));
+    Directory.CreateSymbolicLink(Path.Combine(linkRoot, "lib", "Daft Punk"), Path.Combine(linkRoot, "elsewhere"));
+    Directory.CreateDirectory(Path.Combine(linkRoot, "lib", "Queen", "Jazz (1978)"));
+    Check(Throws(() => MusicPaths.RefuseLinks(Path.Combine(linkRoot, "lib"), Path.Combine(linkRoot, "lib", "Daft Punk", "Discovery (2001)"))) is ProviderException
+        && Throws(() => MusicPaths.RefuseLinks(Path.Combine(linkRoot, "lib"), Path.Combine(linkRoot, "lib", "Queen", "Jazz (1978)"))) is null,
+        "an album is never saved through a linked folder below the library root");
+    Check(MusicPaths.Temporary("/music/a/01 x.flac") is var first && first != MusicPaths.Temporary("/music/a/01 x.flac") && first.StartsWith("/music/a/.streamfin-", StringComparison.Ordinal),
+        "temporary files get unguessable names next to the song");
+}
+finally { if (Directory.Exists(linkRoot)) Directory.Delete(linkRoot, true); }
 Deezer.Check("""{"data":[]}""");
 Check(Throws(() => Deezer.Check("""{"error":{"type":"Exception","message":"Quota limit exceeded","code":4}}""")) is RateLimitedException
     && Throws(() => Deezer.Check("""{"error":{"code":800}}""")) is SourceStatusException { Status: 404 }
@@ -1059,33 +1074,22 @@ Check(MusicRecap.Build(2024, recapPlays).Summary.StartsWith("Nothing played yet"
 var historyRoot = Path.Combine(Path.GetTempPath(), "streamfin-history-" + Guid.NewGuid().ToString("N"));
 try
 {
-    var history = new MusicHistory(historyRoot);
+    var history = new MusicHistory(historyRoot) { Since = DateTime.MinValue };
     var listener = Guid.NewGuid();
     await history.AppendAsync(listener, recapPlays, default);
     await File.AppendAllTextAsync(Path.Combine(historyRoot, listener.ToString("N"), "2026.jsonl"), "{broken\n");
     Check((await history.ReadAsync(listener, 2026, default)).Count == 5 && (await history.ReadAsync(listener, 2025, default)).Count == 1
         && history.Years(listener).SequenceEqual([2026, 2025]), "plays are kept per year, and a damaged line does not lose the rest");
+    var spammer = Guid.NewGuid();
+    var strict = new MusicHistory(historyRoot);
+    var played = recapPlays[0].Track;
+    await strict.AppendAsync(spammer, [new(played, "A", new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)), new(played, "A", DateTime.UtcNow.AddDays(-400)), new(played, "A", DateTime.UtcNow.AddDays(3)), new(played, "A", DateTime.UtcNow)], default);
+    Check(strict.Years(spammer).SequenceEqual([DateTime.UtcNow.Year]) && (await strict.ReadAsync(spammer, DateTime.UtcNow.Year, default)).Count == 1,
+        "plays from years back or the future are not recorded, so a client cannot write a file for every year");
+    await strict.AppendAsync(spammer, Enumerable.Range(0, MusicHistory.PlaysPerWindow + 50).Select(_ => new MusicPlay(played, "A", DateTime.UtcNow)).ToArray(), default);
+    Check((await strict.ReadAsync(spammer, DateTime.UtcNow.Year, default)).Count == MusicHistory.PlaysPerWindow, "a client sending plays in a loop is held to a budget");
 }
 finally { if (Directory.Exists(historyRoot)) Directory.Delete(historyRoot, true); }
-// Spotify playlist import.
-Check(SpotifyImport.PlaylistId("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc") == "37i9dQZF1DXcBWIGoYBM5M"
-    && SpotifyImport.PlaylistId("https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M") == "37i9dQZF1DXcBWIGoYBM5M"
-    && SpotifyImport.PlaylistId("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M") == "37i9dQZF1DXcBWIGoYBM5M"
-    && SpotifyImport.PlaylistId("daft punk") is null && SpotifyImport.PlaylistId("https://open.spotify.com/album/37i9dQZF1DXcBWIGoYBM5M") is null,
-    "a Spotify playlist link is recognised in its usual forms, and nothing else is");
-var spotifyPage = SpotifyImport.ParseTracks("""
-{"items":[{"track":{"name":"Get Lucky","duration_ms":369626,"external_ids":{"isrc":"usqx91300108"},"artists":[{"name":"Daft Punk"},{"name":"Pharrell Williams"}],"album":{"name":"Random Access Memories"}}},
-{"track":null},{"track":{"name":"Podcast","artists":[]}}],"next":"https://api.spotify.com/v1/playlists/x/tracks?offset=100"}
-""");
-Check(spotifyPage is { HasNext: true, Tracks: [{ Title: "Get Lucky", Isrc: "USQX91300108", DurationMs: 369626, Album: "Random Access Memories", Artists: ["Daft Punk", "Pharrell Williams"] }] },
-    "a Spotify page gives each song with its ISRC, and skips removed songs and episodes");
-Check(SpotifyImport.ParsePlaylist("{\"name\":\"Road trip\",\"description\":\"<a href=x>Songs</a> for driving\"}") == ("Road trip", "Songs for driving"), "a playlist keeps its name and a plain description");
-MusicTrack Hit(string id, string title, string artist, int ms, bool explicitSong = false) => new(id, title, [new MusicArtistRef("a", artist)], "r", null, ms, null, explicitSong, null, null);
-Check(MusicCatalog.BestMatch("Get Lucky (feat. Pharrell Williams)", "Daft Punk", 369_626,
-        [Hit("1", "Get Lucky", "Someone Else", 369_000), Hit("2", "Get Lucky (Radio Edit)", "Daft Punk", 248_000), Hit("3", "Get Lucky", "Daft Punk", 369_000)])?.Id == "3"
-    && MusicCatalog.BestMatch("Get Lucky", "Daft Punk", 369_626, [Hit("2", "Get Lucky", "Daft Punk", 248_000)]) is null
-    && MusicCatalog.BestMatch("Beyoncé Song - 2011 Remaster", "Beyonce", 200_000, [Hit("4", "Beyonce Song", "Beyoncé", 201_000)])?.Id == "4",
-    "a search hit matches only with the same title and artist and a length within three seconds");
 // The StreamFin entry (hub) and library links.
 Check(new Configuration().StreamingNavigationMode == "Channels" && new Configuration().StreamingLibraryLinks.Count == 0, "existing installs keep the separate channels and no library links");
 Check(StreamingNavigation.NormalizeMode("Hub") == "Hub" && StreamingNavigation.NormalizeMode("Both") == "Both"
@@ -1111,6 +1115,7 @@ await PlaybackChecks.RunAsync();
 await SharedChecks.RunAsync();
 FilmSourceChecks.Run();
 MetadataChecks.Run();
+await ImportChecks.RunAsync();
 Console.WriteLine($"{Harness.Count} checks passed.");
 
 sealed class SiteFake(string id, IReadOnlyList<SourceTitle> titles, IReadOnlyList<SourceEpisode> episodes, Func<string, IReadOnlyList<ResolvedVideo>> resolve) : IAnimeSource

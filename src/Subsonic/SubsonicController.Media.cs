@@ -356,7 +356,8 @@ public sealed partial class SubsonicController
             catch (System.ComponentModel.Win32Exception) { started = null; }
             using var process = started ?? throw new SubsonicError(0, "FFmpeg could not be started.");
             using var abort = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-            var errors = process.StandardError.ReadToEndAsync(abort.Token);
+            // Only FFmpeg's last words are kept: a corrupt stream can make it complain for every frame.
+            var errors = YtDlp.TailAsync(process.StandardError, abort.Token);
             var feed = Task.Run(async () =>
             {
                 try

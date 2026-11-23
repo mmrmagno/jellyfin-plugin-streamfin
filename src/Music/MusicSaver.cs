@@ -46,6 +46,23 @@ public static class MusicPaths
     public static string Track(string albumFolder, MusicTrack track, bool discs)
         => Inside(albumFolder, Path.Combine(albumFolder, (discs ? $"{track.Disc ?? 1}-" : "") + $"{track.Number ?? 0:00} {Part(track.Title)}.flac"));
 
+    // A folder below the library root that is a link could lead anywhere, for example a share another account can
+    // write to pointing at Jellyfin's own data. The root itself may be a link the administrator chose.
+    public static void RefuseLinks(string root, string path)
+    {
+        var relative = Path.GetRelativePath(root, Inside(root, path));
+        var current = root;
+        foreach (var part in relative.Split(Path.DirectorySeparatorChar))
+        {
+            current = Path.Combine(current, part);
+            if (new FileInfo(current).LinkTarget is not null)
+                throw new ProviderException("The music library folder holds a link where StreamFin saves; it will not write through it.");
+        }
+    }
+
+    // Temporary files get a fresh unguessable name, so nobody can put a link there in advance.
+    public static string Temporary(string path) => Path.Combine(Path.GetDirectoryName(path)!, ".streamfin-" + Guid.NewGuid().ToString("N") + ".part");
+
     private static string Inside(string root, string path)
     {
         var full = Path.GetFullPath(path);
@@ -297,8 +314,20 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         var folder = MusicPaths.Album(root, release);
         var owner = Path.Combine(folder, Marker);
         if (File.Exists(owner) && (await File.ReadAllTextAsync(owner, ct)).Trim() != release.Id) folder = MusicPaths.Album(root, release, edition: true);
+        MusicPaths.RefuseLinks(root, folder);
         Directory.CreateDirectory(folder);
-        if (!File.Exists(Path.Combine(folder, Marker))) await File.WriteAllTextAsync(Path.Combine(folder, Marker), release.Id, ct);
+        MusicPaths.RefuseLinks(root, folder);
+        // Temporary files left by a crash or a restart mid-song.
+        foreach (var stale in Directory.EnumerateFiles(folder, ".streamfin-*.part*").Where(f => File.GetLastWriteTimeUtc(f) < DateTime.UtcNow.AddDays(-1)))
+            Discard(stale);
+        if (!File.Exists(owner = Path.Combine(folder, Marker)) && new FileInfo(owner).LinkTarget is null)
+            try
+            {
+                await using var marker = new FileStream(owner, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                await marker.WriteAsync(System.Text.Encoding.UTF8.GetBytes(release.Id), ct);
+            }
+            // Another save of this album made it a moment ago.
+            catch (IOException) when (File.Exists(owner)) { }
         await SetAsync(user, save.ReleaseId, s => s with { State = Saving, Total = release.Tracks.Count, Title = release.Title });
         await CoverAsync(release, folder, ct);
         var discs = release.Tracks.Select(t => t.Disc ?? 1).Distinct().Count() > 1;
@@ -350,21 +379,22 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         if (File.Exists(path)) return;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(1));
+        var part = MusicPaths.Temporary(path);
         try
         {
             using var response = await http.OpenAsync(new Uri(artwork), false, timeout.Token);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength is > 20 * 1024 * 1024) return;
-            if (await WriteAsync(response, path + ".part", 20 * 1024 * 1024, magic, timeout.Token) && !File.Exists(path)) File.Move(path + ".part", path, overwrite: false);
+            if (await WriteAsync(response, part, 20 * 1024 * 1024, magic, timeout.Token) && !File.Exists(path)) File.Move(part, path, overwrite: false);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or ProviderException or OperationCanceledException && !ct.IsCancellationRequested) { }
-        finally { Discard(path + ".part"); }
+        finally { Discard(part); }
     }
 
     private async Task SongAsync(MusicTrack track, string path, IReadOnlyList<(string Key, string Value)> tags, CancellationToken ct)
     {
         // Deezer has no audio: a song found there is saved from the catalog's copy of the same recording.
         var upstream = MusicCatalog.StreamUri(await catalog.TwinAsync(track, ct) ?? throw new ProviderException("The music catalog has no lossless copy of " + track.Title + "."));
-        var part = path + ".part";
+        var part = MusicPaths.Temporary(path);
         try
         {
             await FetchAsync(track.Id, upstream, part, ct);
@@ -380,7 +410,7 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         await using (var cached = songs.OpenComplete(trackId, "flac"))
             if (cached is not null)
             {
-                await using var file = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
+                await using var file = NewFile(part);
                 await cached.CopyToAsync(file, ct);
                 return;
             }
@@ -440,7 +470,8 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
     private static async Task AppendAsync(HttpResponseMessage response, string part, long from, long size, CancellationToken ct)
     {
         await using var input = await response.Content.ReadAsStreamAsync(ct);
-        await using var file = new FileStream(part, from > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
+        if (from > 0 && new FileInfo(part).LinkTarget is not null) throw new IOException("The partial song was replaced by a link.");
+        await using var file = from > 0 ? new FileStream(part, FileMode.Append, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true) : NewFile(part);
         var buffer = new byte[1 << 16];
         for (var written = from; ; )
         {
@@ -472,7 +503,7 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
             var tagged = part + ".tag";
             try
             {
-                await using (var output = new FileStream(tagged, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true))
+                await using (var output = NewFile(tagged))
                 {
                     await output.WriteAsync(header, ct);
                     file.Position = audio;
@@ -491,6 +522,13 @@ public sealed class MusicSaver(SafeHttp http, MusicCatalog catalog, MusicLibrary
         try { await AppendAsync(response, part, 0, limit, ct); }
         catch (IOException) { return false; }
         return await StartsWithAsync(part, magic, ct);
+    }
+
+    // A new file, never through whatever (a link included) sits at that name: the old entry goes, then O_EXCL creates.
+    private static FileStream NewFile(string path)
+    {
+        Discard(path);
+        return new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
     }
 
     private static void Discard(string part)

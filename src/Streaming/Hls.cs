@@ -25,6 +25,7 @@ public static class Hls
     private static readonly Regex Range = new(@"\A\d{1,15}(@\d{1,15})?\z", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex Seconds = new(@"\A#EXTINF:\s*(\d{1,6}(?:\.\d{1,6})?)", RegexOptions.None, TimeSpan.FromSeconds(1));
 
+    public const int MaxVariants = 200;
     public static bool IsMaster(string text) => text.Contains("#EXT-X-STREAM-INF", StringComparison.Ordinal);
     private static string[] Lines(string text)
     {
@@ -78,7 +79,7 @@ public static class Hls
     // The best variant a master playlist offers under the user's quality settings, for ranking sources against each other.
     public static Variant? Best(string text, int? maxHeight = null, bool preferH264 = false)
     {
-        var variants = Lines(text).Where(l => l.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal))
+        var variants = Lines(text).Where(l => l.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal)).Take(MaxVariants)
             .Select(l => Read(Attributes(l["#EXT-X-STREAM-INF:".Length..]))).ToList();
         var at = Pick(variants, maxHeight, preferH264);
         return at < 0 ? null : variants[at];
@@ -135,18 +136,36 @@ public static class Hls
     {
         var lines = Lines(text);
         var found = new List<(Dictionary<string, string> Attributes, int Uri)>();
+        // One pass: a variant's address is the next line that is not a tag. A hostile playlist of thousands of
+        // address-less variants must not cost a search to the end for each.
+        Dictionary<string, string>? pending = null;
         for (var i = 0; i < lines.Length; i++)
         {
-            if (!lines[i].StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal)) continue;
-            var next = Array.FindIndex(lines, i + 1, l => l.Trim().Length > 0 && !l.StartsWith('#'));
-            if (next < 0) continue;
-            found.Add((Attributes(lines[i]["#EXT-X-STREAM-INF:".Length..]), next));
+            if (lines[i].StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal))
+            {
+                if (found.Count >= MaxVariants) throw new ProviderException("The stream playlist lists too many variants.");
+                pending = Attributes(lines[i]["#EXT-X-STREAM-INF:".Length..]);
+            }
+            else if (pending is not null && lines[i].Trim().Length > 0 && !lines[i].StartsWith('#'))
+            {
+                found.Add((pending, i));
+                pending = null;
+            }
         }
         var at = Pick(found.Select(f => Read(f.Attributes)).ToList(), maxHeight, preferH264);
         if (at < 0) throw new ProviderException("The stream playlist lists no playable variant.");
         var chosen = found[at];
         var audio = chosen.Attributes.GetValueOrDefault("AUDIO");
         var output = new StringBuilder("#EXTM3U\n");
+        // A rendition or variant is the same place in the playlist as long as what it describes is the same; twins
+        // that describe themselves alike are told apart by their order.
+        var seen = new Dictionary<string, int>(StringComparer.Ordinal);
+        string Slot(string kind, Dictionary<string, string> attributes)
+        {
+            var key = kind + "|" + string.Join("|", new[] { "GROUP-ID", "NAME", "LANGUAGE", "CHANNELS", "RESOLUTION", "CODECS" }.Select(k => attributes.GetValueOrDefault(k, "")));
+            seen[key] = seen.GetValueOrDefault(key) + 1;
+            return key + "#" + seen[key];
+        }
         foreach (var line in lines)
         {
             if (!line.StartsWith("#EXT-X-MEDIA:", StringComparison.Ordinal)) continue;
@@ -154,13 +173,14 @@ public static class Hls
             // Subtitle renditions are dropped: Jellyfin cannot extract them from a remote stream.
             if (audio is null || media.GetValueOrDefault("TYPE") != "AUDIO" || media.GetValueOrDefault("GROUP-ID") != audio) continue;
             output.Append(Tag("EXT-X-MEDIA", media, ["GROUP-ID", "NAME", "LANGUAGE", "CHANNELS"], ["TYPE", "DEFAULT", "AUTOSELECT"],
-                value => Part(links.Add(Absolute(playlist, value), true), true, playlist))).Append('\n');
+                value => Part(links.Add(Absolute(playlist, value), true, Slot("audio", media)), true, playlist))).Append('\n');
         }
         var variant = Absolute(playlist, lines[chosen.Uri]);
         output.Append(Tag("EXT-X-STREAM-INF", chosen.Attributes, ["CODECS", "AUDIO"], ["BANDWIDTH", "AVERAGE-BANDWIDTH", "RESOLUTION", "FRAME-RATE"]))
-            .Append('\n').Append(Part(links.Add(variant, true), true, variant)).Append('\n');
+            .Append('\n').Append(Part(links.Add(variant, true, Slot("video", chosen.Attributes)), true, variant)).Append('\n');
         return output.ToString();
     }
+
 
     public static string WrapMedia(int index) => $"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\np/{index}.m3u8\n";
 
@@ -170,14 +190,23 @@ public static class Hls
         return int.Parse(line[2..line.IndexOf('.')], CultureInfo.InvariantCulture);
     }
 
-    public static string RewriteMedia(string text, Uri playlist, HlsLinks links)
+    // owner is the playlist's own index in the ticket; with it, each segment keeps its index when the playlist is fetched
+    // again with fresh addresses (see HlsLinks.Add).
+    public static string RewriteMedia(string text, Uri playlist, HlsLinks links, int owner = -1)
     {
         var output = new StringBuilder("#EXTM3U\n");
-        string Relay(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url)[2..]; }
+        var (sequence, segments) = (0L, 0L);
+        string? Place(string kind, long at) => owner < 0 ? null : $"{kind}{owner}:{at}";
+        // A key or init section belongs to the segment after it, so a live playlist that rotates keys never gives a new
+        // key the address FFmpeg already fetched an old one from.
+        string Relay(string kind, string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false, Place(kind, sequence + segments)), false, url)[2..]; }
         // Without EXT-X-MAP the segments are MPEG-TS whatever their address says (some hosts call them .mp4), and
         // FFmpeg refuses a segment whose content does not match its extension.
         var fragmented = Lines(text).Any(l => l.TrimStart().StartsWith("#EXT-X-MAP", StringComparison.Ordinal));
-        string Segment(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false), false, url, fragmented, segment: true)[2..]; }
+        string Segment(string value) { var url = Absolute(playlist, value); return Part(links.Add(url, false, Place("s", sequence + segments++)), false, url, fragmented, segment: true)[2..]; }
+        foreach (var raw in Lines(text))
+            if (raw.Trim() is var tag && tag.StartsWith("#EXT-X-MEDIA-SEQUENCE:", StringComparison.Ordinal) && long.TryParse(tag["#EXT-X-MEDIA-SEQUENCE:".Length..], NumberStyles.None, CultureInfo.InvariantCulture, out var first))
+                sequence = first;
         foreach (var raw in Lines(text))
         {
             var line = raw.Trim();
@@ -198,8 +227,8 @@ public static class Hls
                 "EXT-X-PLAYLIST-TYPE" when value is "VOD" or "EVENT" => $"#{name}:{value}",
                 "EXT-X-BYTERANGE" when Range.IsMatch(value) => $"#{name}:{value}",
                 "EXT-X-ENDLIST" or "EXT-X-DISCONTINUITY" or "EXT-X-INDEPENDENT-SEGMENTS" when value.Length == 0 => $"#{name}",
-                "EXT-X-KEY" => Tag(name, Attributes(value), [], ["METHOD", "IV"], Relay),
-                "EXT-X-MAP" => Tag(name, Attributes(value), ["BYTERANGE"], [], Relay),
+                "EXT-X-KEY" => Tag(name, Attributes(value), [], ["METHOD", "IV"], uri => Relay("k", uri)),
+                "EXT-X-MAP" => Tag(name, Attributes(value), ["BYTERANGE"], [], uri => Relay("m", uri)),
                 _ => null
             };
             if (kept is not null) output.Append(kept).Append('\n');

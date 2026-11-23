@@ -40,11 +40,42 @@ public sealed class SafeHttp : IDisposable
         // NAT64 (64:ff9b::/96) carries an IPv4 address in its last four bytes; judge that one.
         if (b.Length == 16 && b[0] == 0 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b && b[4..12].All(x => x == 0))
             return IsPublicAddress(new IPAddress(b[12..]));
-        if (b.Length == 16) return (b[0] & 0xe0) == 0x20; // global unicast only
+        // 6to4 (2002::/16) carries an IPv4 address in bytes 2 to 5; Teredo (2001::/32) and documentation
+        // (2001:db8::/32) addresses are never a real source.
+        if (b.Length == 16 && b[0] == 0x20 && b[1] == 0x02) return IsPublicAddress(new IPAddress(b[2..6]));
+        if (b.Length == 16 && b[0] == 0x20 && b[1] == 0x01 && (b[2] == 0 && b[3] == 0 || b[2] == 0x0d && b[3] == 0xb8)) return false;
+        if (b.Length == 16) return (b[0] & 0xe0) == 0x20 && !OwnNetwork(address); // global unicast only
         return b[0] != 0 && b[0] != 10 && b[0] != 127 && b[0] < 224
             && !(b[0] == 169 && b[1] == 254) && !(b[0] == 172 && b[1] is >= 16 and <= 31)
             && !(b[0] == 192 && b[1] == 168) && !(b[0] == 100 && b[1] is >= 64 and <= 127)
-            && !(b[0] == 198 && b[1] is 18 or 19);
+            && !(b[0] == 198 && b[1] is 18 or 19)
+            // IETF protocol assignments, documentation and the old 6to4 relay.
+            && !(b[0] == 192 && b[1] == 0 && b[2] is 0 or 2) && !(b[0] == 198 && b[1] == 51 && b[2] == 100)
+            && !(b[0] == 203 && b[1] == 0 && b[2] == 113) && !(b[0] == 192 && b[1] == 88 && b[2] == 99)
+            && !OwnNetwork(address);
+    }
+
+    // The server's own public addresses, and for IPv6 its home network's /64: with ISP-delegated IPv6, the router,
+    // NAS and every other device at home have global addresses that a source must not be able to point at.
+    private sealed record Interfaces(DateTime At, IPAddress[] Addresses);
+    private static Interfaces own = new(DateTime.MinValue, []);
+    private static bool OwnNetwork(IPAddress address)
+    {
+        var known = Volatile.Read(ref own);
+        if (DateTime.UtcNow - known.At > TimeSpan.FromMinutes(5))
+        {
+            try
+            {
+                known = new(DateTime.UtcNow, System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                    .SelectMany(n => n.GetIPProperties().UnicastAddresses).Select(u => u.Address)
+                    .Select(a => a.IsIPv4MappedToIPv6 ? a.MapToIPv4() : a).ToArray());
+            }
+            catch (System.Net.NetworkInformation.NetworkInformationException) { known = new(DateTime.UtcNow, []); }
+            Volatile.Write(ref own, known);
+        }
+        var bytes = address.GetAddressBytes();
+        return known.Addresses.Any(local => local.Equals(address)
+            || bytes.Length == 16 && local.AddressFamily == AddressFamily.InterNetworkV6 && local.GetAddressBytes().AsSpan(0, 8).SequenceEqual(bytes.AsSpan(0, 8)));
     }
 
     // Sites and catalogs StreamFin talks to by name. Embed players and HLS CDNs rotate
@@ -97,6 +128,7 @@ public sealed class SafeHttp : IDisposable
         bool open = false, IReadOnlyDictionary<string, string>? form = null, bool tools = false)
     {
         var originalHost = uri.IdnHost;
+        var secure = uri.Scheme == Uri.UriSchemeHttps;
         for (var redirect = 0; redirect < 6; redirect++)
         {
             if (open) ValidateOpen(uri);
@@ -110,7 +142,9 @@ public sealed class SafeHttp : IDisposable
                     if (pair.Key is not ("Referer" or "Origin" or "Cookie" or "Authorization" or "x-embed-parent")
                         || (pair.Key == "Authorization" && originalHost != "api.themoviedb.org")) throw new ProviderException("Unsupported source header.");
                     // Gate cookies and API tokens belong to one website, never forward them to a redirect elsewhere.
-                    if (pair.Key is not ("Cookie" or "Authorization") || uri.IdnHost == originalHost) request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
+                    // A redirect from https down to http would send them in the clear.
+                    if (pair.Key is not ("Cookie" or "Authorization") || uri.IdnHost == originalHost && (!secure || uri.Scheme == Uri.UriSchemeHttps))
+                        request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
                 }
             // MetaBrainz wants to know whom to contact; the default name stays for everything else.
             if (uri.IdnHost is MusicRadio.MusicBrainzHost or MusicRadio.ListenBrainzHost) request.Headers.TryAddWithoutValidation("User-Agent", MusicRadio.ContactAgent);
@@ -118,7 +152,11 @@ public sealed class SafeHttp : IDisposable
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location)
             {
-                uri = new Uri(uri, location);
+                // As browsers do: 301, 302 and 303 continue as a GET without the body; only 307 and 308 repeat the
+                // request, and never to another site, which must not get a form meant for this one.
+                var next = new Uri(uri, location);
+                if ((json is not null || form is not null) && ((int)response.StatusCode is not (307 or 308) || next.IdnHost != uri.IdnHost)) (json, form) = (null, null);
+                uri = next;
                 response.Dispose();
                 continue;
             }

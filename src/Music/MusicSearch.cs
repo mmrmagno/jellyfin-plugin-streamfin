@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace StreamFin;
 
 public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, SearchHistory history, IHttpContextAccessor contexts,
-    IAuthorizationContext authorization, ILogger<MusicSearch> logger, SpotifyImport spotify) : IInternalSearchProvider
+    IAuthorizationContext authorization, ILogger<MusicSearch> logger, PlaylistImport importer) : IInternalSearchProvider
 {
     // Jellyfin derives channel item IDs from external ID + channel name + "16".
     public const string FolderKey = "search" + MusicChannel.ChannelName + "16";
@@ -24,7 +24,9 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
     private static bool Wants(SearchProviderQuery query, BaseItemKind kind) => query.IncludeItemTypes.Length == 0
         ? !query.ExcludeItemTypes.Contains(kind) : query.IncludeItemTypes.Contains(kind);
     // A pasted Spotify playlist link starts an import instead of a search, whether or not online search is on.
-    private static bool IsImport(SearchProviderQuery query) => SpotifyImport.Configured && SpotifyImport.PlaylistId(query.SearchTerm) is not null;
+    // A playlist link pasted into search imports it (Spotify, YouTube, Deezer), for apps that cannot open the import page.
+    private static bool IsImport(SearchProviderQuery query) => PlaylistImport.Enabled
+        && ImportReaders.Detect(query.SearchTerm).Kind is ImportKind.SpotifyPlaylist or ImportKind.SpotifyAlbum or ImportKind.YouTube or ImportKind.Deezer;
     public bool CanSearch(SearchProviderQuery query) => IsImport(query) || query.SearchTerm.Trim().Length is >= 2 and <= 100 && Plugin.Instance?.Configuration.OnlineSearch != false
         && (Wants(query, BaseItemKind.MusicArtist) || Wants(query, BaseItemKind.MusicAlbum) || Wants(query, BaseItemKind.Audio))
         && (query.MediaTypes.Length == 0 || query.MediaTypes.Contains(MediaType.Audio))
@@ -74,7 +76,8 @@ public sealed class MusicSearch(MusicCatalog catalog, ILibraryManager library, S
         if (IsImport(query))
         {
             // The playlist shows up under Music > Playlists and fills in while songs are matched.
-            spotify.Start(auth.UserId, query.SearchTerm);
+            try { importer.Start(auth.UserId, query.SearchTerm); }
+            catch (ProviderException ex) { logger.LogInformation("StreamFin: a pasted playlist link was not imported ({Reason})", ex.Message); }
             return [];
         }
         try

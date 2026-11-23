@@ -52,6 +52,8 @@ public sealed partial class SubsonicController(SubsonicAuth auth, MusicCatalog c
     public static string TrackId(MusicTrack t) => $"tr-{t.ReleaseId}-{t.Id}";
     public static (string Release, string Track)? ParseTrack(string? id) => id?.Split('-') is ["tr", var r, var t] && MusicCatalog.IsId(r) && MusicCatalog.IsId(t) ? (r, t) : null;
     public static string? ParseId(string? id, string prefix) => id is not null && id.StartsWith(prefix + "-", StringComparison.Ordinal) && MusicCatalog.IsId(id[(prefix.Length + 1)..]) ? id[(prefix.Length + 1)..] : null;
+    private static bool Secret(string key) => key is "p" or "t" or "s" or "apiKey";
+
     public static Guid? ParsePlaylist(string? id) => id is not null && id.StartsWith("pl-", StringComparison.Ordinal) && Guid.TryParseExact(id[3..], "N", out var g) ? g : null;
 
     // ASP.NET stops at 1024 form values by default; a 2000 song playlist has more. Model binding would read
@@ -66,6 +68,10 @@ public sealed partial class SubsonicController(SubsonicAuth auth, MusicCatalog c
         // The method comes from the address; line breaks in it could fake extra log entries.
         var logged = (name.Length > 40 ? name[..40] : name).Replace("\r", "", StringComparison.Ordinal).Replace("\n", "", StringComparison.Ordinal);
         parameters = Request.Query.ToDictionary(q => q.Key, q => q.Value.OfType<string>().ToArray(), StringComparer.Ordinal);
+        // Apps put the password or token in the address. Once read, it is blanked there, so Jellyfin's request logging
+        // (the slow-response warning at debug level, for one) never writes a reusable credential.
+        if (parameters.Keys.Any(Secret))
+            Request.QueryString = QueryString.Create(Request.Query.Where(q => !Secret(q.Key)).SelectMany(q => q.Value.Select(v => new KeyValuePair<string, string?>(q.Key, v))));
         if (!SubsonicAuth.Enabled) { await SendAsync(SubsonicResponse.Error(50, "The Subsonic API is turned off in the StreamFin settings.")); return; }
         try
         {

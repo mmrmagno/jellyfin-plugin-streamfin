@@ -10,7 +10,8 @@ public sealed record MusicStarredArtist(MusicArtistRef Artist, DateTime At);
 // An album being kept as files in the music library folder (MusicSaver); State is one of MusicSaver's constants.
 public sealed record MusicSave(string ReleaseId, string Title, string Artist, string State, int Saved, int Total, string? Note, DateTime Queued,
     DateTime? Finished = null);
-public sealed record MusicPlaylist(Guid Id, string Name, string Comment, DateTime Created, DateTime Changed, IReadOnlyList<MusicPlay> Entries);
+// Source says where an imported playlist came from ("spotify:playlist:ID", "youtube:ID", "deezer:ID"), so it can be read again.
+public sealed record MusicPlaylist(Guid Id, string Name, string Comment, DateTime Created, DateTime Changed, IReadOnlyList<MusicPlay> Entries, string? Source = null);
 // What an app was playing, so another device can pick it up (Subsonic savePlayQueue). Current is a song id.
 public sealed record MusicQueue(IReadOnlyList<MusicPlay> Entries, string? Current, long Position, DateTime Changed, string ChangedBy);
 public sealed record MusicBookmark(MusicPlay Entry, long Position, string Comment, DateTime Created, DateTime Changed);
@@ -148,7 +149,7 @@ public sealed class MusicLibraryStore
         library.Saves = (library.Saves ?? []).Where(s => s is { Title: not null, Artist: not null, State: MusicSaver.Queued or MusicSaver.Saving or MusicSaver.Saved or MusicSaver.Failed }
             && MusicCatalog.IsId(s.ReleaseId)).ToList();
         library.Playlists = (library.Playlists ?? []).Where(p => p is { Name: not null } && p.Id != Guid.Empty)
-            .Select(p => p with { Comment = p.Comment ?? "", Entries = (p.Entries ?? []).Where(Valid).ToArray() }).ToList();
+            .Select(p => p with { Comment = p.Comment ?? "", Entries = (p.Entries ?? []).Where(Valid).ToArray(), Source = ImportReaders.FromSource(p.Source) is null ? null : p.Source }).ToList();
         library.Ratings = (library.Ratings ?? []).Where(r => r.Value is >= 1 and <= 5 && IsRatingKey(r.Key)).ToDictionary();
         library.Queue = library.Queue is { Entries: not null, ChangedBy: not null } queue
             ? queue with { Entries = queue.Entries.Where(Valid).ToArray(), Current = IsRatingKey(queue.Current) ? queue.Current : null } : null;

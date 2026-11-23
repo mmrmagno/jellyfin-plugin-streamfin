@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Enums;
+using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -18,7 +19,7 @@ public sealed record SubsonicUser(Guid Id, string Name);
 
 // Jellyfin keeps no plaintext passwords, and Subsonic token auth needs one (t = md5(password + salt)),
 // so each user gets a separate app password from the plugin settings. Regenerating it revokes the old one.
-public sealed class SubsonicAuth(IUserManager users) : IDisposable
+public sealed class SubsonicAuth(IUserManager users, INetworkManager network) : IDisposable
 {
     public const int FailureLimit = 10;
     public const int NameLimit = 256;
@@ -57,7 +58,7 @@ public sealed class SubsonicAuth(IUserManager users) : IDisposable
     // guessing is hopeless anyway. Repeated failures from one address only get slower answers.
     public async Task<(SubsonicUser? User, int Code, string Message)> CheckAsync(IPAddress? address, string? name, string? token, string? salt, string? plain, string? apiKey, CancellationToken ct)
     {
-        var (user, code, message) = Check(name, token, salt, plain, apiKey);
+        var (user, code, message) = Check(address, name, token, salt, plain, apiKey);
         if (user is not null || code is not (40 or 44)) return (user, code, message);
         var key = address?.ToString() ?? "";
         var counter = failures.GetOrCreate(key, entry =>
@@ -70,7 +71,7 @@ public sealed class SubsonicAuth(IUserManager users) : IDisposable
         return (user, code, message);
     }
 
-    private (SubsonicUser? User, int Code, string Message) Check(string? name, string? token, string? salt, string? plain, string? apiKey)
+    private (SubsonicUser? User, int Code, string Message) Check(IPAddress? address, string? name, string? token, string? salt, string? plain, string? apiKey)
     {
         if (apiKey is not null)
         {
@@ -78,7 +79,7 @@ public sealed class SubsonicAuth(IUserManager users) : IDisposable
             var match = Guid.Empty;
             // Every entry is compared so the time taken does not depend on which one matches.
             foreach (var (user, password) in Passwords()) if (Same(password, apiKey)) match = user;
-            return match != Guid.Empty && Allowed(match) is { } allowed ? (allowed, 0, "") : (null, 44, "Invalid API key.");
+            return match != Guid.Empty && Allowed(match, address) is { } allowed ? (allowed, 0, "") : (null, 44, "Invalid API key.");
         }
         if (name is null || (token is null && plain is null)) return (null, 10, "Required parameter is missing: u and t/s or p, or apiKey.");
         if (name.Length > NameLimit) return (null, 40, "Wrong username or password.");
@@ -86,10 +87,14 @@ public sealed class SubsonicAuth(IUserManager users) : IDisposable
         var secret = account is null ? null : Passwords().Where(p => p.User == account.Id).Select(p => p.Password).FirstOrDefault();
         // An unknown name still costs a comparison, so it answers in the same time as a wrong password.
         var ok = Verify(secret ?? "streamfin-no-such-user-password", token, salt, plain) && secret is not null;
-        return ok && Allowed(account!.Id) is { } found ? (found, 0, "") : (null, 40, "Wrong username or password.");
+        return ok && Allowed(account!.Id, address) is { } found ? (found, 0, "") : (null, 40, "Wrong username or password.");
     }
 
-    private SubsonicUser? Allowed(Guid id) => Plugin.Allows(id) && users.GetUserById(id) is { } user && !user.HasPermission(PermissionKind.IsDisabled)
+    // The same limits Jellyfin's own apps get: a disabled account, one without media playback, or one kept to the
+    // home network while this request comes from outside, does not get in through a music app either.
+    private SubsonicUser? Allowed(Guid id, IPAddress? address) => Plugin.Allows(id) && users.GetUserById(id) is { } user && !user.HasPermission(PermissionKind.IsDisabled)
+        && user.HasPermission(PermissionKind.EnableMediaPlayback)
+        && (user.HasPermission(PermissionKind.EnableRemoteAccess) || address is not null && network.IsInLocalNetwork(address))
         ? new SubsonicUser(id, user.Username) : null;
 
     public void Dispose() => failures.Dispose();

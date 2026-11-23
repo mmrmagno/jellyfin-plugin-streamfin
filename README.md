@@ -45,6 +45,7 @@ It works on TV apps too. It started as AniFin (anime only) and grew into StreamF
 - Popular songs, albums and artists from Deezer's charts. Artist, album and song search.
 - Albums open with numbered tracks. Artists show their top tracks, albums and singles.
 - Starred, Recently played and Playlists folders. Lyrics from [LRCLIB](https://lrclib.net), synced where they exist.
+- Every user can import playlists from Spotify, YouTube Music, Deezer, a song list or a CSV export (see below).
 - **Your year in music**: your most played songs, artists and albums of each year, with minutes and play counts.
   Subsonic apps get the top songs as a playlist. Plays are counted from the moment you install this version.
 - Played songs are kept on the server (4 GB by default) so replays and skips are instant.
@@ -111,6 +112,26 @@ JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --c
 JELLYFIN_TOKEN=<key> python3 scripts/web-icon.py --url https://your.jellyfin --channel Music
 ```
 
+## Import playlists
+
+Any user StreamFin is turned on for can open `https://your.jellyfin/StreamFin/Import` in a browser where they are
+signed in to Jellyfin, and paste:
+
+- **A Spotify playlist or album link.** Any public one, including playlists you follow and ones Spotify made. Spotify
+  shares the first 100 songs of a playlist this way.
+- **Songs copied in the Spotify app.** Open any playlist, private ones and Liked Songs too, press Ctrl+A then Ctrl+C,
+  and paste. There is no limit.
+- **A YouTube or YouTube Music playlist link.** Needs the YouTube source switched on under Music.
+- **A Deezer playlist link.**
+- **A song list or CSV.** "Artist - Title", one per line, or a CSV from Exportify, TuneMyMusic or Soundiiz.
+- **Spotify's data export.** `Playlist1.json` (your playlists) or `YourLibrary.json` (Liked Songs) from "Download your
+  data".
+
+Songs are matched by ISRC where the source gives one, otherwise by title, artist and length. The playlist shows up under
+Music > Playlists and in Subsonic apps, and the page lists songs it could not find. A playlist imported from a link can
+be imported again later, which updates it in place. Pasting a playlist link into Jellyfin's search imports it too, for
+TV and phone apps. An administrator can switch import, or just Spotify links, off in the settings.
+
 ## Music apps (Subsonic)
 
 StreamFin also speaks OpenSubsonic, so apps like Symfonium, Feishin, Tempo or play:Sub work,
@@ -163,7 +184,8 @@ Jellyfin. Everything that parses a third-party page is fuzzed.
   [Seanime providers](https://github.com/Seanime-contributions/Seanime-Providers).
 - The HiAnime flow follows [ani-cli](https://github.com/pystardust/ani-cli), written from scratch.
 - FlixHQ is a port of my own downloader.
-- The anime source fallback, the queue fix, the Popular music folders, the StreamFin entry and the library links come from
+- The anime source fallback, the queue fix, the Popular music folders, the StreamFin entry, the library links, the
+  ratings, cast and artwork, the settings layout and the music folder picker come from
   [ItzDabbzz's fork](https://github.com/ItzDabbzz/jellyfin-plugin-streamfin) (GPL-2.0).
 - Icons are from Material Design Icons. Third-party details are in `THIRD_PARTY_NOTICES.txt`.
 

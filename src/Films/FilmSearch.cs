@@ -70,8 +70,13 @@ public sealed class FilmSearch(TmdbCatalog catalog, ILibraryManager library, Sea
                     item.Name = film.Title;
                     item.Overview = film.Overview;
                     item.ProductionYear = film.Year;
+                    // What the search answer already says; cast and the rest come when the title is opened.
+                    if (TmdbCatalog.Rating(film) is { } rating) item.CommunityRating = rating;
+                    if (TmdbCatalog.Genres(film) is { Count: > 0 } genres && item.Genres.Length == 0) item.Genres = [.. genres];
+                    if (film.Premiere is { } premiere) item.PremiereDate = premiere;
                     item.Tags = ["StreamFin", "Streamable"];
-                    item.ProviderIds = FilmChannel.Ids(film);
+                    // Merged, not replaced: the IMDb id and the like, added when the title was described, stay.
+                    item.ProviderIds = ChannelMetadata.MergeIds(item.ProviderIds, FilmChannel.Ids(film));
                     // Generic search groups by this key; a shared NULL would collapse unrelated titles.
                     item.PresentationUniqueKey = $"streamfin-search-{film.Kind.ToString().ToLowerInvariant()}-{film.Id}";
                     if (film.Runtime is > 0) item.RunTimeTicks = TimeSpan.FromMinutes(film.Runtime.Value).Ticks;

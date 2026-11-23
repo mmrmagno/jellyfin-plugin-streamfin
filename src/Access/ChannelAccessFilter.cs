@@ -204,9 +204,31 @@ public sealed partial class ChannelAccessFilter(ILibraryManager library, IAuthor
                 case IEnumerable<SessionInfoDto> sessions:
                     foreach (var session in sessions)
                     {
-                        if (session.NowPlayingItem is { } playing && !await Visible(playing.Id, listing: false)) { session.NowPlayingItem = null; session.NowPlayingQueue = []; }
+                        if (session.NowPlayingItem is { } playing && !await Visible(playing.Id, listing: false)) session.NowPlayingItem = null;
                         if (session.NowViewingItem is { } viewing && !await Visible(viewing.Id, listing: false)) session.NowViewingItem = null;
+                        // The queue can hold StreamFin titles even while something else plays.
+                        if (session.NowPlayingQueue is { } queue)
+                        {
+                            var shownQueue = new List<MediaBrowser.Model.Session.QueueItem>();
+                            foreach (var entry in queue) if (await Visible(entry.Id, listing: false)) shownQueue.Add(entry);
+                            session.NowPlayingQueue = shownQueue;
+                        }
                     }
+                    break;
+                // Movie recommendations ("Because you watched ...") carry items of their own.
+                case IEnumerable<RecommendationDto> recommendations:
+                    var shownRecommendations = new List<RecommendationDto>();
+                    foreach (var recommendation in recommendations)
+                    {
+                        // The row names the title it is "because you watched"; that title must be visible too.
+                        if (recommendation.CategoryId != Guid.Empty && !await Visible(recommendation.CategoryId, listing: false)) continue;
+                        var shownItems = new List<BaseItemDto>();
+                        foreach (var dto in recommendation.Items ?? []) if (await Visible(dto.Id)) shownItems.Add(dto);
+                        if (shownItems.Count == 0) continue;
+                        recommendation.Items = shownItems.ToArray();
+                        shownRecommendations.Add(recommendation);
+                    }
+                    result.Value = shownRecommendations.ToArray();
                     break;
                 case SearchHintResult hints:
                     var safeHints = new List<SearchHint>();

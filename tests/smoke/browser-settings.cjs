@@ -40,7 +40,7 @@ const fs = require('node:fs');
     const clearPath = '/StreamFin/SearchResults/Clear';
     const [cleared] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith(clearPath) && response.request().method() === 'POST'),
-      page.getByRole('button', {name: 'Clear search results', exact: true}).click()
+      page.locator('.streamfinTabs button[data-tab="maintenance"]').click().then(() => page.getByRole('button', {name: 'Clear search results', exact: true}).click())
     ]);
     if (!cleared.ok()) throw new Error('Clear search results failed');
     await page.locator('#streamfinClearStatus').filter({hasText: /Search results (cleared|are already empty)/}).waitFor();

@@ -24,7 +24,10 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     // Jellyfin forwards User-Agent to both FFprobe and FFmpeg; arbitrary headers are not forwarded by FFprobe.
     // FFmpeg's HLS reader repeats it on every playlist and segment request.
     public const string Header = "User-Agent";
-    private readonly string secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+    private readonly byte[] secret = RandomNumberGenerator.GetBytes(32);
+    // Each ticket has its own header value: Jellyfin shows a playback's required headers to the user who plays it, and
+    // one that leaks must open nothing but that user's own stream.
+    private string TicketSecret(string id) => Convert.ToHexString(HMACSHA256.HashData(secret, Encoding.UTF8.GetBytes(id)));
     private readonly ConcurrentDictionary<string, Ticket> tickets = new();
     // A song's file from one source never changes, and the catalog throttles bursts, so each one is probed once.
     // Kept as JSON so every playback gets its own copy of the streams to adjust.
@@ -80,7 +83,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         var ticket = tickets[id] = new(userId, hls, resolve, live) { Video = resolved, First = resolved, FilmQuality = filmQuality };
         var root = host.GetLocalApiUrl("127.0.0.1", "http", host.HttpPort).TrimEnd('/') + "/StreamFin/Internal/Stream/" + id;
         // The extension lets FFmpeg pick its HLS reader before reading a byte.
-        return new(id, root + (hls ? "/master.m3u8" : ""), secret,
+        return new(id, root + (hls ? "/master.m3u8" : ""), TicketSecret(id),
             (resolved.Subtitles ?? []).Select((_, i) => $"{root}/sub/{i}.vtt?key={ticket.SubtitleKey}").ToArray());
     }
 
@@ -232,7 +235,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
     {
         var address = context.Connection.RemoteIpAddress;
         return address is not null && IPAddress.IsLoopback(address)
-            && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(context.Request.Headers[Header].ToString()), Encoding.UTF8.GetBytes(secret))
+            && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(context.Request.Headers[Header].ToString()), Encoding.UTF8.GetBytes(TicketSecret(id)))
             && tickets.TryGetValue(id, out var ticket) && ticket.Expires > DateTime.UtcNow && Plugin.Allows(ticket.UserId) && ticket.Live()
             ? Use(ticket) : null;
         static Ticket Use(Ticket ticket) { ticket.Used = true; return ticket; }
@@ -292,7 +295,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
         var video = await VideoAsync(ticket, timeout.Token);
         var text = await http.TextAsync(video.Url, timeout.Token, headers: video.Headers, open: true);
-        var master = Hls.IsMaster(text) ? (ticket.FilmQuality ? Hls.RewriteMaster(text, video.Url, ticket.Links, FilmSources.MaxHeight, FilmSources.PreferH264) : Hls.RewriteMaster(text, video.Url, ticket.Links)) : Hls.WrapMedia(ticket.Links.Add(video.Url, playlist: true));
+        var master = Hls.IsMaster(text) ? (ticket.FilmQuality ? Hls.RewriteMaster(text, video.Url, ticket.Links, FilmSources.MaxHeight, FilmSources.PreferH264) : Hls.RewriteMaster(text, video.Url, ticket.Links)) : Hls.WrapMedia(ticket.Links.Add(video.Url, playlist: true, slot: "media"));
         await WriteAsync(context, master, "application/vnd.apple.mpegurl");
     }
 
@@ -306,7 +309,7 @@ public sealed class StreamRelay(IServerApplicationHost host, SafeHttp http, IMed
         if (ticket.Links.IsPlaylist(index))
         {
             var text = await http.TextAsync(upstream, timeout.Token, headers: video.Headers, open: true);
-            await WriteAsync(context, Hls.RewriteMedia(text, upstream, ticket.Links), "application/vnd.apple.mpegurl");
+            await WriteAsync(context, Hls.RewriteMedia(text, upstream, ticket.Links, index), "application/vnd.apple.mpegurl");
             return;
         }
         if (Volatile.Read(ref ticket.SegmentFailures) >= 6 && DateTime.UtcNow.Ticks - Interlocked.Read(ref ticket.LastFailure) < TimeSpan.FromSeconds(20).Ticks)

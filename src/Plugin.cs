@@ -52,9 +52,10 @@ public sealed class Configuration : BasePluginConfiguration
     public bool MusicPrefetch { get; set; } = true;
     // Deezer's public catalog answers searches, albums and artists while the music catalog cannot.
     public bool MusicDeezer { get; set; } = true;
-    // A free Spotify developer app, only used to read public playlists pasted into search for import.
-    public string SpotifyClientId { get; set; } = "";
-    public string SpotifyClientSecret { get; set; } = "";
+    // Playlist import for every allowed user (the import page, and links pasted into search). Spotify links are read
+    // from Spotify's public embed page, which is not an official API, so they have a switch of their own.
+    public bool PlaylistImport { get; set; } = true;
+    public bool ImportSpotifyLinks { get; set; } = true;
     // Songs kept on disk so skips and replays do not go back to the catalog; 0 turns it off.
     public int MusicCacheMb { get; set; } = 4096;
     // When no FLAC source answers, a song may play from a lossy one (YouTube's AAC) instead of failing.

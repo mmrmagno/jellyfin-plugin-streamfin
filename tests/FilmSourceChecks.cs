@@ -80,6 +80,34 @@ static class FilmSourceChecks
         var rewritten = Hls.RewriteMaster(master, new Uri("https://h.example/master.m3u8"), links, 1080, true);
         Check(rewritten.Contains("RESOLUTION=1920x1080", StringComparison.Ordinal) && links.Get(0)?.AbsolutePath == "/avc.m3u8",
             "the rewritten playlist keeps only the chosen variant");
+
+        // A host that signs every address afresh on each fetch: the table must not grow, and each place gets the newest address.
+        var signed = new HlsLinks();
+        string Master(int token) => $"#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",URI=\"en.m3u8?t={token}\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080,AUDIO=\"a\"\nv.m3u8?t={token}\n";
+        string Media(int token) => "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n" + string.Concat(Enumerable.Range(0, 500).Select(i => $"#EXTINF:4,\nseg{i}.ts?t={token}\n")) + "#EXT-X-ENDLIST\n";
+        var firstMaster = Hls.RewriteMaster(Master(1), new Uri("https://h.example/m.m3u8"), signed);
+        var firstMedia = Hls.RewriteMedia(Media(1), new Uri("https://h.example/v.m3u8?t=1"), signed, 1);
+        var size = signed.Count;
+        string again = "", againMedia = "";
+        for (var token = 2; token < 60; token++)
+        {
+            again = Hls.RewriteMaster(Master(token), new Uri("https://h.example/m.m3u8"), signed);
+            againMedia = Hls.RewriteMedia(Media(token), new Uri($"https://h.example/v.m3u8?t={token}"), signed, 1);
+        }
+        Check(again == firstMaster && againMedia == firstMedia && signed.Count == size && signed.Known <= size && signed.Get(1)?.Query == "?t=59" && signed.Get(size - 1)?.Query == "?t=59",
+            "a playlist fetched again with freshly signed addresses keeps every index and points at the newest addresses");
+        var rotating = new HlsLinks();
+        Hls.RewriteMedia("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-KEY:METHOD=AES-128,URI=\"a.key\"\n#EXTINF:4,\ns10.ts\n#EXT-X-KEY:METHOD=AES-128,URI=\"b.key\"\n#EXTINF:4,\ns11.ts\n", new Uri("https://h.example/v.m3u8"), rotating, 1);
+        var later = Hls.RewriteMedia("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:11\n#EXT-X-KEY:METHOD=AES-128,URI=\"b.key\"\n#EXTINF:4,\ns11.ts\n#EXT-X-KEY:METHOD=AES-128,URI=\"c.key\"\n#EXTINF:4,\ns12.ts\n", new Uri("https://h.example/v.m3u8"), rotating, 1);
+        var keys = Enumerable.Range(0, rotating.Count).Select(i => rotating.Get(i)!.AbsolutePath).Where(path => path.EndsWith(".key", StringComparison.Ordinal)).ToList();
+        Check(keys.Order().SequenceEqual(["/a.key", "/b.key", "/c.key"]) && later.Split('\n').Count(l => l.StartsWith("#EXT-X-KEY", StringComparison.Ordinal)) == 2,
+            "a live playlist that rotates keys gives each key its own address, never an old key's");
+        var twins = new HlsLinks();
+        Hls.RewriteMaster("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",URI=\"one.m3u8\"\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",URI=\"two.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nv.m3u8\n", new Uri("https://h.example/m.m3u8"), twins);
+        Check(twins.Count == 3 && twins.Get(0)?.AbsolutePath == "/one.m3u8" && twins.Get(1)?.AbsolutePath == "/two.m3u8", "two audio tracks that describe themselves alike keep their own places");
+        var plain = new HlsLinks();
+        Hls.RewriteMedia("#EXTM3U\n#EXTINF:4,\na.ts\n#EXTINF:4,\na.ts\n", new Uri("https://h.example/v.m3u8"), plain);
+        Check(plain.Count == 1, "without a playlist index the same address still shares one index");
     }
 
     private sealed class Named(string id) : IFilmSource

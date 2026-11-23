@@ -93,9 +93,7 @@ public static class ChannelMetadata
         // A new dictionary swapped in whole: Jellyfin may be reading the old one at this moment.
         if ((info.ProviderIds ?? []).Any(pair => !item.ProviderIds.TryGetValue(pair.Key, out var current) || current != pair.Value))
         {
-            var ids = new Dictionary<string, string>(item.ProviderIds, StringComparer.OrdinalIgnoreCase);
-            foreach (var (key, value) in info.ProviderIds!) ids[key] = value;
-            item.ProviderIds = ids;
+            item.ProviderIds = MergeIds(item.ProviderIds, info.ProviderIds!);
             changed = true;
         }
         if (art is not null)
@@ -136,4 +134,12 @@ public static class ChannelMetadata
             ChannelFolderType.MusicArtist => typeof(MusicArtist),
             _ => typeof(Folder)
         };
+
+    // A new dictionary each time: Jellyfin may be reading the old one on another thread.
+    public static Dictionary<string, string> MergeIds(IReadOnlyDictionary<string, string>? current, IReadOnlyDictionary<string, string> add)
+    {
+        var ids = new Dictionary<string, string>(current ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in add) ids[key] = value;
+        return ids;
+    }
 }

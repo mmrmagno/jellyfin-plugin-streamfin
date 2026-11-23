@@ -131,7 +131,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
     {
         var key = $"{user:N}/{year}/{store.Version(user)}";
         if (Recaps.TryGetValue<MusicRecap>(key, out var known)) return known!;
-        var recap = MusicRecap.Build(year, await store.History.ReadAsync(user, year, ct));
+        var recap = await store.History.RecapAsync(user, year, ct);
         Recaps.Set(key, recap, new Microsoft.Extensions.Caching.Memory.MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(6) });
         return recap;
     }
@@ -290,7 +290,7 @@ public sealed class MusicChannel(MusicCatalog catalog, MusicAudio sources, Music
         yield return Folder("search", "Search results", "Use Jellyfin's search (magnifying glass) to find artists, albums and songs online. What you find appears here.");
         yield return Folder("starred", "Starred", "Albums you mark as a favourite here, and albums and songs you star in a Subsonic app.");
         yield return Folder("recent", "Recently played");
-        yield return Folder("playlists", "Playlists", "Your playlists, including ones made in a Subsonic app. To import a Spotify playlist, paste its link into Jellyfin's search.");
+        yield return Folder("playlists", "Playlists", "Your playlists, including ones made in a Subsonic app. To import one from Spotify, YouTube Music, Deezer or a song list, open your Jellyfin address followed by /StreamFin/Import in a browser, or paste a playlist link into Jellyfin's search.");
         yield return Folder("recap", "Your year in music", "Your most played songs, artists and albums of each year, counted from the plays StreamFin has seen.");
     }
 

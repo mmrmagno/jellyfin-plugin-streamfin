@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import re
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -15,15 +16,26 @@ parser.add_argument('--url', required=True)
 parser.add_argument('--channel', default='Anime', choices=list(icons))
 parser.add_argument('--remove', action='store_true')
 args = parser.parse_args()
+# The API key travels with every request: only over HTTPS, or plain HTTP to this machine.
+target = urllib.parse.urlsplit(args.url)
+if target.scheme != 'https' and not (target.scheme == 'http' and target.hostname in ('localhost', '127.0.0.1', '::1')):
+    raise SystemExit('Use an https:// address (or http://localhost) so the API key is not sent in the clear.')
 token = os.environ.get('JELLYFIN_TOKEN')
 if not token:
     raise SystemExit('Set JELLYFIN_TOKEN to an API key from Dashboard > API Keys.')
+
+# Redirects are not followed: urllib would send the API key on to wherever they point.
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        raise SystemExit('The server answered with a redirect; use its final address with --url.')
+
+opener = urllib.request.build_opener(NoRedirect)
 
 def api(path, data=None):
     request = urllib.request.Request(args.url.rstrip('/') + path,
         headers={'Authorization': 'MediaBrowser Token="' + token + '"', 'Content-Type': 'application/json'},
         data=json.dumps(data).encode() if data is not None else None)
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with opener.open(request, timeout=30) as response:
         raw = response.read()
         return json.loads(raw) if raw else None
 
