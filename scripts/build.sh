@@ -6,8 +6,9 @@ if [[ ! -f .jellyfin/MediaBrowser.Controller.dll ]]; then
   echo 'Missing API assemblies. Run scripts/fetch-references.sh first.' >&2
   exit 1
 fi
-docker run --rm --user "$(id -u):$(id -g)" -e DOTNET_CLI_HOME=/tmp/dotnet \
+# A user id with no account in the image has HOME=/, which it cannot write; the SDK needs a writable home for its locks.
+docker run --rm --user "$(id -u):$(id -g)" -e DOTNET_CLI_HOME=/tmp/dotnet -e HOME=/tmp/dotnet \
   -v "$PWD:/work" -w /work "$SDK_IMAGE" dotnet build src/StreamFin.csproj -c Release -o artifacts/plugin
-docker run --rm --user "$(id -u):$(id -g)" -e DOTNET_CLI_HOME=/tmp/dotnet \
+docker run --rm --user "$(id -u):$(id -g)" -e DOTNET_CLI_HOME=/tmp/dotnet -e HOME=/tmp/dotnet \
   -v "$PWD:/work" -w /work "$SDK_IMAGE" dotnet run --project tests/StreamFin.Tests.csproj -c Release
 python3 scripts/package.py
