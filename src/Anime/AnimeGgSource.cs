@@ -16,7 +16,7 @@ public sealed class AnimeGgSource(SafeHttp http) : IAnimeSource
     // Decode before stripping, so encoded markup cannot turn back into tags; stray brackets go too.
     public static string Clean(string text) => Regex.Replace(WebUtility.HtmlDecode(text), "<[^>]*>", " ", RegexOptions.None, TimeSpan.FromSeconds(1))
         .Replace("<", "", StringComparison.Ordinal).Replace(">", "", StringComparison.Ordinal).Trim();
-    public static string Normalize(string title) => Regex.Replace(Clean(title).ToLowerInvariant(), @"[^\p{L}\p{N}]", "");
+    public static string Normalize(string title) => Regex.Replace(Clean(title).ToLowerInvariant(), @"[^\p{L}\p{N}]", "", RegexOptions.None, TimeSpan.FromSeconds(1));
     public static void ValidateId(string id)
     {
         if (id.Contains("..", StringComparison.Ordinal) || !Regex.IsMatch(id, @"\A[a-z0-9][a-z0-9.-]{0,199}\z", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)))
@@ -60,7 +60,7 @@ public sealed class AnimeGgSource(SafeHttp http) : IAnimeSource
         var result = Matches(array, "\\{[^}]*?file:\\s*\"([^\"]+)\"[^}]*?label:\\s*\"([^\"]+)\"[^}]*\\}")
             .Select(m => new ResolvedVideo(new Uri(Origin, WebUtility.HtmlDecode(m.Groups[1].Value)), m.Groups[2].Value,
                 new Dictionary<string, string> { ["Referer"] = Origin.AbsoluteUri }, true))
-            .OrderByDescending(v => int.TryParse(Regex.Match(v.Quality, @"\d+").Value, out var n) ? n : 0).ToArray();
+            .OrderByDescending(v => int.TryParse(Regex.Match(v.Quality, @"\d+", RegexOptions.None, TimeSpan.FromSeconds(1)).Value, out var n) ? n : 0).ToArray();
         foreach (var video in result) SafeHttp.Validate(video.Url, true);
         if (result.Length == 0) throw new ProviderException("AnimeGG did not return a playable video. The source adapter may need an update.");
         return result;

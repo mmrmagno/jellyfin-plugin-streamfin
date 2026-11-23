@@ -149,7 +149,7 @@ public sealed partial class SubsonicController
         var playlists = new List<MusicPlaylist>();
         foreach (var year in store.History.Years(user.Id).Take(5))
         {
-            var recap = MusicRecap.Build(year, await store.History.ReadAsync(user.Id, year, Ct));
+            var recap = await store.History.RecapAsync(user.Id, year, Ct);
             if (recap.Plays == 0) continue;
             var start = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             playlists.Add(new MusicPlaylist(RecapPlaylistId(year), $"Your {year}: top songs", recap.Summary, start, DateTime.UtcNow,

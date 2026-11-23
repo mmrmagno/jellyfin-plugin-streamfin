@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace StreamFin;
 
@@ -10,14 +11,40 @@ namespace StreamFin;
 public sealed class MusicHistory(string? root = null)
 {
     public const int YearLimit = 100_000;
+    // A year of heavy listening is a few MB; the cap only stops a client that sends plays in a loop.
+    public const long YearBytes = 40L * 1024 * 1024;
+    // An app sends what it played offline in one batch, but never plays from years back or the future.
+    public static DateTime Oldest => DateTime.UtcNow.AddDays(-366);
+    public DateTime? Since { get; init; }
+    public const int PlaysPerWindow = 1000;
+    private static readonly TimeSpan Window = TimeSpan.FromMinutes(10);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> Gates = new();
+    private static readonly ConcurrentDictionary<Guid, (DateTime Start, int Count)> Budget = new();
+    private static readonly Microsoft.Extensions.Caching.Memory.MemoryCache Recaps = new(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions { SizeLimit = 256 });
+
+    // How many of these plays the user may still record in this window; the rest are dropped.
+    private static int Allow(Guid user, int wanted)
+    {
+        var granted = 0;
+        Budget.AddOrUpdate(user, _ => (DateTime.UtcNow, granted = Math.Min(wanted, PlaysPerWindow)), (_, current) =>
+        {
+            if (DateTime.UtcNow - current.Start > Window) current = (DateTime.UtcNow, 0);
+            granted = Math.Clamp(PlaysPerWindow - current.Count, 0, wanted);
+            return (current.Start, current.Count + granted);
+        });
+        return granted;
+    }
     private string? Root => root ?? (Plugin.Instance is { } plugin ? Path.Combine(plugin.DataFolderPath, "music", "history") : null);
     private string? Folder(Guid user) => Root is { } path ? Path.Combine(path, user.ToString("N")) : null;
     private string? File(Guid user, int year) => Folder(user) is { } folder ? Path.Combine(folder, year.ToString(CultureInfo.InvariantCulture) + ".jsonl") : null;
 
     public async Task AppendAsync(Guid user, IEnumerable<MusicPlay> plays, CancellationToken ct)
     {
-        foreach (var year in plays.Where(p => p.Track.Title.Length > 0).GroupBy(p => p.At.Year))
+        var oldest = Since ?? Oldest;
+        var newest = DateTime.UtcNow.AddMinutes(5);
+        var kept = plays.Where(p => p.Track.Title.Length > 0 && p.At >= oldest && p.At <= newest).ToList();
+        kept = kept.Take(Allow(user, kept.Count)).ToList();
+        foreach (var year in kept.GroupBy(p => p.At.Year))
         {
             if (File(user, year.Key) is not { } path) return;
             var gate = Gates.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
@@ -25,7 +52,7 @@ public sealed class MusicHistory(string? root = null)
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                if (System.IO.File.Exists(path) && new FileInfo(path).Length > YearLimit * 2000L) continue;
+                if (System.IO.File.Exists(path) && new FileInfo(path).Length > YearBytes) continue;
                 var lines = new StringBuilder();
                 foreach (var play in year) lines.Append(JsonSerializer.Serialize(play)).Append('\n');
                 await System.IO.File.AppendAllTextAsync(path, lines.ToString(), ct);
@@ -38,14 +65,28 @@ public sealed class MusicHistory(string? root = null)
     {
         if (File(user, year) is not { } path || !System.IO.File.Exists(path)) return [];
         var plays = new List<MusicPlay>();
-        // A damaged line (a crash mid-write) is skipped; the rest of the year still counts.
-        foreach (var line in await System.IO.File.ReadAllLinesAsync(path, ct))
+        // A damaged line (a crash mid-write) is skipped; the rest of the year still counts. Read line by line and only
+        // up to the caps, so an oversized file never has to fit in memory whole.
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, useAsync: true);
+        using var reader = new StreamReader(stream);
+        while (plays.Count < YearLimit && stream.Position <= YearBytes && await reader.ReadLineAsync(ct) is { } line)
         {
-            if (plays.Count >= YearLimit) break;
+            if (line.Length > 64 * 1024) continue;
             try { if (JsonSerializer.Deserialize<MusicPlay>(line) is { Track.Title.Length: > 0 } play) plays.Add(play); }
             catch (JsonException) { }
         }
         return plays;
+    }
+
+    // A year's recap, kept until that year's file changes: apps ask for the playlists often.
+    public async Task<MusicRecap> RecapAsync(Guid user, int year, CancellationToken ct)
+    {
+        var file = File(user, year) is { } path && System.IO.File.Exists(path) ? new FileInfo(path) : null;
+        var key = (Root, user, year, file?.Length ?? 0, file?.LastWriteTimeUtc ?? default);
+        if (Recaps.TryGetValue<MusicRecap>(key, out var known) && known is not null) return known;
+        var recap = MusicRecap.Build(year, await ReadAsync(user, year, ct));
+        Recaps.Set(key, recap, new Microsoft.Extensions.Caching.Memory.MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromHours(1) });
+        return recap;
     }
 
     public IReadOnlyList<int> Years(Guid user) => Folder(user) is { } folder && Directory.Exists(folder)

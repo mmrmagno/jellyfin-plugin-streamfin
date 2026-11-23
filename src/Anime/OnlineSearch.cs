@@ -64,8 +64,10 @@ public sealed class OnlineSearch(AniListCatalog catalog, ILibraryManager library
                     item.Overview = anime.Overview;
                     item.ProductionYear = anime.Year;
                     item.Genres = anime.Genres;
+                    if (anime.AverageScore is { } score) item.CommunityRating = score / 10f;
                     item.Tags = item.Tags.Where(tag => tag != SearchHistory.HiddenTag).Append("StreamFin").Append("Streamable").Distinct().ToArray();
-                    item.ProviderIds = new Dictionary<string, string> { ["Custom"] = $"anifin-series-{anime.Id}" };
+                    // Merged, not replaced: the AniList and MyAnimeList ids added when the title was described stay.
+                    item.ProviderIds = ChannelMetadata.MergeIds(item.ProviderIds, new Dictionary<string, string> { ["Custom"] = $"anifin-series-{anime.Id}" });
                     // Generic search groups series by this persisted key; NULL would collapse unrelated anime.
                     item.PresentationUniqueKey = $"anifin-search-{anime.Id}";
                     if (anime.Image is not null && !item.HasImage(ImageType.Primary)) item.SetImagePath(ImageType.Primary, anime.Image);

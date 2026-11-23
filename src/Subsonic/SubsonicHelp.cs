@@ -36,7 +36,13 @@ public sealed class SubsonicHelpController : ControllerBase
         var state = SubsonicAuth.Enabled ? "The Subsonic API is on."
             : "The Subsonic API is off. An administrator can turn it on under Dashboard, Plugins, StreamFin, Subsonic apps.";
         Response.Headers.CacheControl = "no-store";
-        Response.Headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'";
+        Response.Headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+        Response.Headers["X-Frame-Options"] = "DENY";
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        Response.Headers["Referrer-Policy"] = "no-referrer";
+        Response.Headers["Cross-Origin-Opener-Policy"] = "same-origin";
+        Response.Headers["Cross-Origin-Resource-Policy"] = "same-origin";
+        Response.Headers["X-Robots-Tag"] = "noindex, nofollow";
         return Content($$$"""
             <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
             <title>StreamFin music apps</title>

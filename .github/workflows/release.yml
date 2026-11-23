@@ -11,49 +11,94 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Publish release
+  build:
+    name: Build and test
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Builds and tests run here, with a read-only token. Nothing in this job can publish.
     permissions:
-      contents: write # create the release and upload its assets
-      id-token: write # sign the build provenance with Sigstore
-      attestations: write # store the build provenance
+      contents: read
     env:
       TAG: ${{ github.ref_name }}
+    outputs:
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Check the tag is on main and matches the project version
+        id: check
         run: |
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$TAG is not on main"; exit 1; }
           version=$(grep -oP '(?<=<Version>)[^<]+' src/StreamFin.csproj)
           test "v$version" = "$TAG" || { echo "$TAG does not match version $version"; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: bash scripts/fetch-references.sh
       - run: bash scripts/build.sh
+      - name: Write the release notes and manifest.json
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          notes=$(git tag -l --format='%(contents:body)' "$TAG")
+          [ -n "$notes" ] || notes=$(git tag -l --format='%(contents:subject)' "$TAG")
+          printf '%s\n' "$notes" > artifacts/notes.txt
+          # The previous manifest is public; a re-run of this tag starts from its own.
+          base="https://github.com/$GITHUB_REPOSITORY/releases"
+          curl -fsSL --proto '=https' "$base/download/$TAG/manifest.json" -o artifacts/manifest.json \
+            || curl -fsSL --proto '=https' "$base/latest/download/manifest.json" -o artifacts/manifest.json
+          python3 scripts/manifest.py --manifest artifacts/manifest.json --zip "artifacts/StreamFin-$VERSION.zip" \
+            --url "$base/download/$TAG/StreamFin-$VERSION.zip" --changelog "$(cat artifacts/notes.txt)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            artifacts/StreamFin-${{ env.VERSION }}.zip
+            artifacts/manifest.json
+            artifacts/notes.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Only signs and uploads what the build job made; no code from the repository runs here.
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the build provenance with Sigstore
+      attestations: write # store the build provenance
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         id: attest
         with:
-          subject-path: artifacts/StreamFin-${{ env.VERSION }}.zip
-      - run: cp "$BUNDLE" "artifacts/StreamFin-$VERSION.zip.sigstore.json"
-        env:
-          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-      - name: Publish the release with an updated manifest.json
+          subject-path: release/StreamFin-${{ env.VERSION }}.zip
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: |
-          git fetch --force "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG:refs/tags/$TAG"
-          notes=$(git tag -l --format='%(contents:body)' "$TAG")
-          [ -n "$notes" ] || notes=$(git tag -l --format='%(contents:subject)' "$TAG")
-          printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.txt"
-          if gh release view "$TAG" >/dev/null 2>&1; then previous=$TAG; else previous=$(gh release view --json tagName --jq .tagName); fi
-          gh release download "$previous" -p manifest.json -D "$RUNNER_TEMP/previous"
-          cp "$RUNNER_TEMP/previous/manifest.json" artifacts/manifest.json
-          python3 scripts/manifest.py --manifest artifacts/manifest.json --zip "artifacts/StreamFin-$VERSION.zip" \
-            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/StreamFin-$VERSION.zip" \
-            --changelog "$(cat "$RUNNER_TEMP/notes.txt")"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" "artifacts/StreamFin-$VERSION.zip" "artifacts/StreamFin-$VERSION.zip.sigstore.json" --verify-tag --title "StreamFin $VERSION" --notes-file "$RUNNER_TEMP/notes.txt"
-          gh release upload "$TAG" artifacts/manifest.json --clobber
+          cp "$BUNDLE" "release/StreamFin-$VERSION.zip.sigstore.json"
+          # Releases are immutable once published, so the zip and the manifest that names its checksum always go up
+          # together. A re-run never touches a published release; an unfinished draft is replaced.
+          if state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$state" = "false" ]; then
+              gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx manifest.json \
+                || { echo "$TAG is published without manifest.json; fix it by hand"; exit 1; }
+              echo "$TAG is already published"
+              exit 0
+            fi
+            gh release delete "$TAG" --yes
+          fi
+          gh release create "$TAG" "release/StreamFin-$VERSION.zip" "release/StreamFin-$VERSION.zip.sigstore.json" release/manifest.json \
+            --draft --verify-tag --title "StreamFin $VERSION" --notes-file release/notes.txt
+          gh release edit "$TAG" --draft=false --latest

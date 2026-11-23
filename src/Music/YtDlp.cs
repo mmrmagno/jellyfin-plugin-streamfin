@@ -68,17 +68,15 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
             if (Folder is { } folder && Config is { } config)
             {
                 Directory.CreateDirectory(folder);
-                if (config.YtDlpPath.Length == 0)
+                if (config.YtDlpPath.Length == 0 && await ReleaseAsync("yt-dlp/yt-dlp", File.Exists(Path.Combine(folder, "yt-dlp-dir", "yt-dlp")), ct) is { } ytdlp)
                 {
-                    await InstallFolderAsync(new Uri($"https://github.com/yt-dlp/yt-dlp/releases/latest/download/{YtDlpAsset}.zip"),
-                        new Uri("https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"), YtDlpAsset, Path.Combine(folder, "yt-dlp-dir"), ct);
+                    await InstallFolderAsync(new Uri($"{ytdlp}/{YtDlpAsset}.zip"), new Uri($"{ytdlp}/SHA2-256SUMS"), YtDlpAsset, Path.Combine(folder, "yt-dlp-dir"), ct);
                     // The single-file build earlier versions used.
                     foreach (var old in new[] { "yt-dlp", "yt-dlp.sha256" })
                         try { File.Delete(Path.Combine(folder, old)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 }
-                if (config.DenoPath.Length == 0)
-                    await InstallAsync(new Uri($"https://github.com/denoland/deno/releases/latest/download/{DenoAsset}"),
-                        new Uri($"https://github.com/denoland/deno/releases/latest/download/{DenoAsset}.sha256sum"), DenoAsset, Path.Combine(folder, "deno"), "deno", ct);
+                if (config.DenoPath.Length == 0 && await ReleaseAsync("denoland/deno", File.Exists(Path.Combine(folder, "deno")), ct) is { } deno)
+                    await InstallAsync(new Uri($"{deno}/{DenoAsset}"), new Uri($"{deno}/{DenoAsset}.sha256sum"), DenoAsset, Path.Combine(folder, "deno"), "deno", ct);
             }
             var version = (await RunAsync(["--version"], TimeSpan.FromSeconds(30), ct)).Trim();
             checkedTools = true;
@@ -269,7 +267,7 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
     }
 
     // yt-dlp's last words, kept short however much it writes.
-    private static async Task<string> TailAsync(StreamReader reader, CancellationToken ct)
+    internal static async Task<string> TailAsync(StreamReader reader, CancellationToken ct)
     {
         var buffer = new char[4096];
         var tail = new StringBuilder();
@@ -287,13 +285,46 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
         return Convert.ToHexStringLower(await SHA256.HashDataAsync(file, ct));
     }
 
-    private async Task<string> TextAsync(Uri uri, CancellationToken ct)
+    // A release is only installed once it has been out a few days: a tampered release is usually noticed and pulled
+    // by then, and the checksums, published beside the files, cannot tell. Returns the release's download address, or
+    // null to keep the tools already installed when the release list cannot be read.
+    public static readonly TimeSpan Settle = TimeSpan.FromDays(3);
+    private async Task<string?> ReleaseAsync(string repository, bool installed, CancellationToken ct)
+    {
+        try
+        {
+            if (SettledTag(await TextAsync(new Uri($"https://github.com/{repository}/releases.atom"), ct, 2 * 1024 * 1024), DateTimeOffset.UtcNow - Settle) is { } tag)
+                return $"https://github.com/{repository}/releases/download/{tag}";
+        }
+        catch (Exception ex) when (ex is ProviderException or HttpRequestException or System.Xml.XmlException or RegexMatchTimeoutException
+            || ex is OperationCanceledException && !ct.IsCancellationRequested) { }
+        // Nothing installed yet and no list to go by: the newest release, still checked against its checksum.
+        return installed ? null : $"https://github.com/{repository}/releases/latest/download";
+    }
+
+    // The newest release in a GitHub release feed that was published before the given time.
+    public static string? SettledTag(string atom, DateTimeOffset before)
+    {
+        // No DTDs and no outside entities: the feed is plain Atom.
+        using var reader = System.Xml.XmlReader.Create(new StringReader(atom), new System.Xml.XmlReaderSettings { DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null });
+        var feed = System.Xml.Linq.XDocument.Load(reader);
+        System.Xml.Linq.XNamespace ns = "http://www.w3.org/2005/Atom";
+        return feed.Root?.Elements(ns + "entry")
+            .Select(e => (Updated: DateTimeOffset.TryParse((string?)e.Element(ns + "updated"), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var at) ? at : DateTimeOffset.MaxValue,
+                Tag: ((string?)e.Element(ns + "link")?.Attribute("href"))?.Split("/releases/tag/") is [_, var t] ? Uri.UnescapeDataString(t) : null))
+            // Only plain version tags (no "-rc" and the like), the highest version rather than the latest date: a project
+            // may publish a fix for an older line after a newer release.
+            .Where(r => r.Tag is not null && r.Updated <= before && Regex.IsMatch(r.Tag, @"\Av?\d{1,9}(\.\d{1,9}){1,3}\z", RegexOptions.None, TimeSpan.FromSeconds(1)))
+            .OrderByDescending(r => System.Version.Parse(r.Tag!.TrimStart('v'))).Select(r => r.Tag).FirstOrDefault();
+    }
+
+    private async Task<string> TextAsync(Uri uri, CancellationToken ct, int limit = 64 * 1024)
     {
         using var response = await http.OpenAsync(uri, true, ct, tools: true);
         if (response.StatusCode != HttpStatusCode.OK) throw new ProviderException($"The YouTube tools' checksums could not be read (HTTP {(int)response.StatusCode}).");
         await using var input = await response.Content.ReadAsStreamAsync(ct);
         using var output = new MemoryStream();
-        await CopyLimitedAsync(input, output, 64 * 1024, ct);
+        await CopyLimitedAsync(input, output, limit, ct);
         return Encoding.UTF8.GetString(output.ToArray());
     }
 
@@ -327,6 +358,14 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
     // The search text goes after "--", so a title starting with a dash cannot become an option.
     public static List<string> SearchArguments(string deno, string query, int count = 8) =>
         [.. Base(deno), "--flat-playlist", "--dump-single-json", "--", $"ytsearch{count}:{Clean(query)}"];
+
+    // A playlist's flat listing, one short line per video (titles, channels, lengths), for importing it. Unlike every other run this one reads a
+    // playlist, so it does not start from Base's --no-playlist; the list id is checked and the address built here.
+    public static List<string> PlaylistArguments(string deno, string listId) => System.Text.RegularExpressions.Regex.IsMatch(listId, @"\A[A-Za-z0-9_-]{10,64}\z", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1))
+        ? ["--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-warnings", "--no-progress", "--js-runtimes", "deno:" + deno,
+            "--flat-playlist", "--print", "%(playlist_title)s\t%(title)s\t%(channel)s\t%(duration)s", "--playlist-end", MusicLibraryStore.PlaylistEntryLimit.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--", "https://www.youtube.com/playlist?list=" + listId]
+        : throw new ProviderException("Invalid YouTube playlist.");
 
     public static List<string> AudioArguments(string deno, string videoId) => VideoId.IsMatch(videoId)
         ? [.. Base(deno), "-f", "ba[ext=m4a]", "--print", "urls", "--", "https://www.youtube.com/watch?v=" + videoId]
@@ -383,6 +422,8 @@ public sealed class YtDlp(SafeHttp http, ILogger<YtDlp> logger)
         if (ProxySetting is { } proxy && Uri.TryCreate(proxy.Trim(), UriKind.Absolute, out var uri) && uri.UserInfo.Length > 0)
             foreach (var secret in new[] { uri.UserInfo, Uri.UnescapeDataString(uri.UserInfo) }.Concat(uri.UserInfo.Split(':').Skip(1)).Where(x => x.Length >= 4))
                 redacted = redacted.Replace(secret, "***", StringComparison.Ordinal);
+        // Server paths ("Permission denied: '/var/lib/jellyfin/...'") say nothing useful to an app and reveal the layout.
+        redacted = Regex.Replace(redacted, @"(?<![\w:/.])(?:/[\w.@+-]+){2,}/?|\b[A-Za-z]:\\[^\s'""]+", "[path]", RegexOptions.None, TimeSpan.FromSeconds(1));
         return redacted;
     }
 

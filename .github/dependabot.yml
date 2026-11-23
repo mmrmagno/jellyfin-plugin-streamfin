@@ -16,7 +16,16 @@ updates:
     cooldown:
       default-days: 7
   - package-ecosystem: docker
-    directory: /.clusterfuzzlite
+    directories: ['/.clusterfuzzlite', '/scripts/images/sdk', '/scripts/images/tools']
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker
+    directory: /scripts/images/jellyfin
+    ignore:
+      - dependency-name: jellyfin/jellyfin
+        update-types: ['version-update:semver-major', 'version-update:semver-minor']
     schedule:
       interval: monthly
     cooldown:

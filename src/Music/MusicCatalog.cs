@@ -104,6 +104,16 @@ public sealed class MusicCatalog(SafeHttp http, MusicMetadataStore? disk = null,
         () => DeezerAsync(Uri.EscapeDataString(text), ("tracks", "search?limit=25&q="), ("albums", "search/album?limit=25&q="), ("artists", "search/artist?limit=10&q=")),
         Deezer.ParseSearch, null, null, ct);
 
+    // Songs by artist and title, asked of Deezer, whose search finds a named song far more reliably than the catalog's.
+    // For playlist import; nothing when Deezer is switched off. Its songs play like any other Deezer song.
+    public async Task<IReadOnlyList<MusicTrack>> SongSearchAsync(string artist, string title, CancellationToken ct)
+    {
+        var query = (artist.Trim() + " " + title.Trim()).Trim();
+        if (!Fallback || artist.Trim().Length == 0 || title.Trim().Length == 0 || query.Length > 200) return [];
+        return (await CachedAsync(deezer, "dz/song/" + query.ToLowerInvariant(), TimeSpan.FromHours(6),
+            () => DeezerAsync(Uri.EscapeDataString(query), ("tracks", "search?limit=15&q=")), Deezer.ParseSearch, null, null, ct)).Tracks;
+    }
+
     public Task<MusicRelease> ReleaseAsync(string id, CancellationToken ct) => Deezer.IsId(ValidateId(id))
         ? CachedAsync(deezer, "dz/release/" + id, Lifetime, () => DeezerAsync("", ("album", $"album/{Deezer.Number(id)}"), ("tracks", $"album/{Deezer.Number(id)}/tracks?limit=500")),
             Deezer.ParseRelease, "release", id, ct)

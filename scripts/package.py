@@ -16,10 +16,17 @@ manifest = {
     'imagePath': 'streamfin.png', 'status': 'Active', 'autoUpdate': True,
 }
 (output / 'meta.json').write_text(json.dumps(manifest, indent=2) + '\n')
+# Fixed timestamps and permissions, so building the same commit twice gives the same zip and the same checksum.
+def add(archive, source, name):
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    archive.writestr(info, source.read_bytes())
+
 with zipfile.ZipFile(root / f'artifacts/StreamFin-{version}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
     for name in ['Jellyfin.Plugin.StreamFin.dll', 'meta.json']:
-        archive.write(output / name, name)
-    archive.write(root / 'assets/banner.png', 'streamfin.png')
+        add(archive, output / name, name)
+    add(archive, root / 'assets/banner.png', 'streamfin.png')
     for name in ['LICENSE', 'THIRD_PARTY_NOTICES.txt']:
-        archive.write(root / name, name)
+        add(archive, root / name, name)
 print(f'Packaged artifacts/StreamFin-{version}.zip')

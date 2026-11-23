@@ -18,8 +18,22 @@ jobs:
       contents: write # merge the pull request once the required checks pass
       pull-requests: write # turn on auto-merge
     steps:
-      - run: gh pr merge --auto --squash "$PR"
+      # Patch and minor updates merge on their own once the checks pass; a new major version waits for a person.
+      - name: Merge unless a major version changes
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Dependabot quotes versions in backticks; those are dropped first.
+          text=$(gh pr view "$PR" --json title,body --jq '.title + "\n" + .body' | tr -d '\140')
+          # The first version number counts, or the second for 0.x versions, where a minor step may break things.
+          majors=$(printf '%s\n' "$text" | grep -oE 'from v?[0-9]+(\.[0-9]+)?[^ ]* to v?[0-9]+(\.[0-9]+)?' \
+            | sed -E 's/from v?([0-9]+)(\.([0-9]+))?[^ ]* to v?([0-9]+)(\.([0-9]+))?/\1|\3|\4|\6/' \
+            | awk -F'|' '{ print ($1 == 0 ? $1 "." $2 : $1), ($3 == 0 ? $3 "." $4 : $3) }' | sort -u)
+          if [ -z "$majors" ]; then echo "No versions found in the pull request; leaving it for review"; exit 0; fi
+          if printf '%s\n' "$majors" | awk '$1 != $2 { found = 1 } END { exit !found }'; then
+            echo "A major version changes; leaving it for review"
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR"

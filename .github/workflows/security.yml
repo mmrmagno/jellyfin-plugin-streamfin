@@ -25,10 +25,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: actionlint 1.7.12
-        run: docker run --rm --network none -v "$PWD:/repo:ro" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-      - name: zizmor 1.31.1
-        run: docker run --rm --network none -v "$PWD:/repo:ro" ghcr.io/zizmorcore/zizmor@sha256:42d409dbb851d4c5d35a058cf042b828bea1e3f2884378c526eb0974780e18d9 --offline --persona=pedantic /repo/.github
+      - name: actionlint
+        run: docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$(sed -n 's/^FROM \([^ ]*\) AS actionlint$/\1/p' scripts/images/tools/Dockerfile)"
+      - name: zizmor
+        run: docker run --rm --network none -v "$PWD:/repo:ro" "$(sed -n 's/^FROM \([^ ]*\) AS zizmor$/\1/p' scripts/images/tools/Dockerfile)" --offline --persona=pedantic /repo/.github
 
   secrets:
     name: Secret scan
@@ -41,8 +41,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: gitleaks 8.30.1 over the full history
-        run: docker run --rm --network none -v "$PWD:/repo:ro" zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git /repo --no-banner --redact
+      - name: gitleaks over the full history
+        run: docker run --rm --network none -v "$PWD:/repo:ro" "$(sed -n 's/^FROM \([^ ]*\) AS gitleaks$/\1/p' scripts/images/tools/Dockerfile)" git /repo --no-banner --redact
 
   codeql:
     name: CodeQL (${{ matrix.language }})

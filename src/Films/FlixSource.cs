@@ -207,14 +207,15 @@ public sealed class FlixSource(SafeHttp http) : IFilmSource, IDisposable
     private async Task<ResolvedVideo?> PlayerAsync(Uri embed, Uri referer, int depth, CancellationToken ct)
     {
         var (final, html) = await http.PageAsync(embed, ct, headers: Referer(referer), open: true);
-        if (FindMedia(html) is { } media)
+        var blobs = Blobs(html);
+        if (FindMedia(blobs) is { } media)
         {
             var origin = final.GetLeftPart(UriPartial.Authority);
             var headers = new Dictionary<string, string> { ["Referer"] = origin + "/", ["Origin"] = origin };
             var hls = media.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
             if (hls && !(await http.TextAsync(media, ct, headers: headers, open: true)).TrimStart('﻿', ' ', '\r', '\n').StartsWith("#EXTM3U", StringComparison.Ordinal))
                 throw new ProviderException("The player did not return an HLS playlist.");
-            return new ResolvedVideo(media, hls ? "HLS" : "MP4", headers, false, hls, FindSubtitles(html));
+            return new ResolvedVideo(media, hls ? "HLS" : "MP4", headers, false, hls, FindSubtitles(blobs));
         }
         if (depth >= 2) return null;
         foreach (var frame in Iframe.Matches(html).Select(m => Http(final, m.Groups[1].Value)).OfType<Uri>().Distinct().Take(4))
@@ -225,9 +226,11 @@ public sealed class FlixSource(SafeHttp http) : IFilmSource, IDisposable
         return null;
     }
 
-    public static Uri? FindMedia(string html)
+    // The page and its unpacked scripts, unpacked once for both the stream and the subtitles.
+    private static string[] Blobs(string html) => Unpack(html).Prepend(html).Select(b => b.Replace("\\/", "/", StringComparison.Ordinal)).ToArray();
+    public static Uri? FindMedia(string html) => FindMedia(Blobs(html));
+    private static Uri? FindMedia(string[] blobs)
     {
-        var blobs = Unpack(html).Prepend(html).Select(b => b.Replace("\\/", "/", StringComparison.Ordinal)).ToArray();
         foreach (var blob in blobs)
             if (M3u8.Match(blob) is { Success: true } m && Valid(m.Value) is { } url) return url;
         foreach (var blob in blobs)
@@ -241,11 +244,12 @@ public sealed class FlixSource(SafeHttp http) : IFilmSource, IDisposable
         catch (ProviderException) { return null; }
     }
 
-    public static IReadOnlyList<Subtitle> FindSubtitles(string html)
+    public static IReadOnlyList<Subtitle> FindSubtitles(string html) => FindSubtitles(Blobs(html));
+    private static IReadOnlyList<Subtitle> FindSubtitles(string[] blobs)
     {
         var found = new List<Subtitle>();
-        foreach (var blob in Unpack(html).Prepend(html))
-            foreach (Match block in TrackBlock.Matches(blob.Replace("\\/", "/", StringComparison.Ordinal)))
+        foreach (var blob in blobs)
+            foreach (Match block in TrackBlock.Matches(blob))
             {
                 var file = TrackFile.Match(block.Value);
                 var label = TrackLabel.Match(block.Value);
@@ -282,20 +286,23 @@ public sealed class FlixSource(SafeHttp http) : IFilmSource, IDisposable
 
     // Dean Edwards' packer: a word list plus a payload whose base-N tokens index into it.
     // Substituting the words back is a string operation; the script itself never runs.
+    public const int MaxPacked = 8;
+    public const long UnpackLimit = 8_000_000;
     public static IReadOnlyList<string> Unpack(string html)
     {
         var output = new List<string>();
-        foreach (Match m in Packed.Matches(html))
+        // One budget for every packed script on the page: a hostile page could hold hundreds of them.
+        var size = 0L;
+        foreach (var m in Packed.Matches(html).Take(MaxPacked))
         {
             if (!int.TryParse(m.Groups[2].Value, out var radix) || !int.TryParse(m.Groups[3].Value, out var count) || radix is < 2 or > 62) continue;
             var words = m.Groups[4].Value.Split('|');
             var payload = m.Groups[1].Value.Replace("\\'", "'", StringComparison.Ordinal).Replace("\\\\", "\\", StringComparison.Ordinal);
             // A hostile page could repeat a huge word millions of times; stop well before that.
-            var size = 0L;
             output.Add(Regex.Replace(payload, @"\b\w+\b", w =>
             {
                 var word = Unbase(w.Value, radix) is { } i && i < words.Length && i < count && words[i].Length > 0 ? words[i] : w.Value;
-                if ((size += word.Length) > 8_000_000) throw new ProviderException("The player page is too large.");
+                if ((size += word.Length) > UnpackLimit) throw new ProviderException("The player page is too large.");
                 return word;
             }, RegexOptions.None, TimeSpan.FromSeconds(2)));
         }
